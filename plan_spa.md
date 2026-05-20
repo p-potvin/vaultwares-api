@@ -44,9 +44,9 @@
 - 2.1. UI/UX Design
   - [x] Review VaultWares guidelines/standards
   - [x] Review current frontend structure (React, Vite, Tailwind, WorkflowList)
-  - [x] Confirm theming will use pre-existing vault-themes
+  - [x] Confirm theming will use pre-existing vaultwares-themes
   - [x] Wireframes for main views: category sidebar, workflow list, modals (create/import/export/restore)
-  - [x] Implement category sidebar, workflow list, modals (create/import/export/restore) using vault-themes
+  - [x] Implement category sidebar, workflow list, modals (create/import/export/restore) using vaultwares-themes
   - [ ] Category sidebar
   - [ ] Workflow list (sortable, filterable)
   - [ ] Modals for create/import/export/restore

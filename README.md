@@ -19,7 +19,7 @@ All pipelines are designed local-first but support optional remote model endpoin
 - Real-time encrypted filters
 - Dependency graph execution
 - Agent-aware pipeline monitoring
-- Integration hooks for `vaultwares-agentciation`
+- Integration hooks for `vaultwares-adk`
 
 ## Quick Start
 

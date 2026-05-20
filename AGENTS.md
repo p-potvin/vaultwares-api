@@ -3,12 +3,12 @@
 > For company-wide rules, read `vaultwares-docs/AGENTS.md` first.
 
 <!-- VAULT-THEMES-SUBMODULE:START -->
-## vault-themes Submodule
+## vaultwares-themes Submodule
 
 Before UI, branding, or token work, read:
 
-- `vault-themes/AGENTS.md`
-- `vault-themes/CONTEXT.md`
+- `vaultwares-themes/AGENTS.md`
+- `vaultwares-themes/CONTEXT.md`
 <!-- VAULT-THEMES-SUBMODULE:END -->
 
 ## VaultWares Repo Instructions
@@ -19,7 +19,7 @@ When working in the `vaultwares` repository, you can edit files as needed for yo
 
 ### Standalone Repository Rule
 
-When a task involves `vault-themes`, `vaultwares-agentciation`, or `vaultwares_agentciation`, make the real change in the standalone repository itself.
+When a task involves `vaultwares-themes`, `vaultwares-adk`, or `vaultwares-adk`, make the real change in the standalone repository itself.
 If you encounter a nested copy or submodule mirror here, use it as context only and do not treat it as the authoritative source for the change.
 
 ### Practical intent
