@@ -237,7 +237,9 @@ app.add_middleware(
 )
 
 from fastapi.staticfiles import StaticFiles
-app.mount("/faceswap", StaticFiles(directory="C:/Users/Administrator/Desktop/business/link-sharing/client/faceswap", html=True), name="faceswap")
+_faceswap_static_dir = os.environ.get("FACESWAP_STATIC_DIR")
+if _faceswap_static_dir and os.path.isdir(_faceswap_static_dir):
+    app.mount("/faceswap", StaticFiles(directory=_faceswap_static_dir, html=True), name="faceswap")
 
 bearer_scheme = HTTPBearer(auto_error=False)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
