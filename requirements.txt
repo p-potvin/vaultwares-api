@@ -28,7 +28,9 @@ opencv-python>=4.8.0
 fastapi
 uvicorn[standard]
 psutil>=5.9.0          # memory_info() in DeviceManager
-tortoise-orm
+tortoise-orm<1.0          # 1.x made _inited context-scoped which breaks FastAPI startup-event init
+asyncpg                    # Required by tortoise-orm for Postgres async driver
+websockets                 # Used by the job worker to stream ComfyUI progress events
 python-jose[cryptography]
 bcrypt==4.0.1
 passlib[bcrypt]

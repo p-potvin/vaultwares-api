@@ -1,0 +1,24 @@
+{
+  "id": "job_81572e14b50e4cea819a575cf7f1e75f",
+  "kind": "workflow_run",
+  "status": "failed",
+  "created_at": 1779513136.8450074,
+  "updated_at": 1779513228.8404818,
+  "requested_by": {
+    "user": "vault-flows",
+    "via": "/flows/run"
+  },
+  "payload": {
+    "id": "biglove-photo",
+    "mode": "local",
+    "inputs": {
+      "source_image": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ2YXVsdHdhcmVzLXBpcGVsaW5lcyIsImF1ZCI6InVwbG9hZHMiLCJpYXQiOjE3Nzk1MTMxMzYsIm5iZiI6MTc3OTUxMzEzNiwiZXhwIjoxNzc5NTk5NTM2LCJwIjoiMERUcVRwSkV2eTRJa2c1Rl85Nm9CUS5wbmciLCJtIjoiaW1hZ2UvcG5nIiwibiI6InZhdWx0LWZsb3dzLXppbWFnZV8wMDAwMV8ucG5nIn0.k4wYGDw7SZHdJn1lpYYDxzhoY8jQCaq6PSxrV_IVrLc",
+      "positive_prompt": "detailed portrait, soft lighting",
+      "negative_prompt": "blurry, low quality",
+      "seed": 12345
+    }
+  },
+  "result": null,
+  "error": "RuntimeError: ComfyUI workflow errored: [['execution_start', {'prompt_id': '051a541f-306b-4e5a-aa5d-ec32893216e0', 'timestamp': 1779513216779}], ['execution_cached', {'nodes': [], 'prompt_id': '051a541f-306b-4e5a-aa5d-ec32893216e0', 'timestamp': 1779513217789}], ['execution_error', {'prompt_id': '051a541f-306b-4e5a-aa5d-ec32893216e0', 'node_id': '3', 'node_type': 'CLIPTextEncode', 'executed': ['1', '21', '17', '10', '14', '19'], 'exception_message': 'ERROR: clip input is invalid: None\\n\\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.\\n', 'exception_type': 'RuntimeError', 'traceback': ['  File \"D:\\\\comfyUI\\\\resources\\\\ComfyUI\\\\execution.py\", line 535, in execute\\n    output_data, output_ui, has_subgraph, has_pending_tasks = await get_output_data(prompt_id, unique_id, obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb, v3_data=v3_data)\\n                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n', '  File \"D:\\\\comfyUI\\\\resources\\\\ComfyUI\\\\execution.py\", line 335, in get_output_data\\n    return_values = await _async_map_node_over_list(prompt_id, unique_id, obj, input_data_all, obj.FUNCTION, allow_interrupt=True, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb, v3_data=v3_data)\\n                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n', '  File \"D:\\\\comfyUI\\\\resources\\\\ComfyUI\\\\custom_nodes\\\\comfyui-lora-manager\\\\py\\\\metadata_collector\\\\metadata_hook.py\", line 171, in async_map_node_over_list_with_metadata\\n    results = await original_map_node_over_list(\\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\\n', '  File \"D:\\\\comfyUI\\\\resources\\\\ComfyUI\\\\execution.py\", line 309, in _async_map_node_over_list\\n    await process_inputs(input_dict, i)\\n', '  File \"D:\\\\comfyUI\\\\resources\\\\ComfyUI\\\\execution.py\", line 297, in process_inputs\\n    result = f(**inputs)\\n             ^^^^^^^^^^^\\n', '  File \"D:\\\\comfyUI\\\\resources\\\\ComfyUI\\\\nodes.py\", line 78, in encode\\n    raise RuntimeError(\"ERROR: clip input is invalid: None\\\\n\\\\nIf the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model.\")\\n'], 'current_inputs': {'clip': [None], 'text': ['detailed portrait, soft lighting']}, 'current_outputs': ['3', '1', '12', '17', '21', '4', '10', '14', '16', '11', '19'], 'timestamp': 1779513228262}]]",
+  "ttl_seconds": 86400
+}

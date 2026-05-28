@@ -1,0 +1,36 @@
+{
+  "id": "job_47fd823cebe041baa337d67f25f84111",
+  "kind": "workflow_run",
+  "status": "failed",
+  "created_at": 1779859481.9353566,
+  "updated_at": 1779859482.9495428,
+  "requested_by": {
+    "user": "vault-flows",
+    "via": "/flows/run"
+  },
+  "payload": {
+    "id": "z-image-turbo-text2img",
+    "mode": "local",
+    "inputs": {
+      "seed": "",
+      "steps": "",
+      "width": "",
+      "height": "",
+      "prompt": "naked woman kneeling looking up at the camera with red hair and big fake breasts",
+      "negative_prompt": ""
+    }
+  },
+  "result": null,
+  "error": "RuntimeError: ComfyUI /prompt -> 400: {\"error\": {\"type\": \"prompt_outputs_failed_validation\", \"message\": \"Prompt outputs failed validation\", \"details\": \"\", \"extra_info\": {}}, \"node_errors\": {\"5\": {\"errors\": [{\"type\": \"invalid_input_type\", \"message\": \"Failed to convert an input value to a INT value\", \"details\": \"height, , invalid literal ",
+  "ttl_seconds": 86400,
+  "progress": {
+    "prompt_id": null,
+    "current_node_id": null,
+    "current_node_class": null,
+    "step": 0,
+    "total": 0,
+    "message": "preparing inputs",
+    "cached_nodes": [],
+    "events_seen": 1
+  }
+}

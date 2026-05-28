@@ -1,0 +1,36 @@
+{
+  "id": "job_8ee70f07a4544f66ba4f4b1098e3a832",
+  "kind": "workflow_run",
+  "status": "succeeded",
+  "created_at": 1779504961.553247,
+  "updated_at": 1779504992.1971996,
+  "requested_by": {
+    "user": "vault-flows",
+    "via": "/flows/run"
+  },
+  "payload": {
+    "id": "z-image-turbo-text2img",
+    "mode": "local",
+    "inputs": {
+      "prompt": "red sports car on a coastal road, dramatic sunset",
+      "seed": 7777
+    }
+  },
+  "result": {
+    "image_url": "/api/comfyui-image/eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ2YXVsdHdhcmVzLXBpcGVsaW5lcyIsImF1ZCI6ImNvbWZ5dWktaW1hZ2UiLCJpYXQiOjE3Nzk1MDQ5OTIsIm5iZiI6MTc3OTUwNDk5MiwiZXhwIjoxNzc5NTA4NTkyLCJmbiI6InZhdWx0LWZsb3dzLXppbWFnZV8wMDAwMl8ucG5nIiwic3ViXyI6IiIsInRwIjoib3V0cHV0In0.gowzzbnHeJAj7Wzb4pCESWwowDIftMSNY00Lx60qNgM",
+    "image_urls": [
+      "/api/comfyui-image/eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ2YXVsdHdhcmVzLXBpcGVsaW5lcyIsImF1ZCI6ImNvbWZ5dWktaW1hZ2UiLCJpYXQiOjE3Nzk1MDQ5OTIsIm5iZiI6MTc3OTUwNDk5MiwiZXhwIjoxNzc5NTA4NTkyLCJmbiI6InZhdWx0LWZsb3dzLXppbWFnZV8wMDAwMl8ucG5nIiwic3ViXyI6IiIsInRwIjoib3V0cHV0In0.gowzzbnHeJAj7Wzb4pCESWwowDIftMSNY00Lx60qNgM"
+    ],
+    "prompt_id": "fa051715-b609-45cf-a980-5638aa0ea287",
+    "images": [
+      {
+        "filename": "vault-flows-zimage_00002_.png",
+        "subfolder": "",
+        "type": "output"
+      }
+    ],
+    "summary": "Generated 1 image(s) via ComfyUI"
+  },
+  "error": null,
+  "ttl_seconds": 86400
+}

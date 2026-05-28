@@ -1,0 +1,38 @@
+{
+  "id": "job_d627d940310f4d768db432cd032aae7d",
+  "kind": "workflow_run",
+  "status": "canceled",
+  "created_at": 1779859516.1407645,
+  "updated_at": 1779859558.8168414,
+  "requested_by": {
+    "user": "vault-flows",
+    "via": "/flows/run"
+  },
+  "payload": {
+    "id": "z-image-turbo-text2img",
+    "mode": "local",
+    "inputs": {
+      "seed": 3243,
+      "steps": 8,
+      "width": 1024,
+      "height": 1024,
+      "prompt": "naked woman kneeling looking up at the camera with red hair and big fake breasts",
+      "negative_prompt": "low res"
+    }
+  },
+  "result": null,
+  "error": null,
+  "ttl_seconds": 86400,
+  "progress": {
+    "prompt_id": "79712208-794c-47eb-8e27-d9ea248f51a4",
+    "current_node_id": "3",
+    "current_node_class": null,
+    "step": 2,
+    "total": 8,
+    "message": "step 2/8 (node 3)",
+    "cached_nodes": [
+      "5"
+    ],
+    "events_seen": 9
+  }
+}

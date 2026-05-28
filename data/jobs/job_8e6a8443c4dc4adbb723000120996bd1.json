@@ -1,0 +1,36 @@
+{
+  "id": "job_8e6a8443c4dc4adbb723000120996bd1",
+  "kind": "workflow_run",
+  "status": "succeeded",
+  "created_at": 1779504993.819975,
+  "updated_at": 1779505010.9385326,
+  "requested_by": {
+    "user": "vault-flows",
+    "via": "/flows/run"
+  },
+  "payload": {
+    "id": "z-image-turbo-text2img",
+    "mode": "local",
+    "inputs": {
+      "prompt": "a tiny robot painting",
+      "seed": 1
+    }
+  },
+  "result": {
+    "image_url": "/api/comfyui-image/eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ2YXVsdHdhcmVzLXBpcGVsaW5lcyIsImF1ZCI6ImNvbWZ5dWktaW1hZ2UiLCJpYXQiOjE3Nzk1MDUwMTAsIm5iZiI6MTc3OTUwNTAxMCwiZXhwIjoxNzc5NTA4NjEwLCJmbiI6InZhdWx0LWZsb3dzLXppbWFnZV8wMDAwM18ucG5nIiwic3ViXyI6IiIsInRwIjoib3V0cHV0In0.HjatjmPu0BxMM6o4Nrq5G1Ou04Lj6_D3vGPglOCxQU0",
+    "image_urls": [
+      "/api/comfyui-image/eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJ2YXVsdHdhcmVzLXBpcGVsaW5lcyIsImF1ZCI6ImNvbWZ5dWktaW1hZ2UiLCJpYXQiOjE3Nzk1MDUwMTAsIm5iZiI6MTc3OTUwNTAxMCwiZXhwIjoxNzc5NTA4NjEwLCJmbiI6InZhdWx0LWZsb3dzLXppbWFnZV8wMDAwM18ucG5nIiwic3ViXyI6IiIsInRwIjoib3V0cHV0In0.HjatjmPu0BxMM6o4Nrq5G1Ou04Lj6_D3vGPglOCxQU0"
+    ],
+    "prompt_id": "47b7d857-f6fb-4621-a0a8-53f8c1395471",
+    "images": [
+      {
+        "filename": "vault-flows-zimage_00003_.png",
+        "subfolder": "",
+        "type": "output"
+      }
+    ],
+    "summary": "Generated 1 image(s) via ComfyUI"
+  },
+  "error": null,
+  "ttl_seconds": 86400
+}
