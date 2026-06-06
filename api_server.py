@@ -220,6 +220,20 @@ logger = logging.getLogger("vaultwares.api")
 
 app = FastAPI(title="Vaultwares Workflow API", description="API for managing workflows, favorites, backup, NIM integration, and storage.", version="0.2.0")
 
+# ─── Prom-King router ──────────────────────────────────────────────────────
+# Mounts /api/promking/* (videos, taxonomies, fetcher, settings, stats).
+# See ADR-001 + Prom-King/shared-tube/docs/router-integration.md
+try:
+    from app.routers.promking import router as promking_router
+    app.include_router(promking_router)
+    _PROMKING_LOADED = True
+except Exception as _promking_err:  # pragma: no cover — keeps startup resilient
+    _PROMKING_LOADED = False
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "Prom-King router not loaded: %s", _promking_err
+    )
+
 # --- CORS ---
 CORS_ORIGINS = [
     origin.strip()
@@ -961,6 +975,15 @@ async def startup_event():
         logger.error(f"Failed to initialize Tortoise ORM: {e}")
         _tortoise_initialized = False
 
+    # Start Prom-King APScheduler (best-effort; PROMKING_DATABASE_URL may be
+    # unset on workstations that don't run the tube routes).
+    if _PROMKING_LOADED:
+        try:
+            from app.routers.promking.cron import start_scheduler as _pk_start
+            await _pk_start()
+        except Exception as _pk_err:
+            logger.warning("Prom-King APScheduler not started: %s", _pk_err)
+
     _ensure_jobs_dir()
     if not hasattr(app.state, "job_queue"):
         app.state.job_queue = asyncio.Queue(maxsize=JOB_QUEUE_MAX_PENDING)
@@ -992,6 +1015,16 @@ async def shutdown_event():
         logger.info("Tortoise ORM connections closed.")
     except Exception as e:
         logger.error(f"Error closing Tortoise ORM connections: {e}")
+
+    # Stop Prom-King APScheduler + close its asyncpg pool.
+    if _PROMKING_LOADED:
+        try:
+            from app.routers.promking.cron import stop_scheduler as _pk_stop
+            from app.routers.promking.db import close_pool as _pk_close
+            await _pk_stop()
+            await _pk_close()
+        except Exception as _pk_err:
+            logger.warning("Prom-King shutdown warning: %s", _pk_err)
 
 
 # --- Endpoints ---

@@ -33,6 +33,14 @@ python-jose[cryptography]
 bcrypt==4.0.1
 passlib[bcrypt]
 
+# ---- Prom-King router (vaultwares-pipelines /api/promking/*) ----
+# Talks to the `promking` Postgres DB directly via asyncpg (schema is owned by
+# Drizzle in Prom-King/shared-tube). APScheduler runs the nightly fetch cron
+# in-process — replaces the ADR-001 node-cron plan (router lives on the
+# Python side). See ADR-001 'Implementation deviations' for the rationale.
+asyncpg>=0.29
+apscheduler>=3.10
+
 ipython>=9.10.1
 redis>=7.0.0
 pyinstaller>=6.0.0
