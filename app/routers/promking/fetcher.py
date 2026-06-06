@@ -17,14 +17,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import platform
 import re
+import shutil
 import time
 import unicodedata
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import AsyncIterator, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
@@ -50,6 +52,7 @@ class RunState:
     summary: dict[str, int] = field(default_factory=dict)
     finished: bool = False
     error: Optional[str] = None
+    stderr_log: Optional[str] = None
 
 
 _runs: dict[str, RunState] = {}
@@ -168,9 +171,8 @@ async def _drive_subprocess(state: RunState) -> None:
         await _finalize_run(state)
         return
 
-    # Use the workspace's tsx via pnpm (deterministic Node 22 + ESM + TS).
-    cmd = [
-        "pnpm",
+    cwd = _shared_tube_path()
+    args = [
         "--filter",
         "@promking/shared-tube",
         "fetcher:run",
@@ -179,25 +181,67 @@ async def _drive_subprocess(state: RunState) -> None:
         f"--source={state.source}",
         f"--pages={state.pages}",
     ]
-    cwd = _shared_tube_path()
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=str(cwd),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except FileNotFoundError as e:
-        state.error = f"failed to spawn pnpm: {e}"
-        await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
-        await _finalize_run(state)
-        return
+    # Platform-aware spawn. On Windows, pnpm ships as `pnpm.CMD` (a Corepack
+    # shim); asyncio's create_subprocess_exec calls CreateProcess directly and
+    # can't execute .CMD without going through cmd.exe — so we wrap. On Linux
+    # the binary is plain `pnpm` and direct exec works.
+    is_windows = platform.system() == "Windows"
+    if is_windows:
+        # Use shell=True style via create_subprocess_shell so cmd.exe resolves
+        # pnpm.CMD against PATHEXT. Quote any path that might contain spaces.
+        shell_cmd = "pnpm " + " ".join(f'"{a}"' if " " in a else a for a in args)
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                shell_cmd,
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except (FileNotFoundError, OSError) as e:
+            state.error = f"failed to spawn pnpm (Windows shell): {e}"
+            await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
+            await _finalize_run(state)
+            return
+    else:
+        pnpm_path = shutil.which("pnpm") or "pnpm"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                pnpm_path,
+                *args,
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError as e:
+            state.error = f"failed to spawn pnpm: {e}"
+            await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
+            await _finalize_run(state)
+            return
 
     state.process = proc
 
     assert proc.stdout is not None
+    assert proc.stderr is not None
+
     videos_payload: list[dict] = []
+    stderr_buf: list[str] = []
+
+    async def _drain_stderr() -> None:
+        assert proc.stderr is not None
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", errors="replace").rstrip("\n")
+            if not text:
+                continue
+            stderr_buf.append(text)
+            # Surface stderr as log events so the operator sees it live.
+            await _broadcast(state, json.dumps({"event": "log", "line": f"stderr: {text}"}))
+
+    stderr_task = asyncio.create_task(_drain_stderr())
+
     while True:
         line = await proc.stdout.readline()
         if not line:
@@ -208,7 +252,6 @@ async def _drive_subprocess(state: RunState) -> None:
         try:
             payload = json.loads(text)
         except json.JSONDecodeError:
-            # Non-JSON output → wrap as a log line so the console still sees it.
             payload = {"event": "log", "line": text}
         await _broadcast(state, json.dumps(payload))
         event = payload.get("event")
@@ -224,8 +267,16 @@ async def _drive_subprocess(state: RunState) -> None:
             videos_payload = list(payload.get("videos") or [])
 
     return_code = await proc.wait()
+    try:
+        await asyncio.wait_for(stderr_task, timeout=5)
+    except asyncio.TimeoutError:
+        stderr_task.cancel()
+
     if return_code != 0 and not state.error:
-        state.error = f"fetcher exited with code {return_code}"
+        tail = "\n".join(stderr_buf[-10:]) or "(no stderr captured)"
+        state.error = f"fetcher exited with code {return_code}. stderr tail:\n{tail}"
+
+    state.stderr_log = "\n".join(stderr_buf[-40:]) if stderr_buf else None
 
     # Persist whatever the CLI returned. The CLI itself never writes.
     added = await _persist_videos(state.site, videos_payload)
@@ -245,6 +296,10 @@ async def _finalize_run(state: RunState) -> None:
     state.finished = True
     pool = await get_pool()
     if state.db_run_id is not None:
+        log_blob = {
+            "error": state.error,
+            "stderr_tail": state.stderr_log,
+        }
         async with pool.acquire() as conn:
             await conn.execute(
                 """
@@ -253,7 +308,8 @@ async def _finalize_run(state: RunState) -> None:
                     fetched = $2,
                     added = $3,
                     skipped = $4,
-                    errors = $5
+                    errors = $5,
+                    log = $6::jsonb
                 WHERE id = $1
                 """,
                 state.db_run_id,
@@ -261,6 +317,7 @@ async def _finalize_run(state: RunState) -> None:
                 state.summary.get("added", 0),
                 state.summary.get("skipped", 0),
                 state.summary.get("errors", 0) + (1 if state.error else 0),
+                json.dumps(log_blob),
             )
     await _broadcast(state, json.dumps({"event": "closed"}))
 
