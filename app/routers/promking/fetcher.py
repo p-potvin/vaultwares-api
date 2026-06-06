@@ -186,7 +186,13 @@ async def _drive_subprocess(state: RunState) -> None:
     # shim); asyncio's create_subprocess_exec calls CreateProcess directly and
     # can't execute .CMD without going through cmd.exe — so we wrap. On Linux
     # the binary is plain `pnpm` and direct exec works.
+    #
+    # `limit` bumps asyncio StreamReader buffer from the 64 KiB default. The
+    # CLI's `videos` event is a single JSON line carrying every fetched item;
+    # a 3-page fullvideos run is ~60-100 KB and hits LimitOverrunError without
+    # this. 10 MiB is generous (a single page is ~30 videos × ~500 bytes).
     is_windows = platform.system() == "Windows"
+    PIPE_LIMIT = 10 * 1024 * 1024  # 10 MiB
     if is_windows:
         # Use shell=True style via create_subprocess_shell so cmd.exe resolves
         # pnpm.CMD against PATHEXT. Quote any path that might contain spaces.
@@ -197,6 +203,7 @@ async def _drive_subprocess(state: RunState) -> None:
                 cwd=str(cwd),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=PIPE_LIMIT,
             )
         except (FileNotFoundError, OSError) as e:
             state.error = f"failed to spawn pnpm (Windows shell): {e}"
@@ -212,6 +219,7 @@ async def _drive_subprocess(state: RunState) -> None:
                 cwd=str(cwd),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=PIPE_LIMIT,
             )
         except FileNotFoundError as e:
             state.error = f"failed to spawn pnpm: {e}"
@@ -243,7 +251,30 @@ async def _drive_subprocess(state: RunState) -> None:
     stderr_task = asyncio.create_task(_drain_stderr())
 
     while True:
-        line = await proc.stdout.readline()
+        try:
+            line = await proc.stdout.readline()
+        except asyncio.LimitOverrunError as e:
+            # A single CLI line exceeded the (already-raised) buffer cap.
+            # Drain the rest of the line via read(e.consumed) so we don't
+            # spin forever and surface the failure to the operator.
+            state.error = f"CLI stdout line exceeded buffer: {e}"
+            await _broadcast(
+                state,
+                json.dumps({"event": "error", "message": state.error}),
+            )
+            try:
+                await proc.stdout.read(e.consumed)
+            except Exception:
+                pass
+            break
+        except ValueError as e:
+            # Older asyncio raises ValueError for the same condition.
+            state.error = f"CLI stdout read failed: {e}"
+            await _broadcast(
+                state,
+                json.dumps({"event": "error", "message": state.error}),
+            )
+            break
         if not line:
             break
         text = line.decode("utf-8", errors="replace").rstrip("\n")
@@ -264,7 +295,12 @@ async def _drive_subprocess(state: RunState) -> None:
                 "errors": int(summary.get("errors", 0)),
             }
         elif event == "videos":
-            videos_payload = list(payload.get("videos") or [])
+            # CLI now emits one `videos` line per item (each with a single-
+            # element array) to stay under the asyncio StreamReader buffer.
+            # Accumulate; the persistence loop handles the union at the end.
+            chunk = payload.get("videos")
+            if isinstance(chunk, list):
+                videos_payload.extend(chunk)
 
     return_code = await proc.wait()
     try:
@@ -279,8 +315,22 @@ async def _drive_subprocess(state: RunState) -> None:
     state.stderr_log = "\n".join(stderr_buf[-40:]) if stderr_buf else None
 
     # Persist whatever the CLI returned. The CLI itself never writes.
-    added = await _persist_videos(state.site, videos_payload)
+    try:
+        added = await _persist_videos(state.site, videos_payload)
+    except Exception as e:
+        state.error = f"persist failed: {e}"
+        added = 0
     state.summary["added"] = added
+    # Tell the console the real post-persistence count — the CLI's `done`
+    # event always emits added=0 by design (CLI never writes).
+    await _broadcast(
+        state,
+        json.dumps({
+            "event": "persisted",
+            "summary": dict(state.summary),
+            "candidates": len(videos_payload),
+        }),
+    )
     await _finalize_run(state)
 
 
@@ -325,16 +375,35 @@ async def _finalize_run(state: RunState) -> None:
 # ─── persistence ──────────────────────────────────────────────────────────
 
 async def _persist_videos(site: str, videos: list[dict]) -> int:
+    """
+    Insert videos one at a time WITHOUT an outer transaction.
+
+    Earlier this used `async with conn.transaction():` to wrap the whole
+    batch, but Postgres aborts the whole transaction on any single failed
+    statement (e.g. a NOT NULL violation on embed_url). asyncpg then makes
+    every subsequent statement raise "current transaction is aborted",
+    the inner try/except swallows them, and at the end the .transaction()
+    context manager re-raises at commit — so the run finalisation never
+    ran. Per-row autocommit is fine here: each INSERT is independently
+    idempotent via ON CONFLICT (site, source_url) DO NOTHING.
+    """
     if not videos:
         return 0
     pool = await get_pool()
     added = 0
-    async with pool.acquire() as conn, conn.transaction():
+    skipped_bad = 0
+    async with pool.acquire() as conn:
         for v in videos:
+            slug = _slugify(v.get("title") or "")
+            if not slug:
+                skipped_bad += 1
+                continue
+            # Pre-validate the NOT NULL columns before hitting Postgres.
+            required = ("sourceUrl", "embedUrl", "title")
+            if any(not v.get(k) for k in required):
+                skipped_bad += 1
+                continue
             try:
-                slug = _slugify(v.get("title") or "")
-                if not slug:
-                    continue
                 row = await conn.fetchrow(
                     """
                     INSERT INTO videos (
@@ -356,12 +425,26 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                     v.get("previewUrl"),
                     v.get("durationSeconds"),
                 )
-                if row is not None:
-                    added += 1
-                    await _attach_terms(conn, int(row["id"]), v)
             except Exception:
-                # Don't let one bad row poison the batch.
+                # Bad row — log it via skipped_bad, keep the run alive.
+                skipped_bad += 1
                 continue
+            if row is None:
+                # Duplicate (ON CONFLICT DO NOTHING). Not an error.
+                continue
+            added += 1
+            try:
+                await _attach_terms(conn, int(row["id"]), v)
+            except Exception:
+                # Term attachment failure shouldn't roll back the video.
+                continue
+    if skipped_bad:
+        # Surface to logs so the operator can audit dropped rows.
+        import logging
+        logging.getLogger(__name__).info(
+            "promking: persisted %d videos, skipped %d (validation/dup/error)",
+            added, skipped_bad,
+        )
     return added
 
 
