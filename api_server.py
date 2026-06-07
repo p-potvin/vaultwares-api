@@ -257,6 +257,32 @@ except Exception as _promking_err:  # pragma: no cover — keeps startup resilie
         "Prom-King router not loaded: %s", _promking_err
     )
 
+# ─── V.A.U.L.T Monitor router ─────────────────────────────────────────────
+# Mounts /monitor/* normalized read-only telemetry endpoints.
+try:
+    from app.routers.monitor import router as monitor_router
+    app.include_router(monitor_router)
+    _MONITOR_LOADED = True
+except Exception as _monitor_err:  # pragma: no cover — keeps startup resilient
+    _MONITOR_LOADED = False
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "Monitor router not loaded: %s", _monitor_err
+    )
+
+# ─── Telemetry router ─────────────────────────────────────────────────────
+# Mounts /api/telemetry/* DB-backed ingest/read endpoints.
+try:
+    from app.routers.telemetry import router as telemetry_router
+    app.include_router(telemetry_router)
+    _TELEMETRY_LOADED = True
+except Exception as _telemetry_err:  # pragma: no cover — keeps startup resilient
+    _TELEMETRY_LOADED = False
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "Telemetry router not loaded: %s", _telemetry_err
+    )
+
 # --- CORS ---
 CORS_ORIGINS = [
     origin.strip()
@@ -1567,6 +1593,13 @@ async def shutdown_event():
             await _pk_close()
         except Exception as _pk_err:
             logger.warning("Prom-King shutdown warning: %s", _pk_err)
+
+    if _TELEMETRY_LOADED:
+        try:
+            from app.routers.telemetry.db import close_pool as _telemetry_close
+            await _telemetry_close()
+        except Exception as _telemetry_err:
+            logger.warning("Telemetry shutdown warning: %s", _telemetry_err)
 
 
 # --- Endpoints ---

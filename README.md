@@ -19,7 +19,32 @@ All pipelines are designed local-first but support optional remote model endpoin
 - Real-time encrypted filters
 - Dependency graph execution
 - Agent-aware pipeline monitoring
+- V.A.U.L.T Monitor telemetry ingest and normalized read APIs
 - Integration hooks for `vaultwares-adk`
+
+## Monitor Telemetry API
+
+`vaultwares-pipelines` owns the API and storage path for V.A.U.L.T Monitor and
+the agent-ledger input tracker:
+
+- `POST /api/telemetry/input/batches`
+- `GET /api/telemetry/input/summary`
+- `GET /api/telemetry/input/events/search`
+- `GET /monitor/input-tracker`
+
+Set these environment variables for local input telemetry:
+
+```bash
+VW_TELEMETRY_DATABASE_URL=postgres://postgres:postgres@localhost:5432/vaultwares
+VW_TELEMETRY_API_KEY=
+VW_TELEMETRY_REQUIRE_KEY=1
+VW_TELEMETRY_BATCH_MAX_EVENTS=500
+VW_TELEMETRY_AUTO_SCHEMA=1
+```
+
+Input tracker clients batch privacy-safe aggregate metrics to this API. They do
+not connect to Postgres directly. Replay is idempotent through `batch_id` and
+`event_id`.
 
 ## Quick Start
 
@@ -44,7 +69,8 @@ Fully synchronized with the VaultWares Agent Knowledge Dissemination System.
 ## Privacy & Security
 - Local-first execution by default
 - Encrypted intermediate artifacts
-- No telemetry
+- No raw typed text, clipboard contents, secrets, or unhashed window titles in
+  input telemetry
 - Full threat model in central [VaultWares docs](https://docs.vaultwares.ca)
 
 ## Contributing
