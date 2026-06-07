@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>VaultWares — Inputs</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<style>
+  html,body{margin:0;background:var(--vault-paper);font-family:var(--vault-font-sans);color:var(--vault-text-primary)}
+  .wrap{padding:24px;display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  label{display:flex;flex-direction:column;gap:6px;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--vault-muted);cursor:default}
+  input,select{font-family:inherit;font-size:14px;padding:10px 12px;background:var(--vault-paper-bright);border:1px solid rgba(0,43,54,.18);border-radius:8px;color:var(--vault-ink);outline:none;transition:border-color 180ms ease, box-shadow 180ms ease, background 180ms ease}
+  input{cursor:text}
+  input:hover,select:hover{border-color:rgba(0,43,54,.32);background:#FFFDF4}
+  select{cursor:pointer;appearance:none;-webkit-appearance:none;-moz-appearance:none;padding-right:38px;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234A5459' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'/></svg>");background-repeat:no-repeat;background-position:right 14px center;background-size:14px 14px}
+  .focused{border-color:#21B8CC;background:#FFFDF4;box-shadow:0 0 0 4px rgba(33,184,204,.22), 0 0 0 1px #21B8CC inset, 0 6px 18px -8px rgba(33,184,204,.55)}
+  .err{border-color:#A63D40;background:rgba(166,61,64,.04);box-shadow:0 0 0 4px rgba(166,61,64,.20), 0 0 0 1px #A63D40 inset}
+  .err-msg{color:#6b1e21;font-size:12px;text-transform:none;letter-spacing:0}
+  .check{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--vault-ink);text-transform:none;letter-spacing:0;cursor:pointer;user-select:none}
+  .check:hover .box{border-color:rgba(0,43,54,.5)}
+  .check:hover .toggle.off{background:rgba(0,43,54,.32)}
+  .box{width:18px;height:18px;border:1.5px solid rgba(0,43,54,.32);border-radius:4px;display:inline-flex;align-items:center;justify-content:center;background:#FDFCF7}
+  .box.on{background:#CC9B21;border-color:#CC9B21;color:#002B36}
+  svg{width:12px;height:12px}
+  .toggle{width:34px;height:20px;border-radius:999px;background:#CC9B21;position:relative;display:inline-block}
+  .toggle::after{content:"";position:absolute;top:2px;right:2px;width:16px;height:16px;border-radius:999px;background:#FDFCF7}
+  .toggle.off{background:rgba(0,43,54,.20)}
+  .toggle.off::after{left:2px;right:auto}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <label>License key<input value="VWCR-9F4A-2C71-88E3-AB1D" /></label>
+  <label>Master password<input class="focused" type="password" value="••••••••••••" /></label>
+  <label>Algorithm
+    <select><option>AES-256-XTS</option><option>ChaCha20-Poly1305</option></select>
+  </label>
+  <label>Device path<input class="err" value="/dev/sd?" /><span class="err-msg">No device matched. Try /dev/sdc.</span></label>
+  <label class="check"><span class="box on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span>Auto-lock after 5 minutes of inactivity</label>
+  <label class="check"><span class="toggle"></span>Enroll fingerprint at boot</label>
+</div>
+</body>
+</html>

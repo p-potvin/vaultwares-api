@@ -1,0 +1,102 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+/* Core VaultWares Revisited Variable Map */
+:root {
+  --font-sans: "Inter", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Warm Mode / Document State */
+  --vault-warm-bg: #F5F1E8;
+  --vault-warm-raised: #FCFAF5;
+  --vault-warm-muted: #ECE5D8;
+  --vault-warm-border-subtle: rgba(22, 19, 32, 0.08);
+
+  /* Console Mode / Terminal State */
+  --vault-console-bg: #0b0813;
+  --vault-console-surface: #13101c;
+  --vault-console-raised: #2A2340;
+  --vault-console-elevated: #453763;
+  --vault-console-active: #614d8a;
+  --vault-console-text: #a394cc;
+  --vault-console-border-subtle: rgba(255, 255, 255, 0.06);
+  --vault-console-text-secondary: rgba(237, 230, 255, 0.72);
+      
+
+  /* Accents */
+  --vault-console-gold: #D6A441;
+  --vault-console-violet: #B07CFF;
+
+  /* Signals */
+  --vault-signal-online: #6BE675;
+  --vault-signal-relay: #55D6FF;
+  --vault-signal-sync: #B07CFF;
+  --vault-signal-warning: #F0B94B;
+  --vault-signal-alert: #FF6B7A;
+}
+
+/* Core Shell Primitives */
+.vw-console-shell {
+  background:
+    radial-gradient(circle at 15% 0%, rgba(176, 124, 255, 0.18), transparent 32rem),
+    linear-gradient(180deg, var(--vault-console-surface), var(--vault-console-bg));
+  color: #fff;
+}
+
+.vw-warm-shell {
+  background:
+    radial-gradient(circle at 16% 0%, rgba(214, 164, 65, 0.18), transparent 28rem),
+    var(--vault-warm-bg);
+  color: #161320;
+}
+
+/* Card Primitives */
+.vw-card {
+  border: 1px solid var(--vault-console-border-subtle);
+  background: color-mix(in srgb, var(--vault-console-raised) 86%, transparent);
+  border-radius: 28px;
+}
+
+.vw-warm-card {
+  border: 1px solid var(--vault-warm-border-subtle);
+  background: var(--vault-warm-raised);
+  border-radius: 28px;
+}
+
+/* Animation Primitives */
+.vw-led {
+  animation: ledPulse 4s ease-in-out infinite;
+}
+
+@keyframes ledPulse {
+  0% {
+    opacity: 0.85;
+    transform: scale(0.98);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0.85;
+    transform: scale(0.98);
+  }
+}
+
+/* Scrollbar Tweaks for Webkit */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #000;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--vault-console-raised);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--vault-console-gold);
+}

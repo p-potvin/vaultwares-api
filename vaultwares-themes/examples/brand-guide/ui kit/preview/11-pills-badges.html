@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>VaultWares — Status pills & badges</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<style>
+  html,body{margin:0;background:var(--vault-paper);font-family:var(--vault-font-sans);color:var(--vault-text-primary)}
+  .wrap{padding:24px;display:flex;flex-direction:column;gap:14px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:500}
+  .dot{width:6px;height:6px;border-radius:999px}
+  .badge{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:500;font-family:var(--vault-font-mono);text-transform:uppercase;letter-spacing:.04em}
+  .label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--vault-muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="label">Status pills</div>
+  <div class="row">
+    <span class="pill" style="background:rgba(78,204,33,.13);color:#1f6b0e"><span class="dot" style="background:#4ECC21"></span>Vault secured</span>
+    <span class="pill" style="background:rgba(33,184,204,.13);color:#0d6473"><span class="dot" style="background:#21B8CC"></span>Mounting</span>
+    <span class="pill" style="background:rgba(204,155,33,.14);color:#7a5e0c"><span class="dot" style="background:#CC9B21"></span>Update available</span>
+    <span class="pill" style="background:rgba(166,61,64,.13);color:#6b1e21"><span class="dot" style="background:#A63D40"></span>Locked</span>
+    <span class="pill" style="background:rgba(0,43,54,.06);color:var(--vault-slate)"><span class="dot" style="background:var(--vault-muted)"></span>Idle</span>
+  </div>
+  <div class="label">Compliance badges</div>
+  <div class="row">
+    <span class="badge" style="background:#0A2540;color:#E5C06A">FIPS 140-3 · L3</span>
+    <span class="badge" style="background:#FDFCF7;color:#002B36;border:1px solid rgba(0,43,54,.18)">CC EAL4+</span>
+    <span class="badge" style="background:#FDFCF7;color:#002B36;border:1px solid rgba(0,43,54,.18)">GDPR</span>
+    <span class="badge" style="background:#FDFCF7;color:#002B36;border:1px solid rgba(0,43,54,.18)">HIPAA</span>
+    <span class="badge" style="background:#FDFCF7;color:#002B36;border:1px solid rgba(0,43,54,.18)">PCI DSS</span>
+  </div>
+  <div class="label">Edition tags</div>
+  <div class="row">
+    <span class="badge" style="background:rgba(204,155,33,.14);color:#7a5e0c">Standard</span>
+    <span class="badge" style="background:#CC9B21;color:#002B36">Professional</span>
+    <span class="badge" style="background:#002B36;color:#E5C06A">Enterprise</span>
+  </div>
+</div>
+</body>
+</html>
