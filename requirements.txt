@@ -1,5 +1,5 @@
 # ============================================================
-# vaultwares-pipelines – core runtime dependencies
+# vaultwares-api - core runtime dependencies
 # ============================================================
 
 # ---- multi-modal model (SmolVLM2) ----
@@ -35,7 +35,7 @@ python-jose[cryptography]
 bcrypt==4.0.1
 passlib[bcrypt]
 
-# ---- Prom-King router (vaultwares-pipelines /api/promking/*) ----
+# ---- Prom-King router (vaultwares-api /api/promking/*) ----
 # Talks to the `promking` Postgres DB via asyncpg (already pinned above for
 # tortoise-orm). APScheduler runs the nightly fetch cron in-process —
 # replaces the ADR-001 node-cron plan (router lives on the Python side).

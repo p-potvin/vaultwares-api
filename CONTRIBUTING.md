@@ -1,4 +1,4 @@
-# Contributing to VaultWares Pipelines
+# Contributing to VaultWares API
 
 Thank you for helping strengthen the core AI engine of the VaultWares ecosystem.
 

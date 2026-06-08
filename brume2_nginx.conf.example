@@ -31,7 +31,7 @@ map $http_origin $vw_origin_ok {
     default 0;
     "https://vault-flows.vercel.app" 1;
     # "https://vaultwares-dispatch-frontend.vercel.app" 1;
-    # "https://vaultwares-pipelines-frontend.vercel.app" 1;
+    # "https://vaultwares-api-frontend.vercel.app" 1;
     # "https://cultural-rhythm.vercel.app" 1;
     # "https://vaultwares-glass-preview.vercel.app" 1;
 }

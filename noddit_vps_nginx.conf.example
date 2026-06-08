@@ -3,7 +3,7 @@
 # Intent:
 # - VPS terminates TLS for `noddit.org` + `www.noddit.org`
 # - VPS serves the Vault Flows SPA from the PC over the tailnet
-# - VPS proxies browser API calls from `/api/*` to the PC-hosted pipelines API
+# - VPS proxies browser API calls from `/api/*` to the PC-hosted VaultWares API
 # - Browser never talks to tailnet IPs directly (avoids mixed-content + privacy leaks)
 #
 # Requirements:
@@ -73,4 +73,3 @@ server {
         proxy_read_timeout 120s;
     }
 }
-

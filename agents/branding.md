@@ -1,4 +1,4 @@
-# Agent Branding Reference (local mirror for vaultwares-pipelines)
+# Agent Branding Reference (local mirror for vaultwares-api)
 
 This file is a local copy for agents that cannot reach the internet.
 

@@ -111,6 +111,10 @@ GATEWAY_REQUIRED_PUBLIC = os.environ.get("GATEWAY_REQUIRED_PUBLIC", "1") == "1"
 GATEWAY_SHARED_SECRET = os.environ.get("GATEWAY_SHARED_SECRET", "")
 GATEWAY_HEADER_NAME = os.environ.get("GATEWAY_HEADER_NAME", "x-vw-gateway-secret").lower()
 
+VW_CORRELATION_APP_CODE = os.environ.get("VW_CORRELATION_APP_CODE", "API")
+VW_REQUEST_LOG_MODE = os.environ.get("VW_REQUEST_LOG_MODE", "important").strip().lower()
+VW_REQUEST_LOG_SLOW_MS = _env_int_with_floor("VW_REQUEST_LOG_SLOW_MS", 2000, 1)
+
 # ---------------------------------------------------------------------------
 # Job queue (in-process, durable state on disk)
 # ---------------------------------------------------------------------------
@@ -252,7 +256,6 @@ import requests
 import queue
 import threading
 import sys
-import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlparse, urljoin
 
@@ -303,6 +306,11 @@ class KiwiLogHandler(logging.Handler):
                     "path": getattr(record, "path", None),
                     "status_code": getattr(record, "status_code", None),
                     "duration_ms": getattr(record, "duration_ms", None),
+                    "source_app": getattr(record, "source_app", None),
+                    "client_ip": getattr(record, "client_ip", None),
+                    "peer_ip": getattr(record, "peer_ip", None),
+                    "origin": getattr(record, "origin", None),
+                    "user_agent": getattr(record, "user_agent", None),
                 })
                 
                 if len(self.batch) >= self.max_batch_size:
@@ -328,17 +336,7 @@ class KiwiLogHandler(logging.Handler):
             try:
                 with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                     for item in payload:
-                        corr = item.get("correlationId") or "-"
-                        method = item.get("method") or "-"
-                        path = item.get("path") or "-"
-                        status = item.get("status_code") or "-"
-                        duration = item.get("duration_ms") or "-"
-                        message = item.get("message") or ""
-                        line = (
-                            f"<14>1 {item['timestamp']} vaultwares-api vaultwares-api - - "
-                            f"[vaultwares correlationId=\"{corr}\" method=\"{method}\" path=\"{path}\" status=\"{status}\" durationMs=\"{duration}\"] "
-                            f"{message}"
-                        )
+                        line = self._format_syslog_line(item)
                         sock.sendto(line.encode("utf-8", errors="replace"), (self.syslog_host, self.syslog_port))
             except Exception:
                 pass
@@ -357,6 +355,29 @@ class KiwiLogHandler(logging.Handler):
                 if self.batch and (time.time() - self.first_log_time >= self.flush_interval):
                     self._flush_now()
 
+    @staticmethod
+    def _syslog_value(value) -> str:
+        text = str(value if value not in (None, "") else "-")
+        return text.replace("\\", "\\\\").replace('"', '\\"').replace("]", "\\]").replace("\r", " ").replace("\n", " ")
+
+    def _format_syslog_line(self, item: dict) -> str:
+        corr = self._syslog_value(item.get("correlationId"))
+        method = self._syslog_value(item.get("method"))
+        path = self._syslog_value(item.get("path"))
+        status = self._syslog_value(item.get("status_code"))
+        duration = self._syslog_value(item.get("duration_ms"))
+        source = self._syslog_value(item.get("source_app"))
+        client_ip = self._syslog_value(item.get("client_ip"))
+        peer_ip = self._syslog_value(item.get("peer_ip"))
+        origin = self._syslog_value(item.get("origin"))
+        message = str(item.get("message") or "").replace("\r", " ").replace("\n", " ")
+        return (
+            f"<14>1 {item['timestamp']} vaultwares-api vaultwares-api - - "
+            f"[vaultwares correlationId=\"{corr}\" source=\"{source}\" method=\"{method}\" path=\"{path}\" "
+            f"status=\"{status}\" durationMs=\"{duration}\" clientIp=\"{client_ip}\" peerIp=\"{peer_ip}\" origin=\"{origin}\"] "
+            f"{message}"
+        )
+
 # Instantiate and register handler
 kiwi_handler = KiwiLogHandler()
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -371,16 +392,30 @@ app = FastAPI(
 )
 
 # --- Correlation ID Middleware ---
+def _normalize_vaultwares_app_code(value: str | None) -> str:
+    code = re.sub(r"[^A-Za-z0-9]", "", value or "").upper()
+    if len(code) < 3:
+        return "API"
+    if len(code) > 4:
+        return code[:4]
+    return code
+
+
+def _new_vaultwares_correlation_id() -> str:
+    app_code = _normalize_vaultwares_app_code(VW_CORRELATION_APP_CODE)
+    return f"vw_{app_code}_c{secrets.token_hex(4)[:7]}"
+
+
 def _resolve_correlation_id(request: Request) -> str:
-    corr_id = request.headers.get("x-correlation-id")
+    corr_id = request.query_params.get("correlationId")
     if not corr_id:
-        corr_id = request.headers.get("x-request-id")
-    if not corr_id:
-        corr_id = request.query_params.get("correlationId")
+        corr_id = request.query_params.get("cID") or request.query_params.get("cid")
     if not corr_id:
         corr_id = getattr(request.state, "correlation_id", None)
     if not corr_id:
-        corr_id = f"vw_{uuid.uuid4().hex[:12]}"
+        corr_id = request.headers.get("x-correlation-id") or request.headers.get("x-request-id")
+    if not corr_id:
+        corr_id = _new_vaultwares_correlation_id()
     request.state.correlation_id = corr_id
     return corr_id
 
@@ -679,12 +714,52 @@ async def require_auth(
 _rate_state = defaultdict(lambda: deque())
 RATE_LIMIT_MAX_STATE_SIZE = 10000
 
+def _request_source_app(request: Request) -> str:
+    for key in ("sourceApp", "source", "app"):
+        value = request.query_params.get(key)
+        if value:
+            return value[:80]
+    for key in ("x-vw-source", "x-source-app", "x-client-name"):
+        value = request.headers.get(key)
+        if value:
+            return value[:80]
+    origin = request.headers.get("origin") or request.headers.get("referer")
+    if origin:
+        try:
+            parsed = urlparse(origin)
+            if parsed.hostname:
+                return parsed.hostname[:80]
+        except Exception:
+            return origin[:80]
+    return "unknown"
+
+
+def _request_log_mode_all() -> bool:
+    return VW_REQUEST_LOG_MODE in {"all", "debug", "verbose"}
+
+
+def _request_log_enabled() -> bool:
+    return VW_REQUEST_LOG_MODE not in {"0", "false", "off", "none"}
+
+
+def _should_log_request(status_code: int, duration_ms: float) -> bool:
+    if not _request_log_enabled():
+        return False
+    if _request_log_mode_all():
+        return True
+    return status_code >= 400 or duration_ms >= VW_REQUEST_LOG_SLOW_MS
+
 @app.middleware("http")
 async def gate_requests(request: Request, call_next):
     correlation_id = _resolve_correlation_id(request)
     method = request.method
     path = request.url.path
     started = time.perf_counter()
+    peer_ip = request.client.host if request.client else None
+    origin = request.headers.get("origin", "")
+    user_agent = request.headers.get("user-agent", "")
+    source_app = _request_source_app(request)
+    client_ip = ""
     try:
         if len(_rate_state) > RATE_LIMIT_MAX_STATE_SIZE:
             # Prevent clearing the whole dictionary to avoid rate limit bypass
@@ -694,16 +769,21 @@ async def gate_requests(request: Request, call_next):
 
         client_ip = _get_client_ip(request) or ""
         is_trusted_ip = _is_trusted_client_ip(client_ip)
-        logger.info(
-            "request.start",
-            extra={
-                "correlation_id": correlation_id,
-                "method": method,
-                "path": path,
-                "client_ip": client_ip,
-                "trusted_client": is_trusted_ip,
-            },
-        )
+        if _request_log_mode_all():
+            logger.info(
+                "request.start",
+                extra={
+                    "correlation_id": correlation_id,
+                    "method": method,
+                    "path": path,
+                    "client_ip": client_ip,
+                    "peer_ip": peer_ip,
+                    "origin": origin,
+                    "user_agent": user_agent,
+                    "source_app": source_app,
+                    "trusted_client": is_trusted_ip,
+                },
+            )
 
         if MAINTENANCE_MODE and not is_trusted_ip:
             raise HTTPException(status_code=503, detail="Temporarily unavailable")
@@ -712,7 +792,6 @@ async def gate_requests(request: Request, call_next):
         if REQUIRE_HTTPS and scheme != "https" and not (ALLOW_HTTP_TRUSTED and is_trusted_ip):
             raise HTTPException(status_code=426, detail="HTTPS required")
 
-        origin = request.headers.get("origin", "")
         if not is_trusted_ip:
             if GATEWAY_REQUIRED_PUBLIC:
                 if not GATEWAY_SHARED_SECRET:
@@ -746,18 +825,23 @@ async def gate_requests(request: Request, call_next):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["X-Correlation-Id"] = correlation_id
-        logger.info(
-            "request.complete",
-            extra={
-                "correlation_id": correlation_id,
-                "method": method,
-                "path": path,
-                "status_code": response.status_code,
-                "duration_ms": duration_ms,
-                "client_ip": client_ip,
-                "trusted_client": is_trusted_ip,
-            },
-        )
+        if _should_log_request(response.status_code, duration_ms):
+            logger.info(
+                "request.complete",
+                extra={
+                    "correlation_id": correlation_id,
+                    "method": method,
+                    "path": path,
+                    "status_code": response.status_code,
+                    "duration_ms": duration_ms,
+                    "client_ip": client_ip,
+                    "peer_ip": peer_ip,
+                    "origin": origin,
+                    "user_agent": user_agent,
+                    "source_app": source_app,
+                    "trusted_client": is_trusted_ip,
+                },
+            )
 
         return response
     except HTTPException as exc:
@@ -770,6 +854,11 @@ async def gate_requests(request: Request, call_next):
                 "path": path,
                 "status_code": exc.status_code,
                 "duration_ms": duration_ms,
+                "client_ip": client_ip,
+                "peer_ip": peer_ip,
+                "origin": origin,
+                "user_agent": user_agent,
+                "source_app": source_app,
                 "reason": exc.detail,
             },
         )
@@ -777,7 +866,6 @@ async def gate_requests(request: Request, call_next):
         response.headers["X-Correlation-Id"] = correlation_id
         return response
     except Exception:
-        peer_ip = request.client.host if request.client else None
         try:
             client_ip = _get_client_ip(request)
         except Exception:
@@ -793,6 +881,9 @@ async def gate_requests(request: Request, call_next):
                 "duration_ms": duration_ms,
                 "peer_ip": peer_ip,
                 "client_ip": client_ip,
+                "origin": origin,
+                "user_agent": user_agent,
+                "source_app": source_app,
             },
         )
         response = JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
@@ -853,11 +944,13 @@ class WorkflowFavoriteRequest(BaseModel):
 class WorkflowRunRequest(BaseModel):
     id: str
     mode: str  # 'local' or 'nim'
+    callbackUrl: Optional[str] = None
 
 class JobSubmitRequest(BaseModel):
     kind: str = Field(default="workflow_run")
     id: str
     mode: str = Field(default="local")
+    callbackUrl: Optional[str] = None
 
 class JobSummary(BaseModel):
     id: str
@@ -1559,6 +1652,87 @@ async def _execute_workflow_run(
     return await _execute_comfyui_graph(rendered, progress_cb=progress_cb, cancel_event=cancel_event)
 
 
+def _workflow_job_lock(app: FastAPI) -> asyncio.Lock:
+    lock = getattr(app.state, "workflow_job_lock", None)
+    if lock is None:
+        lock = asyncio.Lock()
+        app.state.workflow_job_lock = lock
+    return lock
+
+
+async def _execute_workflow_run_serialized(
+    app: FastAPI,
+    workflow_id: str,
+    mode: str,
+    inputs: dict,
+    progress_cb=None,
+    cancel_event: asyncio.Event | None = None,
+) -> dict:
+    async with _workflow_job_lock(app):
+        return await _execute_workflow_run(
+            workflow_id,
+            mode,
+            inputs,
+            progress_cb=progress_cb,
+            cancel_event=cancel_event,
+        )
+
+
+def _callback_url_allowed(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return False
+    if os.environ.get("JOB_CALLBACK_ALLOW_EXTERNAL", "0") == "1":
+        return True
+    host = parsed.hostname.lower()
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or any(ip in network for network in _tailscale_networks)
+
+
+async def _notify_job_callback(job: dict) -> None:
+    payload = job.get("payload") or {}
+    callback_url = payload.get("callbackUrl") or payload.get("callback_url")
+    if not callback_url:
+        return
+    callback_url = str(callback_url)
+    if not _callback_url_allowed(callback_url):
+        logger.warning(
+            "job.callback_blocked",
+            extra={
+                "correlation_id": payload.get("correlationId"),
+                "source_app": "job_queue",
+                "path": callback_url,
+            },
+        )
+        return
+    body = {
+        "jobId": job.get("id"),
+        "kind": job.get("kind"),
+        "status": job.get("status"),
+        "result": job.get("result"),
+        "error": job.get("error"),
+        "correlationId": payload.get("correlationId"),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(callback_url, json=body)
+    except Exception as exc:
+        logger.warning(
+            "job.callback_failed",
+            extra={
+                "correlation_id": payload.get("correlationId"),
+                "source_app": "job_queue",
+                "path": callback_url,
+                "reason": str(exc),
+            },
+        )
+
+
 async def _job_worker(app: FastAPI, worker_id: int) -> None:
     queue: asyncio.Queue = app.state.job_queue
     while True:
@@ -1675,8 +1849,8 @@ async def _job_worker(app: FastAPI, worker_id: int) -> None:
 
                     watch_task = asyncio.create_task(watch_cancel())
                     try:
-                        result = await _execute_workflow_run(
-                            workflow_id, mode, inputs,
+                        result = await _execute_workflow_run_serialized(
+                            app, workflow_id, mode, inputs,
                             progress_cb=progress_cb,
                             cancel_event=cancel_event,
                         )
@@ -1696,6 +1870,7 @@ async def _job_worker(app: FastAPI, worker_id: int) -> None:
             if job.get("status") == "canceled":
                 job["updated_at"] = _job_now()
                 _write_job(job)
+                await _notify_job_callback(job)
                 continue
 
             job["status"] = "failed" if error else "succeeded"
@@ -1703,6 +1878,7 @@ async def _job_worker(app: FastAPI, worker_id: int) -> None:
             job["result"] = result
             job["error"] = error
             _write_job(job)
+            await _notify_job_callback(job)
         finally:
             queue.task_done()
 
@@ -1756,6 +1932,8 @@ async def startup_event():
             logger.warning("Prom-King APScheduler not started: %s", _pk_err)
 
     _ensure_jobs_dir()
+    if not hasattr(app.state, "workflow_job_lock"):
+        app.state.workflow_job_lock = asyncio.Lock()
     if not hasattr(app.state, "job_queue"):
         app.state.job_queue = asyncio.Queue(maxsize=JOB_QUEUE_MAX_PENDING)
         app.state.job_workers = [
@@ -2197,9 +2375,13 @@ async def run_workflow(req: WorkflowRunRequest, request: Request, principal=Depe
     if not _is_trusted_client_ip(client_ip):
         _enforce_job_submit_rate_limit(client_ip)
 
+    job_payload = {"id": req.id, "mode": req.mode, "correlationId": getattr(request.state, "correlation_id", None)}
+    if req.callbackUrl:
+        job_payload["callbackUrl"] = req.callbackUrl
+
     job = _new_job(
         kind="workflow_run",
-        payload={"id": req.id, "mode": req.mode},
+        payload=job_payload,
         requested_by=_job_requested_by(principal),
     )
     _write_job(job)
@@ -2896,9 +3078,18 @@ async def _handle_comfyui_workflow(node: FlowNodeIn, upstream_text: str) -> dict
             flow_inputs[k] = _render_template(v, upstream_text)
         else:
             flow_inputs[k] = v
+    job_payload = {
+        "id": workflow_id,
+        "mode": mode,
+        "inputs": flow_inputs,
+        "callbackUrl": node.params.get("callbackUrl") or node.params.get("callback_url"),
+        "correlationId": node.params.get("correlationId") or node.params.get("cID"),
+    }
+    job_payload = {key: value for key, value in job_payload.items() if value}
+
     job = _new_job(
         kind="workflow_run",
-        payload={"id": workflow_id, "mode": mode, "inputs": flow_inputs},
+        payload=job_payload,
         requested_by={"user": "vault-flows", "via": "/flows/run"},
     )
     _write_job(job)

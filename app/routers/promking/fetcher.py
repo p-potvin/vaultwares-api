@@ -157,7 +157,7 @@ def _shared_tube_path() -> Path:
     env = os.environ.get("PROMKING_SHARED_TUBE_PATH")
     if env:
         return Path(env)
-    # Default: sibling repo layout — vaultwares-pipelines/.. / Prom-King/shared-tube
+    # Default: sibling repo layout - vaultwares-api/.. / Prom-King/shared-tube
     return (
         Path(__file__).resolve().parents[3] / ".." / "Prom-King" / "shared-tube"
     ).resolve()

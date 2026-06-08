@@ -64,6 +64,52 @@ live dashboards read the Postgres-backed API. Historical event files are
 backfilled through `POST /api/ledger/agent/events/batches`; new events are
 posted one at a time by `agent-ledger/scripts/record-agent-change.ps1`.
 
+## Correlation IDs and Logging
+
+VaultWares apps must create or preserve a correlation ID when they initiate a
+request and pass it as the `correlationId` query parameter until that request
+finishes at the API boundary. Headers are accepted only as compatibility
+fallbacks.
+
+VaultWares-generated IDs use:
+
+```text
+vw_{JIRA_CODE}_c{7_hex_chars}
+```
+
+For this service, the default generated form is `vw_API_c123abc4`. Other
+brands can use their own prefix and Jira/product code, such as
+`pk_PKT_c123456h` for Prom King.
+
+Continuous connections such as streams and downloads may start a new child
+correlation ID for long-lived work, but ordinary request/response calls should
+keep the original ID from client creation through API completion.
+
+Request logging defaults to important events only: blocked requests, crashes,
+HTTP errors, and slow requests. Set these variables to tune volume:
+
+```bash
+VW_REQUEST_LOG_MODE=important  # important | all | off
+VW_REQUEST_LOG_SLOW_MS=2000
+VW_CORRELATION_APP_CODE=API
+```
+
+Kiwi/syslog records include `source`, `clientIp`, `peerIp`, and `origin` so
+logs can be traced past the VPS proxy address.
+
+## Workflow Job Queue
+
+Vault-flows ComfyUI workflow jobs are queued and executed one at a time by
+`vaultwares-api`, regardless of the client IP that submitted them. This keeps
+local GPU/ComfyUI work serialized so the desktop does not run concurrent heavy
+jobs.
+
+`/flows/run` waits for the queued ComfyUI job and returns the result to
+vault-flows. For services that enqueue work asynchronously, workflow jobs may
+include `callbackUrl`; the API sends one completion callback after the job
+finishes. Callback URLs are limited to loopback, private, or tailnet hosts by
+default.
+
 ## Quick Start
 
 ```bash

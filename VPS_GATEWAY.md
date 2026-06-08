@@ -1,6 +1,6 @@
 # VPS Gateway Plan (Tailscale -> Local API)
 
-Goal: keep `vaultwares-pipelines` running on your local PC, while exposing a single public entrypoint
+Goal: keep `vaultwares-api` running on your local PC, while exposing a single public entrypoint
 (`api.vaultwares.ca`) from a VPS that forwards traffic over your tailnet. Your PC never needs to be
 publicly reachable from the internet.
 
@@ -16,7 +16,7 @@ publicly reachable from the internet.
 For `noddit.org`, prefer a split reverse-proxy so the browser only ever talks to `https://noddit.org`:
 
 - `/` → Vault Flows SPA on the PC (tailnet `:3100`)
-- `/api/` → Pipelines API on the PC (tailnet `:9001`)
+- `/api/` -> VaultWares API on the PC (tailnet `:9001`)
 
 This avoids mixed-content warnings and avoids exposing tailnet IPs to the browser.
 

@@ -1,9 +1,9 @@
 {
-  "name": "vaultwares-pipelines",
+  "name": "vaultwares-api",
   "description": "VaultWares core AI/media orchestration engine for multimodal pipelines",
   "keywords": ["vaultwares", "ai-pipelines", "multimodal", "video-processing", "local-ai", "privacy-first"],
   "author": "VaultWares",
-  "homepage": "https://github.com/p-potvin/vaultwares-pipelines",
+  "homepage": "https://github.com/p-potvin/vaultwares-api",
   "private": true,
   "type": "module",
   "scripts": {
