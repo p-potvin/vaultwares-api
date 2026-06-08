@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from uuid import uuid4
 import hashlib
+import re
 import time
 from collections import defaultdict, deque
 import ipaddress
@@ -192,20 +193,23 @@ def _hash_api_key(raw_key: str) -> str:
         return ""
     if not API_KEY_PEPPER:
         raise HTTPException(status_code=500, detail="API key pepper is not configured")
-    hasher = hashlib.sha256()
-    hasher.update((API_KEY_PEPPER + raw_key).encode("utf-8"))
-    return hasher.hexdigest()
+    return pwd_context.hash(API_KEY_PEPPER + raw_key)
 
 def _verify_api_key(raw_key: str, hashed_key: str) -> bool:
     if not raw_key or not hashed_key:
         return False
     if not API_KEY_PEPPER:
         raise HTTPException(status_code=500, detail="API key pepper is not configured")
-    if hashed_key.startswith("$2"):
-        if raw_key.startswith("vwk_"):
+    try:
             return False
-        # Legacy bcrypt hash
-        return pwd_context.verify(API_KEY_PEPPER + raw_key, hashed_key)
+    except Exception:
+        # Backward compatibility for legacy unsalted SHA-256 hex hashes.
+        if re.fullmatch(r"[0-9a-f]{64}", hashed_key):
+            hasher = hashlib.sha256()
+            hasher.update((API_KEY_PEPPER + raw_key).encode("utf-8"))
+            expected = hasher.hexdigest()
+            return secrets.compare_digest(expected, hashed_key)
+        return False
     expected = _hash_api_key(raw_key)
     return secrets.compare_digest(expected, hashed_key)
 
@@ -297,8 +301,11 @@ async def require_auth(
         if key_row:
             if not _verify_api_key(api_key, key_row.key_hash):
                 key_row = None
-
-        if not key_row and not api_key.startswith("vwk_"):
+            candidate_keys = await ApiKey.filter(is_revoked=False).all()
+            for candidate in candidate_keys:
+                if _verify_api_key(api_key, candidate.key_hash):
+                    key_row = candidate
+                    break
             key_hash = _hash_api_key(api_key)
             key_row = await ApiKey.get_or_none(key_hash=key_hash)
 
