@@ -1,14 +1,14 @@
 <img src="https://raw.githubusercontent.com/p-potvin/vaultwares-docs/main/logo/vaultwares-logo.svg">
 
-# vaultwares-pipelines
+# vaultwares-api
 
-**Core AI/Media Orchestration Engine**  
+**Core VaultWares API and AI/Media Orchestration Engine**
 **Part of the VaultWares Ecosystem** • <a href="https://docs.vaultwares.ca">docs.vaultwares.ca</a> • <a href="https://vaultwares.ca">vaultwares.ca</a>
 
-**Orchestrates multimodal AI pipelines (video, image, audio, LoRAs, digital twins, I2V/T2V, real-time filters) with local-first privacy guarantees.**
+**Owns VaultWares auth, DB-backed telemetry, normalized monitor APIs, logging integration, and multimodal AI/media orchestration with local-first privacy guarantees.**
 
 ## Overview
-This repository powers the VaultWares AI backbone. It defines, runs, and monitors complex media transformation pipelines that feed into `vault-flows`, `vault-player`, `vaultwares-realtime`, and other components.
+This repository powers the VaultWares API, formerly `vaultwares-pipelines`. It defines the API layer used by VaultWares apps for auth, DB access, telemetry ingest, normalized monitor reads, logging, and complex media transformation pipelines.
 
 All pipelines are designed local-first but support optional remote model endpoints.
 
@@ -24,7 +24,7 @@ All pipelines are designed local-first but support optional remote model endpoin
 
 ## Monitor Telemetry API
 
-`vaultwares-pipelines` owns the API and storage path for V.A.U.L.T Monitor and
+`vaultwares-api` owns the API and storage path for V.A.U.L.T Monitor and
 the agent-ledger input tracker:
 
 - `POST /api/telemetry/input/batches`
@@ -42,6 +42,12 @@ VW_TELEMETRY_BATCH_MAX_EVENTS=500
 VW_TELEMETRY_AUTO_SCHEMA=1
 ```
 
+Apply the telemetry schema explicitly with:
+
+```bash
+python scripts/apply-telemetry-migrations.py
+```
+
 Input tracker clients batch privacy-safe aggregate metrics to this API. They do
 not connect to Postgres directly. Replay is idempotent through `batch_id` and
 `event_id`.
@@ -49,8 +55,8 @@ not connect to Postgres directly. Replay is idempotent through `batch_id` and
 ## Quick Start
 
 ```bash
-git clone https://github.com/p-potvin/vaultwares-pipelines.git
-cd vaultwares-pipelines
+git clone https://github.com/p-potvin/vaultwares-api.git
+cd vaultwares-api
 git submodule update --init --recursive
 pip install -r requirements.txt
 python run_pipeline.py --config examples/video_enhance.yaml

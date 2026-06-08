@@ -1,4 +1,4 @@
-"""Telemetry routers owned by vaultwares-pipelines."""
+"""Telemetry routers owned by vaultwares-api."""
 
 from .input import router
 

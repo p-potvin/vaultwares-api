@@ -231,7 +231,7 @@ async def get_input_tracker() -> Dict[str, Any]:
         return await get_input_summary(hours=24)
     except Exception:
         return {
-            "source": "vaultwares-pipelines",
+            "source": "vaultwares-api",
             "status": "unavailable",
             "generated_at": _utc_now(),
             "latest_received_at": None,
@@ -383,7 +383,7 @@ async def overview(kiwi_check: bool = Query(False)) -> Dict[str, Any]:
         "agents": agents,
         "logging": logging,
         "input_tracker": input_tracker,
-        "api_owner": "vaultwares-pipelines",
+        "api_owner": "vaultwares-api",
         "storage_note": (
             "health-ledger, agent-ledger, Kiwi summaries, and input tracker summaries need durable DB-backed ingestion "
             "behind the central API; JSON/file reads are transitional."

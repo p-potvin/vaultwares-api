@@ -16,6 +16,7 @@ frontend/test-results/
 frontend/test-coverage/
 frontend/playwright-report/data/
 *.log
+stacks.txt
 node_modules/
 .npm-cache/
 app/generated-prisma-client/
