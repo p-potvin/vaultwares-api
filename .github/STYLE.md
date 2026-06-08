@@ -12,7 +12,7 @@ They should look similar to the Solarized Light theme https://github.com/alterca
 Let go of the "cybersecurity hacker matrix" style, and opt for a more modern and sleek minimalist design. The default font should be Segoe UI Semilight unless the situation calls for a personalized font or it doesn't fit with the theme. The font-weight can vary depending on circumstances of course. Adapt the general style to this slim, elegant font. Gradients are very welcome if they are discreet.
 
 ## Design
-The design principles should follow those of modern react apps if they are not conflicting with our themes/styles. Applying our own library glass-ui is also a good idea https://github.com/p-potvin/glass-ui when used in small doses. There should be a lot of small subtle animations unless they impact performance of lesser hardware (let's say 8 years old maximum).
+The design principles should follow those of modern react apps if they are not conflicting with our themes/styles. Applying our own library vaultwares-glass is also a good idea https://github.com/p-potvin/vaultwares-glass when used in small doses. There should be a lot of small subtle animations unless they impact performance of lesser hardware (let's say 8 years old maximum).
 
 ## The Custom Skins 
 Here are base skins to implement when an app requires multiple skins.

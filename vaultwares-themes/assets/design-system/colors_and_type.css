@@ -1,0 +1,188 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   VaultWares — Colors & Type
+   Source of truth: vault-themes/brand/tokens/tokens.ts
+   Solarized-inspired palette · privacy-first · calm, not hacker-coded.
+   ────────────────────────────────────────────────────────────────────────── */
+
+@import url("https://rsms.me/inter/inter.css");
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+
+:root {
+  /* ── Brand palette ─────────────────────────────────────────────── */
+  --vault-base:          #002B36;  /* deep teal — dark background */
+  --vault-paper:         #FDF6E3;  /* warm paper — light background */
+  --vault-paper-bright:  #FDFCF7;  /* elevated light surface */
+  --vault-ink:           #002B36;  /* primary text on paper */
+  --vault-slate:         #4A5459;  /* secondary surface / text */
+  --vault-muted:         #586E75;  /* captions, metadata */
+  --vault-deep-sea:      #0A2540;  /* alt enterprise navy */
+
+  --vault-gold:          #CC9B21;  /* primary brand accent — V mark */
+  --vault-gold-muted:    #B78C1E;  /* hover / pressed gold */
+  --vault-gold-light:    #E5C06A;  /* tint, highlights */
+
+  --vault-cyan:          #21B8CC;  /* interactive, links, focus */
+  --vault-green:         #4ECC21;  /* secured / success */
+  --vault-burgundy:      #A63D40;  /* error / destructive */
+
+  /* ── Translucent semantic backgrounds (12–15% alpha) ───────────── */
+  --vault-success-bg:    rgba(78, 204, 33, 0.13);
+  --vault-warning-bg:    rgba(204, 155, 33, 0.14);
+  --vault-danger-bg:     rgba(166, 61, 64, 0.13);
+  --vault-info-bg:       rgba(33, 184, 204, 0.13);
+
+  --vault-border-light:  rgba(0, 43, 54, 0.14);
+  --vault-border-dark:   rgba(253, 246, 227, 0.18);
+
+  /* ── Type stack ────────────────────────────────────────────────── */
+  /* Primary UI: Segoe UI Semilight is Windows-only; Inter @ 300 is the
+     cross-platform stand-in (matches metrics & feel). */
+  --vault-font-sans: "Segoe UI Semilight", "Segoe UI", "Inter",
+                     -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --vault-font-mono: "JetBrains Mono", "IBM Plex Mono",
+                     ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Type scale — minor third, 1920 design width. */
+  --vault-text-display:  56px;  --vault-lh-display:  64px;  --vault-w-display:  300;
+  --vault-text-h1:       40px;  --vault-lh-h1:       48px;  --vault-w-h1:       300;
+  --vault-text-h2:       32px;  --vault-lh-h2:       40px;  --vault-w-h2:       400;
+  --vault-text-h3:       24px;  --vault-lh-h3:       32px;  --vault-w-h3:       500;
+  --vault-text-h4:       18px;  --vault-lh-h4:       26px;  --vault-w-h4:       500;
+  --vault-text-body:     16px;  --vault-lh-body:     26px;  --vault-w-body:     400;
+  --vault-text-body-sm:  14px;  --vault-lh-body-sm:  22px;  --vault-w-body-sm:  400;
+  --vault-text-label:    13px;  --vault-lh-label:    20px;  --vault-w-label:    500;
+  --vault-text-caption:  12px;  --vault-lh-caption:  18px;  --vault-w-caption:  400;
+  --vault-text-mono:     14px;  --vault-lh-mono:     22px;
+
+  /* ── Spacing (8px base) ────────────────────────────────────────── */
+  --vault-space-0:  0;
+  --vault-space-1:  4px;
+  --vault-space-2:  8px;
+  --vault-space-3:  12px;
+  --vault-space-4:  16px;
+  --vault-space-5:  20px;
+  --vault-space-6:  24px;
+  --vault-space-8:  32px;
+  --vault-space-10: 40px;
+  --vault-space-12: 48px;
+  --vault-space-16: 64px;
+  --vault-space-20: 80px;
+  --vault-space-24: 96px;
+
+  /* ── Radii ─────────────────────────────────────────────────────── */
+  --vault-radius-sm:    4px;
+  --vault-radius-md:    8px;
+  --vault-radius-lg:    12px;
+  --vault-radius-xl:    16px;
+  --vault-radius-panel: 20px;
+  --vault-radius-pill:  999px;
+
+  /* ── Elevation — soft, paper-like, never neon glow ─────────────── */
+  --vault-shadow-sm:    0 1px 2px rgba(0, 43, 54, 0.06);
+  --vault-shadow-md:    0 4px 12px rgba(0, 43, 54, 0.08), 0 1px 3px rgba(0, 43, 54, 0.06);
+  --vault-shadow-lg:    0 12px 32px rgba(0, 43, 54, 0.10), 0 2px 6px rgba(0, 43, 54, 0.06);
+  --vault-shadow-panel: 0 24px 48px rgba(0, 43, 54, 0.12), 0 4px 12px rgba(0, 43, 54, 0.06);
+  --vault-shadow-focus: 0 0 0 3px rgba(33, 184, 204, 0.35);
+  --vault-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+
+  /* ── Motion — subtle, never decorative loops ───────────────────── */
+  --vault-motion-fast:  120ms;
+  --vault-motion-base:  180ms;
+  --vault-motion-slow:  240ms;
+  --vault-ease-entry:   cubic-bezier(0.2, 0.8, 0.2, 1);
+  --vault-ease-state:   cubic-bezier(0.4, 0.0, 0.2, 1);
+
+  /* ── Glass — supporting effect, not the identity ───────────────── */
+  --vault-glass-blur-soft:    8px;
+  --vault-glass-blur-panel:  16px;
+  --vault-glass-blur-strong: 20px;
+  --vault-glass-bg-light: rgba(253, 252, 247, 0.62);
+  --vault-glass-bg-dark:  rgba(74, 84, 89, 0.50);
+}
+
+/* ── Light theme (default) ───────────────────────────────────────── */
+:root,
+[data-vault-theme="light"] {
+  --vault-bg:               var(--vault-paper);
+  --vault-surface:          var(--vault-paper-bright);
+  --vault-surface-elevated: rgba(253, 252, 247, 0.86);
+  --vault-text-primary:     var(--vault-ink);
+  --vault-text-secondary:   var(--vault-muted);
+  --vault-text-tertiary:    var(--vault-slate);
+  --vault-border-subtle:    var(--vault-border-light);
+  --vault-divider:          rgba(0, 43, 54, 0.08);
+  --vault-accent:           var(--vault-gold);
+  --vault-accent-hover:     var(--vault-gold-muted);
+  --vault-accent-tint:      rgba(204, 155, 33, 0.10);
+  --vault-focus-ring:       var(--vault-cyan);
+}
+
+/* ── Dark theme ──────────────────────────────────────────────────── */
+[data-vault-theme="dark"],
+.dark {
+  --vault-bg:               var(--vault-base);
+  --vault-surface:          #0E3A47;            /* slight offset of base */
+  --vault-surface-elevated: rgba(74, 84, 89, 0.72);
+  --vault-text-primary:     var(--vault-paper);
+  --vault-text-secondary:   #D8D0B8;
+  --vault-text-tertiary:    #A8A294;
+  --vault-border-subtle:    var(--vault-border-dark);
+  --vault-divider:          rgba(253, 246, 227, 0.10);
+  --vault-accent:           var(--vault-gold);
+  --vault-accent-hover:     var(--vault-gold-light);
+  --vault-accent-tint:      rgba(229, 192, 106, 0.12);
+  --vault-focus-ring:       var(--vault-cyan);
+}
+
+/* ── Semantic type recipes ───────────────────────────────────────── */
+.vault-display {
+  font-family: var(--vault-font-sans);
+  font-weight: var(--vault-w-display);
+  font-size: var(--vault-text-display);
+  line-height: var(--vault-lh-display);
+  letter-spacing: -0.02em;
+  color: var(--vault-text-primary);
+}
+.vault-h1 {
+  font: var(--vault-w-h1) var(--vault-text-h1)/var(--vault-lh-h1) var(--vault-font-sans);
+  letter-spacing: -0.015em;
+  color: var(--vault-text-primary);
+}
+.vault-h2 {
+  font: var(--vault-w-h2) var(--vault-text-h2)/var(--vault-lh-h2) var(--vault-font-sans);
+  letter-spacing: -0.01em;
+  color: var(--vault-text-primary);
+}
+.vault-h3 {
+  font: var(--vault-w-h3) var(--vault-text-h3)/var(--vault-lh-h3) var(--vault-font-sans);
+  color: var(--vault-text-primary);
+}
+.vault-h4 {
+  font: var(--vault-w-h4) var(--vault-text-h4)/var(--vault-lh-h4) var(--vault-font-sans);
+  color: var(--vault-text-primary);
+}
+.vault-body {
+  font: var(--vault-w-body) var(--vault-text-body)/var(--vault-lh-body) var(--vault-font-sans);
+  color: var(--vault-text-primary);
+}
+.vault-body-sm {
+  font: var(--vault-w-body-sm) var(--vault-text-body-sm)/var(--vault-lh-body-sm) var(--vault-font-sans);
+  color: var(--vault-text-secondary);
+}
+.vault-label {
+  font: var(--vault-w-label) var(--vault-text-label)/var(--vault-lh-label) var(--vault-font-sans);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vault-text-secondary);
+}
+.vault-caption {
+  font: var(--vault-w-caption) var(--vault-text-caption)/var(--vault-lh-caption) var(--vault-font-sans);
+  color: var(--vault-text-secondary);
+}
+.vault-code,
+.vault-mono {
+  font-family: var(--vault-font-mono);
+  font-size: var(--vault-text-mono);
+  line-height: var(--vault-lh-mono);
+  font-feature-settings: "calt" 1, "ss01" 1;
+}

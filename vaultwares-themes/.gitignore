@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+__init__.*
+node_modules/
+dist/
+build/
+.next/
+.cache/
+.vite/
+examples/brand-guide/dist/
+*.tsbuildinfo

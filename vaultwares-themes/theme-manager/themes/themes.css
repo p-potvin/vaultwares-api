@@ -1,0 +1,268 @@
+/* VaultWares Theme Library — generated CSS variable blocks
+   --------------------------------------------------------------------------
+   Each theme is exposed as a `[data-theme="<id>"]` block. Apply by setting
+   the attribute on <html> (or any wrapper). For Tailwind 4, point @theme at
+   the --vt-* vars below.
+
+   Pairing with Tailwind 4:
+
+       @theme {
+         --color-bg:           var(--vt-primary);
+         --color-surface:      var(--vt-surface);
+         --color-surface-alt:  var(--vt-surface-alt);
+         --color-accent:       var(--vt-accent);
+         --color-accent-muted: var(--vt-accent-muted);
+         --color-text:         var(--vt-text);
+         --color-text-muted:   var(--vt-text-muted);
+         --color-text-inverse: var(--vt-text-inverse);
+         --color-border:       var(--vt-border);
+         --color-muted:        var(--vt-muted);
+         --color-success:      var(--vt-success);
+         --color-warning:      var(--vt-warning);
+         --color-error:        var(--vt-error);
+         --color-info:         var(--vt-info);
+       }
+
+   …then classes like `bg-bg`, `text-text`, `border-border`, `bg-accent`,
+   `text-accent-muted`, `bg-success/12` work across every theme.
+   ------------------------------------------------------------------------- */
+
+/* Default = Golden Slate (your existing dark) */
+:root,
+[data-theme="golden-slate"] {
+  --vt-primary:      #002B36;
+  --vt-surface:      #0E3A47;
+  --vt-surface-alt:  #001B23;
+  --vt-accent:       #CC9B21;
+  --vt-accent-muted: #B78C1E;
+  --vt-text:         #FDF6E3;
+  --vt-text-muted:   #D8D0B8;
+  --vt-text-inverse: #002B36;
+  --vt-border:       rgba(253,246,227,0.18);
+  --vt-muted:        #586E75;
+  --vt-error:        #A63D40; --vt-error-bg:   rgba(166,61,64,0.14);
+  --vt-warning:      #CC9B21; --vt-warning-bg: rgba(204,155,33,0.15);
+  --vt-success:      #4ECC21; --vt-success-bg: rgba(78,204,33,0.13);
+  --vt-info:         #21B8CC; --vt-info-bg:    rgba(33,184,204,0.13);
+}
+
+[data-theme="codex-solar-light"] {
+  --vt-primary:      #FDF6E3;
+  --vt-surface:      #FDFCF7;
+  --vt-surface-alt:  #F2E9CC;
+  --vt-accent:       #CC9B21;
+  --vt-accent-muted: #B78C1E;
+  --vt-text:         #002B36;
+  --vt-text-muted:   #586E75;
+  --vt-text-inverse: #FDF6E3;
+  --vt-border:       rgba(0,43,54,0.14);
+  --vt-muted:        #93A1A1;
+  --vt-error:        #A63D40; --vt-error-bg:   rgba(166,61,64,0.13);
+  --vt-warning:      #B78C1E; --vt-warning-bg: rgba(204,155,33,0.16);
+  --vt-success:      #4F8B12; --vt-success-bg: rgba(79,139,18,0.13);
+  --vt-info:         #0d6473; --vt-info-bg:    rgba(33,184,204,0.13);
+}
+
+[data-theme="catppuccin-latte"] {
+  --vt-primary:      #EFF1F5;
+  --vt-surface:      #F8F9FB;
+  --vt-surface-alt:  #E6E9EF;
+  --vt-accent:       #8839EF;
+  --vt-accent-muted: #6C28C7;
+  --vt-text:         #4C4F69;
+  --vt-text-muted:   #6C6F85;
+  --vt-text-inverse: #EFF1F5;
+  --vt-border:       rgba(76,79,105,0.14);
+  --vt-muted:        #9CA0B0;
+  --vt-error:        #D20F39; --vt-error-bg:   rgba(210,15,57,0.10);
+  --vt-warning:      #DF8E1D; --vt-warning-bg: rgba(223,142,29,0.14);
+  --vt-success:      #40A02B; --vt-success-bg: rgba(64,160,43,0.12);
+  --vt-info:         #1E66F5; --vt-info-bg:    rgba(30,102,245,0.10);
+}
+
+[data-theme="catppuccin-mocha"] {
+  --vt-primary:      #1E1E2E;
+  --vt-surface:      #313244;
+  --vt-surface-alt:  #181825;
+  --vt-accent:       #CBA6F7;
+  --vt-accent-muted: #A687D9;
+  --vt-text:         #CDD6F4;
+  --vt-text-muted:   #A6ADC8;
+  --vt-text-inverse: #1E1E2E;
+  --vt-border:       rgba(205,214,244,0.12);
+  --vt-muted:        #6C7086;
+  --vt-error:        #F38BA8; --vt-error-bg:   rgba(243,139,168,0.13);
+  --vt-warning:      #F9E2AF; --vt-warning-bg: rgba(249,226,175,0.14);
+  --vt-success:      #A6E3A1; --vt-success-bg: rgba(166,227,161,0.13);
+  --vt-info:         #89DCEB; --vt-info-bg:    rgba(137,220,235,0.13);
+}
+
+[data-theme="monokai-vault"] {
+  --vt-primary:      #272822;
+  --vt-surface:      #2D2E26;
+  --vt-surface-alt:  #1B1C18;
+  --vt-accent:       #F92672;
+  --vt-accent-muted: #C81A5C;
+  --vt-text:         #F8F8F2;
+  --vt-text-muted:   #CFC6B4;
+  --vt-text-inverse: #272822;
+  --vt-border:       rgba(248,248,242,0.12);
+  --vt-muted:        #75715E;
+  --vt-error:        #FB4934; --vt-error-bg:   rgba(251,73,52,0.14);
+  --vt-warning:      #E6DB74; --vt-warning-bg: rgba(230,219,116,0.14);
+  --vt-success:      #A6E22E; --vt-success-bg: rgba(166,226,46,0.13);
+  --vt-info:         #66D9EF; --vt-info-bg:    rgba(102,217,239,0.13);
+}
+
+[data-theme="dracula-vault"] {
+  --vt-primary:      #282A36;
+  --vt-surface:      #343746;
+  --vt-surface-alt:  #21222C;
+  --vt-accent:       #BD93F9;
+  --vt-accent-muted: #9D70DD;
+  --vt-text:         #F8F8F2;
+  --vt-text-muted:   #C5C5BD;
+  --vt-text-inverse: #282A36;
+  --vt-border:       rgba(248,248,242,0.12);
+  --vt-muted:        #6272A4;
+  --vt-error:        #FF5555; --vt-error-bg:   rgba(255,85,85,0.13);
+  --vt-warning:      #F1FA8C; --vt-warning-bg: rgba(241,250,140,0.14);
+  --vt-success:      #50FA7B; --vt-success-bg: rgba(80,250,123,0.13);
+  --vt-info:         #8BE9FD; --vt-info-bg:    rgba(139,233,253,0.13);
+}
+
+[data-theme="nord-vault"] {
+  --vt-primary:      #2E3440;
+  --vt-surface:      #3B4252;
+  --vt-surface-alt:  #242933;
+  --vt-accent:       #88C0D0;
+  --vt-accent-muted: #6CA2B5;
+  --vt-text:         #ECEFF4;
+  --vt-text-muted:   #D8DEE9;
+  --vt-text-inverse: #2E3440;
+  --vt-border:       rgba(236,239,244,0.12);
+  --vt-muted:        #4C566A;
+  --vt-error:        #BF616A; --vt-error-bg:   rgba(191,97,106,0.14);
+  --vt-warning:      #EBCB8B; --vt-warning-bg: rgba(235,203,139,0.14);
+  --vt-success:      #A3BE8C; --vt-success-bg: rgba(163,190,140,0.14);
+  --vt-info:         #81A1C1; --vt-info-bg:    rgba(129,161,193,0.14);
+}
+
+[data-theme="tokyo-night-vault"] {
+  --vt-primary:      #1A1B26;
+  --vt-surface:      #24283B;
+  --vt-surface-alt:  #16161E;
+  --vt-accent:       #7AA2F7;
+  --vt-accent-muted: #5C82D6;
+  --vt-text:         #C0CAF5;
+  --vt-text-muted:   #A9B1D6;
+  --vt-text-inverse: #1A1B26;
+  --vt-border:       rgba(192,202,245,0.10);
+  --vt-muted:        #565F89;
+  --vt-error:        #F7768E; --vt-error-bg:   rgba(247,118,142,0.13);
+  --vt-warning:      #E0AF68; --vt-warning-bg: rgba(224,175,104,0.14);
+  --vt-success:      #9ECE6A; --vt-success-bg: rgba(158,206,106,0.13);
+  --vt-info:         #7DCFFF; --vt-info-bg:    rgba(125,207,255,0.13);
+}
+
+[data-theme="gruvbox-vault-dark"] {
+  --vt-primary:      #1D2021;
+  --vt-surface:      #282828;
+  --vt-surface-alt:  #161616;
+  --vt-accent:       #FABD2F;
+  --vt-accent-muted: #D9A21A;
+  --vt-text:         #EBDBB2;
+  --vt-text-muted:   #BDAE93;
+  --vt-text-inverse: #1D2021;
+  --vt-border:       rgba(235,219,178,0.14);
+  --vt-muted:        #665C54;
+  --vt-error:        #FB4934; --vt-error-bg:   rgba(251,73,52,0.13);
+  --vt-warning:      #FE8019; --vt-warning-bg: rgba(254,128,25,0.14);
+  --vt-success:      #B8BB26; --vt-success-bg: rgba(184,187,38,0.13);
+  --vt-info:         #83A598; --vt-info-bg:    rgba(131,165,152,0.14);
+}
+
+[data-theme="gruvbox-vault-light"] {
+  --vt-primary:      #FBF1C7;
+  --vt-surface:      #F9F5D7;
+  --vt-surface-alt:  #EBDBB2;
+  --vt-accent:       #B57614;
+  --vt-accent-muted: #8F5D10;
+  --vt-text:         #3C3836;
+  --vt-text-muted:   #665C54;
+  --vt-text-inverse: #FBF1C7;
+  --vt-border:       rgba(60,56,54,0.16);
+  --vt-muted:        #A89984;
+  --vt-error:        #9D0006; --vt-error-bg:   rgba(157,0,6,0.10);
+  --vt-warning:      #AF3A03; --vt-warning-bg: rgba(175,58,3,0.13);
+  --vt-success:      #79740E; --vt-success-bg: rgba(121,116,14,0.13);
+  --vt-info:         #076678; --vt-info-bg:    rgba(7,102,120,0.12);
+}
+
+[data-theme="rose-pine"] {
+  --vt-primary:      #191724;
+  --vt-surface:      #1F1D2E;
+  --vt-surface-alt:  #110F1A;
+  --vt-accent:       #EBBCBA;
+  --vt-accent-muted: #C99A98;
+  --vt-text:         #E0DEF4;
+  --vt-text-muted:   #908CAA;
+  --vt-text-inverse: #191724;
+  --vt-border:       rgba(224,222,244,0.10);
+  --vt-muted:        #6E6A86;
+  --vt-error:        #EB6F92; --vt-error-bg:   rgba(235,111,146,0.13);
+  --vt-warning:      #F6C177; --vt-warning-bg: rgba(246,193,119,0.14);
+  --vt-success:      #9CCFD8; --vt-success-bg: rgba(156,207,216,0.13);
+  --vt-info:         #C4A7E7; --vt-info-bg:    rgba(196,167,231,0.13);
+}
+
+[data-theme="one-dark-vault"] {
+  --vt-primary:      #282C34;
+  --vt-surface:      #2C313A;
+  --vt-surface-alt:  #21252B;
+  --vt-accent:       #61AFEF;
+  --vt-accent-muted: #4D90C9;
+  --vt-text:         #ABB2BF;
+  --vt-text-muted:   #828997;
+  --vt-text-inverse: #282C34;
+  --vt-border:       rgba(171,178,191,0.12);
+  --vt-muted:        #5C6370;
+  --vt-error:        #E06C75; --vt-error-bg:   rgba(224,108,117,0.13);
+  --vt-warning:      #E5C07B; --vt-warning-bg: rgba(229,192,123,0.14);
+  --vt-success:      #98C379; --vt-success-bg: rgba(152,195,121,0.13);
+  --vt-info:         #56B6C2; --vt-info-bg:    rgba(86,182,194,0.13);
+}
+
+[data-theme="ayu-vault-light"] {
+  --vt-primary:      #FAFAF7;
+  --vt-surface:      #FFFFFE;
+  --vt-surface-alt:  #EFEDE5;
+  --vt-accent:       #FA8D3E;
+  --vt-accent-muted: #D9762A;
+  --vt-text:         #5C6166;
+  --vt-text-muted:   #787B80;
+  --vt-text-inverse: #FAFAF7;
+  --vt-border:       rgba(92,97,102,0.14);
+  --vt-muted:        #ACB6BE;
+  --vt-error:        #E65050; --vt-error-bg:   rgba(230,80,80,0.11);
+  --vt-warning:      #F2AE49; --vt-warning-bg: rgba(242,174,73,0.14);
+  --vt-success:      #86B300; --vt-success-bg: rgba(134,179,0,0.12);
+  --vt-info:         #399EE6; --vt-info-bg:    rgba(57,158,230,0.12);
+}
+
+[data-theme="github-vault-light"] {
+  --vt-primary:      #FAFAF7;
+  --vt-surface:      #FFFFFE;
+  --vt-surface-alt:  #F0F0EB;
+  --vt-accent:       #0969DA;
+  --vt-accent-muted: #054FB1;
+  --vt-text:         #1F2328;
+  --vt-text-muted:   #59636E;
+  --vt-text-inverse: #FFFFFF;
+  --vt-border:       rgba(31,35,40,0.14);
+  --vt-muted:        #818B98;
+  --vt-error:        #CF222E; --vt-error-bg:   rgba(207,34,46,0.10);
+  --vt-warning:      #BC8001; --vt-warning-bg: rgba(188,128,1,0.13);
+  --vt-success:      #1A7F37; --vt-success-bg: rgba(26,127,55,0.11);
+  --vt-info:         #0550AE; --vt-info-bg:    rgba(5,80,174,0.11);
+}

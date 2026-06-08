@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>VaultWares — Gold scale</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<style>
+  html,body{margin:0;background:transparent;font-family:var(--vault-font-sans);color:var(--vault-text-primary)}
+  .wrap{padding:18px;display:flex;flex-direction:column;gap:18px}
+  .row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .swatch{border-radius:12px;overflow:hidden;border:1px solid var(--vault-border-subtle);background:var(--vault-surface)}
+  .chip{height:56px}
+  .meta{padding:10px 12px;display:flex;justify-content:space-between;align-items:baseline}
+  .name{font-size:13px;font-weight:500}
+  .hex{font-family:var(--vault-font-mono);font-size:11px;color:var(--vault-muted)}
+  .label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--vault-muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <div class="label">Gold scale — primary accent</div>
+    <div class="row" style="margin-top:8px">
+      <div class="swatch"><div class="chip" style="background:#E5C06A"></div><div class="meta"><span class="name">Gold light</span><span class="hex">#E5C06A</span></div></div>
+      <div class="swatch"><div class="chip" style="background:#CC9B21"></div><div class="meta"><span class="name">Gold</span><span class="hex">#CC9B21</span></div></div>
+      <div class="swatch"><div class="chip" style="background:#B78C1E"></div><div class="meta"><span class="name">Gold muted</span><span class="hex">#B78C1E</span></div></div>
+    </div>
+  </div>
+  <div>
+    <div class="label">Surface ladder</div>
+    <div class="row" style="margin-top:8px">
+      <div class="swatch"><div class="chip" style="background:#FDFCF7;border-bottom:1px solid var(--vault-border-subtle)"></div><div class="meta"><span class="name">Paper bright</span><span class="hex">#FDFCF7</span></div></div>
+      <div class="swatch"><div class="chip" style="background:#FDF6E3;border-bottom:1px solid var(--vault-border-subtle)"></div><div class="meta"><span class="name">Paper</span><span class="hex">#FDF6E3</span></div></div>
+      <div class="swatch"><div class="chip" style="background:#0A2540"></div><div class="meta"><span class="name">Deep sea</span><span class="hex">#0A2540</span></div></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

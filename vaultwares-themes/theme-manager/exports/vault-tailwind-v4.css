@@ -1,0 +1,200 @@
+/* =============================================================================
+   VaultWares Design System — Tailwind CSS v4 Theme Bridge
+   vault-themes/theme-manager/exports/vault-tailwind-v4.css
+   =============================================================================
+   Usage:
+     In your project's main CSS file (e.g. index.css, global.css):
+
+       @import "tailwindcss";
+       @import "./path/to/vault-tailwind-v4.css";
+
+     Or if using the submodule / npm package:
+       @import "vault-themes/theme-manager/exports/vault-tailwind-v4.css";
+
+   This file does THREE things:
+     1. Declares the @theme block that maps CSS custom properties to Tailwind
+        utility class names (bg-*, text-*, border-*, etc.).
+     2. Sets sensible defaults for the Golden Slate dark theme directly on :root
+        so the UI is never unstyled before JavaScript loads.
+     3. Provides glass utility classes and semantic banner helpers.
+
+   ⚠️  Tailwind v4 only. For v3 see vault-tailwind-v3.config.js.
+   =============================================================================
+   Token Injection (JavaScript side)
+   =============================================================================
+   Your JavaScript theme manager must inject the following CSS custom properties
+   on `document.documentElement` (i.e. :root) at runtime.
+
+   Property names use kebab-case. All tokens from VaultTheme interface:
+
+     --background         Root page background
+     --surface            Panel / card background
+     --surface-alt        Nested element background
+     --surface-elevated   Overlay / glass elevated surface
+     --text               Primary body text (alias for --text-primary)
+     --text-primary       Primary body text
+     --text-secondary     Secondary / caption text
+     --text-muted         Tertiary / placeholder text
+     --text-inverse       Text on accent-colored surfaces
+     --accent             Brand accent — primary interactive color
+     --accent-muted       Hover / pressed accent variant
+     --border             Subtle border for panels and inputs
+     --error              Semantic error / destructive state
+     --error-bg           Translucent error background (rgba, 12-15% alpha)
+     --warning            Semantic warning state
+     --warning-bg         Translucent warning background
+     --success            Semantic success / secured state
+     --success-bg         Translucent success background
+     --info               Semantic informational state
+     --info-bg            Translucent info background
+     --muted              Muted / disabled UI elements
+
+   Example (TypeScript):
+     Object.entries(currentTheme).forEach(([key, value]) => {
+       if (!['name', 'id', 'mode'].includes(key)) {
+         document.documentElement.style.setProperty(
+           `--${key.replaceAll('_', '-')}`, value
+         );
+       }
+     });
+   ============================================================================= */
+
+@theme {
+  /* ── Background / Surface ──────────────────────────────────────────────── */
+  --color-background:       var(--background);
+  --color-surface:          var(--surface);
+  --color-surface-alt:      var(--surface-alt);
+  --color-surface-elevated: var(--surface-elevated);
+
+  /* ── Text ──────────────────────────────────────────────────────────────── */
+  --color-text:             var(--text);
+  --color-text-primary:     var(--text-primary);
+  --color-text-secondary:   var(--text-secondary);
+  --color-text-muted:       var(--text-muted);
+  --color-text-inverse:     var(--text-inverse);
+
+  /* ── Accent ────────────────────────────────────────────────────────────── */
+  --color-accent:           var(--accent);
+  --color-accent-muted:     var(--accent-muted);
+
+  /* ── Border ────────────────────────────────────────────────────────────── */
+  --color-border:           var(--border);
+
+  /* ── Semantic states ───────────────────────────────────────────────────── */
+  --color-error:            var(--error);
+  --color-error-bg:         var(--error-bg);
+  --color-warning:          var(--warning);
+  --color-warning-bg:       var(--warning-bg);
+  --color-success:          var(--success);
+  --color-success-bg:       var(--success-bg);
+  --color-info:             var(--info);
+  --color-info-bg:          var(--info-bg);
+  --color-muted:            var(--muted);
+
+  /* ── Typography ────────────────────────────────────────────────────────── */
+  --font-sans: "Segoe UI Semilight", "Segoe UI", Inter, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* ── Motion (120–240ms per vault-themes brand guide) ───────────────────── */
+  --ease-vault-entry: ease-out;
+  --ease-vault-state: ease-in-out;
+
+  /* ── Radius ────────────────────────────────────────────────────────────── */
+  --radius-sm:    4px;
+  --radius-md:    8px;
+  --radius-lg:    12px;
+  --radius-xl:    16px;
+  --radius-panel: 20px;
+}
+
+/* =============================================================================
+   Fallback defaults — Golden Slate dark theme
+   Applied before JS theme manager runs to prevent flash of unstyled content.
+   ============================================================================= */
+:root {
+  --background:       #2E3538;
+  --surface:          #363D41;
+  --surface-alt:      #3F474C;
+  --surface-elevated: #485157;
+  --text:             #EDE8DE;
+  --text-primary:     #EDE8DE;
+  --text-secondary:   #B8B1A5;
+  --text-muted:       #8FA0A8;
+  --text-inverse:     #1C2226;
+  --accent:           #D4AF37;
+  --accent-muted:     #A8892A;
+  --border:           rgba(212, 175, 55, 0.18);
+  --error:            #E05C4A;
+  --error-bg:         rgba(224, 92, 74, 0.14);
+  --warning:          #E09D34;
+  --warning-bg:       rgba(224, 157, 52, 0.14);
+  --success:          #5BAD72;
+  --success-bg:       rgba(91, 173, 114, 0.14);
+  --info:             #5B9FBF;
+  --info-bg:          rgba(91, 159, 191, 0.14);
+  --muted:            #586672;
+}
+
+/* =============================================================================
+   Glass utility classes — use sparingly per brand guide
+   ============================================================================= */
+.vault-glass {
+  background: color-mix(in srgb, var(--surface-elevated) 72%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.vault-glass-soft {
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+}
+
+/* =============================================================================
+   Semantic banner helpers
+   Usage: <div class="vault-banner-error">Message</div>
+   ============================================================================= */
+.vault-banner-error {
+  background-color: var(--error-bg);
+  border-left: 3px solid var(--error);
+  color: var(--error);
+  padding: 0.75rem 1rem;
+  border-radius: 0 6px 6px 0;
+}
+.vault-banner-warning {
+  background-color: var(--warning-bg);
+  border-left: 3px solid var(--warning);
+  color: var(--warning);
+  padding: 0.75rem 1rem;
+  border-radius: 0 6px 6px 0;
+}
+.vault-banner-success {
+  background-color: var(--success-bg);
+  border-left: 3px solid var(--success);
+  color: var(--success);
+  padding: 0.75rem 1rem;
+  border-radius: 0 6px 6px 0;
+}
+.vault-banner-info {
+  background-color: var(--info-bg);
+  border-left: 3px solid var(--info);
+  color: var(--info);
+  padding: 0.75rem 1rem;
+  border-radius: 0 6px 6px 0;
+}
+
+/* =============================================================================
+   Focus ring — cyan interactive token per brand guide
+   ============================================================================= */
+.vault-focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

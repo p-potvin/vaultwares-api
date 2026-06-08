@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>VaultWares Documentation</title>
+<link rel="stylesheet" href="../../colors_and_type.css" />
+<link rel="icon" href="../../assets/logos/favicon.svg" />
+<style>
+  @page { size: A4 portrait; margin: 14mm 12mm; }
+  @media print {
+    html, body { background: #FDF6E3 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; color-adjust: exact; }
+    *, *::before, *::after { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+    .topbar { position: static !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; background: #FDF6E3 !important; border-bottom: 1px solid rgba(0,43,54,.14) !important; }
+    .topbar-inner { padding: 10px 0 !important; max-width: 100% !important; }
+    .tabs { padding: 0 !important; max-width: 100% !important; }
+    .layout { display: block !important; padding: 14px 0 0 !important; max-width: 100% !important; }
+    .sidebar, .toc { display: none !important; }
+    main { min-width: 0 !important; }
+    .search { display: none !important; }
+    .top-actions { gap: 6px !important; }
+    .top-actions .btn-ghost, .top-actions .lang { display: none !important; }
+    .hero-card, .doc-card, .callout, .tabwidget, .nav-card { break-inside: avoid; page-break-inside: avoid; }
+    h1.page, h2.section { break-after: avoid-page; page-break-after: avoid; }
+    .doc-card:hover, .hero-card:hover, .nav-card:hover { transform: none !important; box-shadow: none !important; }
+    a { color: inherit !important; text-decoration: none !important; }
+    .cardgrid { gap: 10px !important; }
+    .doc-footer { margin-top: 24px !important; }
+    button, a { cursor: default !important; }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--vault-paper);color:var(--vault-ink);font-family:var(--vault-font-sans);font-size:15px;line-height:1.6}
+  a{color:inherit;text-decoration:none}
+  .app{display:grid;grid-template-rows:auto 1fr}
+  /* ── Top nav ───────────────────────────────────── */
+  .topbar{position:sticky;top:0;z-index:10;background:rgba(253,246,227,.86);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--vault-border-subtle)}
+  .topbar-inner{display:grid;grid-template-columns:240px 1fr auto;gap:24px;padding:14px 28px;align-items:center;max-width:1480px;margin:0 auto}
+  .brand{display:flex;align-items:center;gap:10px}
+  .brand img{height:24px;width:auto}
+  .brand .docs-tag{font-size:12px;font-weight:500;color:var(--vault-muted);padding:2px 8px;border-left:1px solid var(--vault-border-subtle);margin-left:4px}
+  .search{display:flex;align-items:center;gap:10px;padding:8px 14px;background:var(--vault-paper-bright);border:1px solid var(--vault-border-subtle);border-radius:10px;color:var(--vault-muted);font-size:13px;cursor:text;transition:border 180ms}
+  .search:hover{border-color:rgba(0,43,54,.32)}
+  .search svg{width:14px;height:14px}
+  .search .kbd{margin-left:auto;font-family:var(--vault-font-mono);font-size:11px;background:rgba(0,43,54,.08);padding:2px 6px;border-radius:4px}
+  .top-actions{display:flex;align-items:center;gap:10px}
+  .btn{font-family:inherit;font-size:13px;font-weight:500;padding:8px 14px;border-radius:8px;border:1px solid transparent;cursor:pointer;transition:all 180ms}
+  .btn-ghost{background:transparent;color:var(--vault-ink);border-color:rgba(0,43,54,.18)}
+  .btn-ghost:hover{border-color:#21B8CC;color:#0d6473}
+  .btn-primary{background:#CC9B21;color:#FDFCF7;border-color:#CC9B21}
+  .btn-primary:hover{background:#B78C1E;border-color:#B78C1E;color:#FFFEF7}
+  .lang{font-family:var(--vault-font-mono);font-size:11px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--vault-muted);padding:4px 8px;border:1px solid var(--vault-border-subtle);border-radius:6px;cursor:pointer}
+  .lang:hover{color:var(--vault-ink);border-color:rgba(0,43,54,.32)}
+  /* ── Tab bar ───────────────────────────────────── */
+  .tabs{display:flex;gap:4px;padding:0 28px;max-width:1480px;margin:0 auto;border-bottom:1px solid var(--vault-divider)}
+  .tab{display:flex;align-items:center;gap:8px;padding:10px 14px;font-size:13px;font-weight:500;color:var(--vault-muted);border-bottom:2px solid transparent;cursor:pointer;transition:all 180ms;margin-bottom:-1px}
+  .tab svg{width:14px;height:14px}
+  .tab:hover{color:var(--vault-ink)}
+  .tab.active{color:var(--vault-ink);border-bottom-color:#CC9B21}
+  /* ── Layout ────────────────────────────────────── */
+  .layout{display:grid;grid-template-columns:260px 1fr 240px;gap:32px;padding:28px;max-width:1480px;margin:0 auto;align-items:start}
+  /* ── Sidebar ───────────────────────────────────── */
+  .sidebar{position:sticky;top:104px;font-size:13px}
+  .sb-group{margin-bottom:18px}
+  .sb-head{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--vault-muted);padding:6px 8px}
+  .sb-head svg{width:13px;height:13px}
+  .sb-link{display:flex;align-items:center;justify-content:space-between;padding:6px 10px;border-radius:6px;color:var(--vault-slate);cursor:pointer;transition:all 120ms}
+  .sb-link:hover{background:rgba(0,43,54,.04);color:var(--vault-ink)}
+  .sb-link.active{background:rgba(204,155,33,.14);color:#7a5e0c;font-weight:500}
+  .sb-link.active::before{content:"";display:block;width:3px;height:14px;background:#CC9B21;border-radius:999px;margin-right:8px;margin-left:-12px}
+  /* ── Main content ──────────────────────────────── */
+  main{min-width:0}
+  .breadcrumbs{font-size:12px;color:var(--vault-muted);display:flex;gap:6px;align-items:center;margin-bottom:14px}
+  .breadcrumbs a{color:var(--vault-cyan)}
+  h1.page{font:300 40px/48px var(--vault-font-sans);letter-spacing:-.015em;margin:0 0 10px;color:var(--vault-ink)}
+  .lede{font-size:17px;color:var(--vault-slate);max-width:680px;margin-bottom:28px;line-height:1.6}
+  h2.section{font:500 22px/28px var(--vault-font-sans);margin:36px 0 14px;color:var(--vault-ink);letter-spacing:-.005em}
+  /* hero card */
+  .hero-card{display:flex;align-items:center;gap:16px;padding:18px 20px;background:linear-gradient(135deg,rgba(204,155,33,.08),rgba(33,184,204,.08));border:1px solid var(--vault-border-subtle);border-radius:14px;margin-bottom:28px;cursor:pointer;transition:all 180ms}
+  .hero-card:hover{border-color:#CC9B21;box-shadow:var(--vault-shadow-md)}
+  .hero-card .icon{width:44px;height:44px;border-radius:10px;background:#CC9B21;color:#002B36;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .hero-card .icon svg{width:22px;height:22px}
+  .hero-card .body{flex:1}
+  .hero-card .t{font-size:16px;font-weight:500;color:var(--vault-ink);margin-bottom:2px}
+  .hero-card .d{font-size:13px;color:var(--vault-slate)}
+  .hero-card .arrow{color:var(--vault-muted)}
+  /* card grid */
+  .cardgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .cardgrid.cols-2{grid-template-columns:repeat(2,1fr)}
+  .doc-card{padding:16px;background:var(--vault-paper-bright);border:1px solid var(--vault-border-subtle);border-radius:14px;display:flex;flex-direction:column;gap:8px;cursor:pointer;transition:all 180ms;text-decoration:none;color:inherit}
+  .doc-card:hover{border-color:rgba(0,43,54,.28);box-shadow:var(--vault-shadow-md);transform:translateY(-1px)}
+  .doc-card .icon-sm{width:30px;height:30px;border-radius:8px;background:rgba(33,184,204,.14);color:#0d6473;display:flex;align-items:center;justify-content:center}
+  .doc-card .icon-sm svg{width:16px;height:16px}
+  .doc-card .t{font-size:14px;font-weight:500;color:var(--vault-ink)}
+  .doc-card .d{font-size:12.5px;color:var(--vault-muted);line-height:1.5}
+  /* tabs widget */
+  .tabwidget{margin:16px 0 20px;border:1px solid var(--vault-border-subtle);border-radius:12px;overflow:hidden;background:var(--vault-paper-bright)}
+  .tw-bar{display:flex;border-bottom:1px solid var(--vault-divider);background:rgba(0,43,54,.02)}
+  .tw-tab{padding:10px 16px;font-size:13px;font-weight:500;color:var(--vault-muted);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;transition:all 180ms}
+  .tw-tab.active{color:var(--vault-ink);border-bottom-color:#CC9B21;background:var(--vault-paper-bright)}
+  .tw-tab:hover{color:var(--vault-ink)}
+  .tw-body{padding:16px}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th{text-align:left;padding:10px 12px;font-weight:500;color:var(--vault-muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--vault-border-subtle)}
+  td{padding:10px 12px;border-bottom:1px solid var(--vault-divider);color:var(--vault-slate)}
+  td strong{color:var(--vault-ink);font-weight:500}
+  /* note callouts */
+  .callout{display:flex;gap:12px;padding:14px 16px;border-radius:12px;margin:16px 0;border:1px solid;font-size:14px;line-height:1.55}
+  .callout svg{width:18px;height:18px;flex-shrink:0;margin-top:2px}
+  .callout.info{background:var(--vault-info-bg);border-color:rgba(33,184,204,.4);color:#0d6473}
+  .callout.note{background:rgba(0,43,54,.04);border-color:var(--vault-border-subtle);color:var(--vault-slate)}
+  .callout strong{font-weight:500}
+  /* TOC */
+  .toc{position:sticky;top:104px;font-size:12.5px}
+  .toc-head{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--vault-muted);margin-bottom:10px}
+  .toc-item{display:block;padding:5px 10px;color:var(--vault-muted);border-left:2px solid transparent;cursor:pointer;transition:all 120ms}
+  .toc-item:hover{color:var(--vault-ink)}
+  .toc-item.active{color:#CC9B21;border-left-color:#CC9B21}
+  .toc-item.indent{padding-left:22px}
+  /* footer */
+  .doc-footer{display:flex;justify-content:space-between;border-top:1px solid var(--vault-border-subtle);padding-top:18px;margin-top:48px;font-size:13px}
+  .nav-card{display:flex;flex-direction:column;gap:2px;padding:12px 16px;border:1px solid var(--vault-border-subtle);border-radius:10px;cursor:pointer;transition:all 180ms;min-width:200px}
+  .nav-card:hover{border-color:#CC9B21}
+  .nav-card .lab{font-size:11px;color:var(--vault-muted);text-transform:uppercase;letter-spacing:.06em}
+  .nav-card .nm{font-size:14px;font-weight:500;color:var(--vault-ink)}
+  /* anchors helper for the toc */
+  [id]{scroll-margin-top:120px}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#">
+        <img src="../../assets/logos/vaultwares-wordmark-light.svg" alt="VaultWares" />
+        <span class="docs-tag">Docs</span>
+      </a>
+      <div class="search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        Search the documentation…
+        <span class="kbd">⌘ K</span>
+      </div>
+      <div class="top-actions">
+        <span class="lang" title="Language · English / Quebec French">EN · FR</span>
+        <button class="btn btn-ghost">Contact sales</button>
+        <button class="btn btn-primary">Customer portal</button>
+      </div>
+    </div>
+    <nav class="tabs">
+      <a class="tab active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Product documentation</a>
+      <a class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>Security &amp; compliance</a>
+      <a class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>API reference</a>
+      <a class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H4a1 1 0 0 1-1-1v-6zM21 14h-3a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h2a1 1 0 0 0 1-1v-6z"/><path d="M3 18v-6a9 9 0 0 1 18 0v6"/></svg>Support</a>
+      <a class="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2M15 16v-2M8 9h2M20 9h2M17.8 11.8 19 13M15 9h0M17.8 6.2 19 5M3 21l9-9M12.2 6.2 11 5"/></svg>AI tools</a>
+    </nav>
+  </header>
+
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sb-group">
+        <div class="sb-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Getting started</div>
+        <a class="sb-link active">Overview</a>
+        <a class="sb-link">Products and services</a>
+        <a class="sb-link">System requirements</a>
+        <a class="sb-link">Quick installation</a>
+      </div>
+      <div class="sb-group">
+        <div class="sb-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="2" x2="9" y2="4"/><line x1="15" y1="2" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="22"/><line x1="15" y1="20" x2="15" y2="22"/><line x1="20" y1="9" x2="22" y2="9"/><line x1="20" y1="14" x2="22" y2="14"/><line x1="2" y1="9" x2="4" y2="9"/><line x1="2" y1="14" x2="4" y2="14"/></svg>Hardware products</div>
+        <a class="sb-link">VaultDrive · encrypted storage</a>
+        <a class="sb-link">VaultHSM · key modules</a>
+        <a class="sb-link">VaultScan · biometric</a>
+        <a class="sb-link">VaultGate · network appliance</a>
+      </div>
+      <div class="sb-group">
+        <div class="sb-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>Software products</div>
+        <a class="sb-link">VaultCrypt · encryption</a>
+        <a class="sb-link">VaultAccess · IAM</a>
+        <a class="sb-link">VaultBackup · backup &amp; DR</a>
+        <a class="sb-link">VaultMonitor · SIEM</a>
+      </div>
+      <div class="sb-group">
+        <div class="sb-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>Installation &amp; setup</div>
+        <a class="sb-link">Hardware installation</a>
+        <a class="sb-link">Software deployment</a>
+        <a class="sb-link">Initial configuration</a>
+        <a class="sb-link">Integration guides</a>
+      </div>
+      <div class="sb-group">
+        <div class="sb-head"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2zM22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>User guides</div>
+        <a class="sb-link">Daily operations</a>
+        <a class="sb-link">Best practices</a>
+        <a class="sb-link">Troubleshooting</a>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main>
+      <div class="breadcrumbs">
+        <a>Product documentation</a>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        <a>Getting started</a>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        <span>Overview</span>
+      </div>
+
+      <h1 class="page" id="overview">Welcome to VaultWares</h1>
+      <p class="lede">VaultWares delivers privacy-first security solutions for organizations that take data protection seriously. Hardware, software, and services that work together — bilingual by default, open-source at the core.</p>
+
+      <a class="hero-card" href="#quickstart">
+        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
+        <span class="body">
+          <span class="t">Get started in minutes</span>
+          <span class="d">Initialize your first VaultDrive or activate VaultCrypt with our step-by-step quickstart.</span>
+        </span>
+        <span class="arrow"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg></span>
+      </a>
+
+      <h2 class="section" id="explore">Explore the documentation</h2>
+      <div class="cardgrid">
+        <a class="doc-card">
+          <span class="icon-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg></span>
+          <div class="t">Hardware products</div>
+          <div class="d">VaultDrive encrypted storage, VaultHSM modules, VaultScan biometric devices, and VaultGate network appliances.</div>
+        </a>
+        <a class="doc-card">
+          <span class="icon-sm" style="background:rgba(204,155,33,.14);color:#7a5e0c"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+          <div class="t">Software products</div>
+          <div class="d">VaultCrypt, VaultAccess, VaultBackup, and VaultMonitor — the software layer of your security stack.</div>
+        </a>
+        <a class="doc-card">
+          <span class="icon-sm" style="background:rgba(78,204,33,.14);color:#1f6b0e"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8"/></svg></span>
+          <div class="t">Getting started</div>
+          <div class="d">New to VaultWares? Start here for product overviews, licensing, and deployment planning.</div>
+        </a>
+        <a class="doc-card">
+          <span class="icon-sm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></span>
+          <div class="t">API reference</div>
+          <div class="d">REST API authentication, endpoints, webhooks, and official SDKs for Python, Node.js, Java, and Go.</div>
+        </a>
+        <a class="doc-card">
+          <span class="icon-sm" style="background:rgba(166,61,64,.13);color:#6b1e21"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></span>
+          <div class="t">Security and compliance</div>
+          <div class="d">FIPS 140-3, Common Criteria, GDPR, HIPAA, PCI DSS, and other certifications and compliance guides.</div>
+        </a>
+        <a class="doc-card">
+          <span class="icon-sm" style="background:rgba(74,84,89,.10);color:var(--vault-slate)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H4a1 1 0 0 1-1-1v-6zM21 14h-3a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h2a1 1 0 0 0 1-1v-6z"/><path d="M3 18v-6a9 9 0 0 1 18 0v6"/></svg></span>
+          <div class="t">Support</div>
+          <div class="d">Contact support, browse FAQs, warranty information, and the RMA process.</div>
+        </a>
+      </div>
+
+      <h2 class="section" id="families">Product families</h2>
+      <div class="tabwidget">
+        <div class="tw-bar">
+          <div class="tw-tab active">Hardware</div>
+          <div class="tw-tab">Software</div>
+          <div class="tw-tab">Services</div>
+        </div>
+        <div class="tw-body">
+          <table>
+            <thead><tr><th>Product</th><th>Description</th><th>Certification</th></tr></thead>
+            <tbody>
+              <tr><td><strong>VaultDrive</strong> Pro / Enterprise / Rugged / Biometric</td><td>Hardware-encrypted USB storage</td><td>FIPS 140-2 / 140-3 Level 3</td></tr>
+              <tr><td><strong>VaultHSM</strong> PCIe / Network / Enterprise / Cloud</td><td>Cryptographic key management modules</td><td>FIPS 140-2 / 140-3 Level 3-4</td></tr>
+              <tr><td><strong>VaultScan</strong></td><td>Biometric authentication terminals</td><td>FBI PIV-071006, ISO 19794</td></tr>
+              <tr><td><strong>VaultGate</strong></td><td>Network security appliance</td><td>FIPS 140-2 Level 2, CC EAL4+</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="callout info">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <div>All VaultWares products ship with a 30-day evaluation license. Contact <strong><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="2251434e4751625443574e5655435047510c414d4f">[email&#160;protected]</a></strong> to request a full evaluation or volume pricing.</div>
+      </div>
+
+      <h2 class="section" id="quickstart">Quick links</h2>
+      <div class="cardgrid cols-2">
+        <a class="doc-card"><div class="t">Initialize a VaultDrive</div><div class="d">Unbox, connect, and set your master password in under 5 minutes.</div></a>
+        <a class="doc-card"><div class="t">Install VaultCrypt</div><div class="d">Install, activate your license, and encrypt your first volume.</div></a>
+        <a class="doc-card"><div class="t">Deploy to enterprise</div><div class="d">Silent, MDM, GPO, Docker, and Kubernetes deployment options.</div></a>
+        <a class="doc-card"><div class="t">Integrate with Active Directory</div><div class="d">Connect VaultWares to your AD/LDAP, SAML, and SSO infrastructure.</div></a>
+      </div>
+
+      <div class="callout note">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polygon points="14 2 18 6 7 17 3 17 3 13 14 2"/><line x1="3" y1="22" x2="21" y2="22"/></svg>
+        <div><strong>Bilingual by default.</strong> Every page in this documentation is available in English and Quebec French. Use the EN · FR toggle in the top bar.</div>
+      </div>
+
+      <div class="doc-footer">
+        <div></div>
+        <div class="nav-card">
+          <span class="lab">Next</span>
+          <span class="nm">Products and services →</span>
+        </div>
+      </div>
+    </main>
+
+    <!-- TOC -->
+    <aside class="toc">
+      <div class="toc-head">On this page</div>
+      <a class="toc-item active" href="#overview">Welcome to VaultWares</a>
+      <a class="toc-item" href="#explore">Explore the documentation</a>
+      <a class="toc-item" href="#families">Product families</a>
+      <a class="toc-item indent">Hardware</a>
+      <a class="toc-item indent">Software</a>
+      <a class="toc-item indent">Services</a>
+      <a class="toc-item" href="#quickstart">Quick links</a>
+    </aside>
+  </div>
+</div>
+
+<script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
+  // Tab switching
+  document.querySelectorAll('.tabs .tab').forEach(t => t.addEventListener('click', () => {
+    document.querySelectorAll('.tabs .tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+  }));
+  document.querySelectorAll('.tw-tab').forEach(t => t.addEventListener('click', () => {
+    t.parentElement.querySelectorAll('.tw-tab').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+  }));
+  document.querySelectorAll('.sb-link').forEach(l => l.addEventListener('click', () => {
+    document.querySelectorAll('.sb-link').forEach(x => x.classList.remove('active'));
+    l.classList.add('active');
+  }));
+  // Lang toggle
+  const lang = document.querySelector('.lang');
+  let isFr = false;
+  lang.addEventListener('click', () => {
+    isFr = !isFr;
+    lang.textContent = isFr ? 'FR · EN' : 'EN · FR';
+  });
+</script>
+<script>
+  (async () => {
+    try { if (document.fonts && document.fonts.ready) { await document.fonts.ready; } } catch (e) {}
+    await new Promise(r => setTimeout(r, 500));
+    window.print();
+  })();
+</script>
+</body>
+</html>

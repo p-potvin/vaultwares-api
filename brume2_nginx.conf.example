@@ -1,14 +1,16 @@
 # Example Nginx reverse-proxy config for Brume 2 (OpenWrt).
 #
+# Legacy option: if you're using a VPS as the gateway now, prefer `vps_nginx.conf.example`.
+#
 # Goal:
-# - Brume terminates TLS for api.vaultwares.com
+# - Brume terminates TLS for api.vaultwares.ca
 # - Brume rate-limits and becomes the choke-point for abuse controls
 # - Brume proxies to the API host on LAN: http://10.0.0.24:9001
 # - Brume injects X-VW-Gateway-Secret so the API can reject direct/bypass traffic
 #
 # You still need:
 # - real cert/key paths (via luci-app-acme or your preferred ACME client)
-# - a DNS A record for api.vaultwares.com pointing to your WAN IP
+# - a DNS A record for api.vaultwares.ca pointing to your WAN IP
 # - port forwards 80/443 -> Brume 2
 #
 # Replace: <GATEWAY_SHARED_SECRET> with the same value used in the API `.env`.
@@ -28,21 +30,21 @@ geo $vw_is_tailscale {
 map $http_origin $vw_origin_ok {
     default 0;
     "https://vault-flows.vercel.app" 1;
-    # "https://dispatch-wares-frontend.vercel.app" 1;
+    # "https://vaultwares-dispatch-frontend.vercel.app" 1;
     # "https://vaultwares-pipelines-frontend.vercel.app" 1;
     # "https://cultural-rhythm.vercel.app" 1;
-    # "https://glass-ui-preview.vercel.app" 1;
+    # "https://vaultwares-glass-preview.vercel.app" 1;
 }
 
 server {
     listen 80;
-    server_name api.vaultwares.com;
+    server_name api.vaultwares.ca;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl http2;
-    server_name api.vaultwares.com;
+    server_name api.vaultwares.ca;
 
     # --- TLS certs (example paths) ---
     # luci-app-acme / acme.sh commonly stores files under:
@@ -54,8 +56,8 @@ server {
     # - /etc/acme/<domain>_ecc/<domain>.key
     #
     # Set these to match your Brume 2 box:
-    # ssl_certificate     /etc/acme/api.vaultwares.com/fullchain.cer;
-    # ssl_certificate_key /etc/acme/api.vaultwares.com/api.vaultwares.com.key;
+    # ssl_certificate     /etc/acme/api.vaultwares.ca/fullchain.cer;
+    # ssl_certificate_key /etc/acme/api.vaultwares.ca/api.vaultwares.ca.key;
 
     # Strict HTTPS (enable HSTS once stable)
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;

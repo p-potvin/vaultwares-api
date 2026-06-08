@@ -1,0 +1,245 @@
+/* =============================================================================
+   VaultWares Design System — CSS Custom Properties (no framework)
+   vault-themes/theme-manager/exports/vault-tokens.css
+   =============================================================================
+   Usage (plain HTML / Vanilla JS / any framework):
+
+     <link rel="stylesheet" href="vault-tokens.css">
+
+     Or in your CSS:
+       @import url('./vault-tokens.css');
+
+   This file ships the Golden Slate dark defaults on :root.
+   Override any token at runtime with:
+
+     document.documentElement.style.setProperty('--accent', '#D4AF37');
+
+   Or swap entire themes by injecting all tokens from the TypeScript catalog.
+   =============================================================================
+   Base color palette (from brand/tokens/tokens.ts)
+   ============================================================================= */
+
+:root {
+  /* ── Base palette ──────────────────────────────────────────────────────── */
+  --vault-base:         #002B36;
+  --vault-paper:        #FDF6E3;
+  --vault-paper-bright: #FDFCF7;
+  --vault-ink:          #002B36;
+  --vault-slate:        #4A5459;
+  --vault-muted-base:   #586E75;
+  --vault-gold:         #CC9B21;
+  --vault-gold-muted:   #B78C1E;
+  --vault-gold-light:   #E5C06A;
+  --vault-cyan:         #21B8CC;
+  --vault-green:        #4ECC21;
+  --vault-burgundy:     #A63D40;
+
+  /* ── Semantic tokens — Golden Slate (dark default) ─────────────────────── */
+  --background:         #2E3538;
+  --surface:            #363D41;
+  --surface-alt:        #3F474C;
+  --surface-elevated:   #485157;
+
+  --text:               #EDE8DE;
+  --text-primary:       #EDE8DE;
+  --text-secondary:     #B8B1A5;
+  --text-muted:         #8FA0A8;
+  --text-inverse:       #1C2226;
+
+  --accent:             #D4AF37;
+  --accent-muted:       #A8892A;
+
+  --border:             rgba(212, 175, 55, 0.18);
+
+  --error:              #E05C4A;
+  --error-bg:           rgba(224, 92, 74, 0.14);
+  --warning:            #E09D34;
+  --warning-bg:         rgba(224, 157, 52, 0.14);
+  --success:            #5BAD72;
+  --success-bg:         rgba(91, 173, 114, 0.14);
+  --info:               #5B9FBF;
+  --info-bg:            rgba(91, 159, 191, 0.14);
+  --muted:              #586672;
+
+  /* ── Typography ────────────────────────────────────────────────────────── */
+  --font-sans: "Segoe UI Semilight", "Segoe UI", Inter, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* ── Spacing (8px base scale) ──────────────────────────────────────────── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ── Radius ────────────────────────────────────────────────────────────── */
+  --radius-sm:    4px;
+  --radius-md:    8px;
+  --radius-lg:    12px;
+  --radius-xl:    16px;
+  --radius-panel: 20px;
+
+  /* ── Motion (120-240ms per brand guide) ────────────────────────────────── */
+  --duration-fast:  120ms;
+  --duration-base:  180ms;
+  --duration-slow:  240ms;
+  --ease-entry:     ease-out;
+  --ease-state:     ease-in-out;
+
+  /* ── Glass ─────────────────────────────────────────────────────────────── */
+  --glass-blur-soft:   8px;
+  --glass-blur-panel:  16px;
+  --glass-blur-strong: 20px;
+}
+
+/* =============================================================================
+   Light mode defaults — Solarized Light Revisited
+   Applied when the user's OS is set to light mode, before JS loads.
+   ============================================================================= */
+@media (prefers-color-scheme: light) {
+  :root {
+    --background:       #FDF6E3;
+    --surface:          #F5EFD6;
+    --surface-alt:      #EDE5C8;
+    --surface-elevated: #E6DDBA;
+
+    --text:             #073642;
+    --text-primary:     #073642;
+    --text-secondary:   #586E75;
+    --text-muted:       #657B83;
+    --text-inverse:     #FDF6E3;
+
+    --accent:           #268BD2;
+    --accent-muted:     #1A6BA8;
+
+    --border:           rgba(38, 139, 210, 0.2);
+
+    --error:            #DC322F;
+    --error-bg:         rgba(220, 50, 47, 0.1);
+    --warning:          #CB4B16;
+    --warning-bg:       rgba(203, 75, 22, 0.1);
+    --success:          #859900;
+    --success-bg:       rgba(133, 153, 0, 0.1);
+    --info:             #2AA198;
+    --info-bg:          rgba(42, 161, 152, 0.1);
+    --muted:            #93A1A1;
+  }
+}
+
+/* =============================================================================
+   Base element styles
+   Minimal opinionated defaults that follow the brand guide.
+   Applications may override these freely.
+   ============================================================================= */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--background);
+  color: var(--text-primary);
+  line-height: 1.6;
+  transition: background-color var(--duration-base) var(--ease-state),
+              color var(--duration-base) var(--ease-state);
+}
+
+code, pre, kbd, samp {
+  font-family: var(--font-mono);
+}
+
+a {
+  color: var(--accent);
+  text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  text-underline-offset: 3px;
+  transition: color var(--duration-fast) var(--ease-entry),
+              text-decoration-color var(--duration-fast) var(--ease-entry);
+}
+
+a:hover {
+  color: var(--accent-muted);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+::selection {
+  background-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--text-primary);
+}
+
+/* =============================================================================
+   Utility classes (opt-in, prefix: vault-)
+   ============================================================================= */
+
+/* Surfaces */
+.vault-bg-base     { background-color: var(--background); }
+.vault-bg-surface  { background-color: var(--surface); }
+.vault-bg-alt      { background-color: var(--surface-alt); }
+.vault-bg-elevated { background-color: var(--surface-elevated); }
+
+/* Text */
+.vault-text-primary   { color: var(--text-primary); }
+.vault-text-secondary { color: var(--text-secondary); }
+.vault-text-muted     { color: var(--text-muted); }
+.vault-text-accent    { color: var(--accent); }
+.vault-text-inverse   { color: var(--text-inverse); }
+
+/* Borders */
+.vault-border { border: 1px solid var(--border); }
+
+/* Semantic states */
+.vault-text-error   { color: var(--error); }
+.vault-text-warning { color: var(--warning); }
+.vault-text-success { color: var(--success); }
+.vault-text-info    { color: var(--info); }
+
+/* Banners */
+.vault-banner {
+  padding: 0.75rem 1rem;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  border-left-width: 3px;
+  border-left-style: solid;
+}
+.vault-banner-error   { background: var(--error-bg);   border-color: var(--error);   color: var(--error); }
+.vault-banner-warning { background: var(--warning-bg); border-color: var(--warning); color: var(--warning); }
+.vault-banner-success { background: var(--success-bg); border-color: var(--success); color: var(--success); }
+.vault-banner-info    { background: var(--info-bg);    border-color: var(--info);    color: var(--info); }
+
+/* Glass effects — use sparingly per brand guide */
+.vault-glass {
+  background: color-mix(in srgb, var(--surface-elevated) 72%, transparent);
+  backdrop-filter: blur(var(--glass-blur-panel));
+  -webkit-backdrop-filter: blur(var(--glass-blur-panel));
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+.vault-glass-soft {
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  backdrop-filter: blur(var(--glass-blur-soft));
+  -webkit-backdrop-filter: blur(var(--glass-blur-soft));
+  border: 1px solid var(--border);
+}
+
+/* Scrollbar */
+.vault-scrollbar::-webkit-scrollbar        { width: 8px; height: 8px; }
+.vault-scrollbar::-webkit-scrollbar-track  { background: var(--surface); }
+.vault-scrollbar::-webkit-scrollbar-thumb  {
+  background: var(--border);
+  border-radius: 9999px;
+  border: 2px solid var(--surface);
+}
+.vault-scrollbar::-webkit-scrollbar-thumb:hover { background: var(--accent-muted); }

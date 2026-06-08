@@ -16,6 +16,7 @@ frontend/test-results/
 frontend/test-coverage/
 frontend/playwright-report/data/
 *.log
+stacks.txt
 node_modules/
 .npm-cache/
 app/generated-prisma-client/
@@ -25,6 +26,10 @@ app/generated-prisma-client/
 .env.example
 .certs/
 .omx
+
+# Startup scripts ignored
 setup_startup_service.ps1
 start_dev_background.cmd
 stop_dev_background.cmd
+_uploads/
+data/

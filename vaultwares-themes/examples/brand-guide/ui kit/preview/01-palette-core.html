@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>VaultWares — Brand palette</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<style>
+  html,body{margin:0;background:transparent;font-family:var(--vault-font-sans);color:var(--vault-text-primary)}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:18px}
+  .swatch{border-radius:12px;overflow:hidden;border:1px solid var(--vault-border-subtle);background:var(--vault-surface);box-shadow:var(--vault-shadow-sm)}
+  .chip{height:64px}
+  .meta{padding:10px 12px;display:flex;flex-direction:column;gap:2px}
+  .name{font-size:13px;font-weight:500}
+  .hex{font-family:var(--vault-font-mono);font-size:11px;color:var(--vault-muted)}
+  .use{font-size:11px;color:var(--vault-slate);line-height:1.35}
+</style>
+</head>
+<body>
+<div class="grid">
+  <div class="swatch"><div class="chip" style="background:#002B36"></div><div class="meta"><span class="name">Base</span><span class="hex">#002B36</span><span class="use">Deep dark surface</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#FDF6E3"></div><div class="meta"><span class="name">Paper</span><span class="hex">#FDF6E3</span><span class="use">Warm light surface</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#CC9B21"></div><div class="meta"><span class="name">Gold</span><span class="hex">#CC9B21</span><span class="use">Primary accent · V mark</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#21B8CC"></div><div class="meta"><span class="name">Cyan</span><span class="hex">#21B8CC</span><span class="use">Interactive · focus</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#4ECC21"></div><div class="meta"><span class="name">Green</span><span class="hex">#4ECC21</span><span class="use">Secured · success</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#A63D40"></div><div class="meta"><span class="name">Burgundy</span><span class="hex">#A63D40</span><span class="use">Error · destructive</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#4A5459"></div><div class="meta" style="color:var(--vault-paper)"><span class="name" style="color:var(--vault-ink)">Slate</span><span class="hex">#4A5459</span><span class="use">Secondary surface</span></div></div>
+  <div class="swatch"><div class="chip" style="background:#586E75"></div><div class="meta"><span class="name">Muted</span><span class="hex">#586E75</span><span class="use">Captions · metadata</span></div></div>
+</div>
+</body>
+</html>

@@ -1,0 +1,24 @@
+/** @type {import('tailwindcss').Config} */
+module.exports = {
+  theme: {
+    extend: {
+      colors: {
+        vault: {
+          // Flagship: Golden Slate
+          primary: '#2E3538',
+          background: '#2E3538',
+          surface: '#363D41',
+          'surface-alt': '#3F474C',
+          'surface-elevated': '#485157',
+          accent: '#D4AF37',
+          'accent-muted': '#A8892A',
+          error: '#E05C4A',
+          warning: '#E09D34',
+          success: '#5BAD72',
+          info: '#5B9FBF',
+          muted: '#586672',
+        }
+      }
+    }
+  }
+}

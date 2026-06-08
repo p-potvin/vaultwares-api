@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 120" width="600" height="120">
+  <title>VaultWares</title>
+  <path d="M10 20 L30 20 L55 85 L80 20 L100 20 L63 108 L47 108 Z" fill="#CC9B21"></path>
+  <circle cx="55" cy="62" r="10" fill="none" stroke="#21B8CC" stroke-width="2"></circle>
+  <circle cx="55" cy="62" r="4" fill="#CC9B21"></circle>
+  <text x="112" y="84" font-family="&#39;Segoe UI Semilight&#39;, &#39;Segoe UI&#39;, &#39;Inter&#39;, system-ui, sans-serif" font-size="56" font-weight="300" fill="#FDF6E3">aultWares</text>
+</svg>

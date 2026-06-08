@@ -1,5 +1,6 @@
 """Tests for WorkflowExportAgent logic."""
 import pytest
+from unittest.mock import MagicMock
 from ai_model.workflow_export_agent import WorkflowExportAgent
 from ai_model.shared_context import SharedContext
 
@@ -17,6 +18,10 @@ class DummyEventBus:
     def publish(event, payload):
         DummyEventBus.published.append((event, payload))
 
+# Mock RedisCoordinator to prevent connection attempts during tests
+@pytest.fixture(autouse=True)
+def mock_redis(monkeypatch):
+    monkeypatch.setattr("ai_model.workflow_export_agent.RedisCoordinator", MagicMock())
 
 def test_export_to_comfyui_success(monkeypatch):
     monkeypatch.setattr("ai_model.validation_utils.ValidationUtils", DummyValidationUtils)

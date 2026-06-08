@@ -166,5 +166,9 @@ def add_audio(
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed:\n{result.stderr}")
+        # Prevent information leakage by not including the full stderr in the exception
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"ffmpeg failed with return code {result.returncode}: {result.stderr}")
+        raise RuntimeError("An error occurred during video processing. Please check the logs.")
     return output_path.resolve()

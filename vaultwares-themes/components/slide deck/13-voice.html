@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>VaultWares — Voice replacement</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<style>
+  html,body{margin:0;background:var(--vault-paper);font-family:var(--vault-font-sans);color:var(--vault-text-primary)}
+  .wrap{padding:18px;display:flex;flex-direction:column;border:1px solid var(--vault-border-subtle);border-radius:14px;margin:14px;background:var(--vault-paper-bright);overflow:hidden}
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:12px 16px;border-bottom:1px solid var(--vault-divider);align-items:start}
+  .row:last-child{border-bottom:0}
+  .avoid{color:#A63D40;font-size:13px;display:flex;gap:8px;align-items:start}
+  .use{color:var(--vault-slate);font-size:13px;display:flex;gap:8px;align-items:start}
+  svg{width:14px;height:14px;flex-shrink:0;margin-top:3px}
+  .label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--vault-muted);padding:0 16px 6px}
+</style>
+</head>
+<body>
+<div class="label" style="padding-top:14px">Avoid · use</div>
+<div class="wrap">
+  <div class="row">
+    <span class="avoid"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>Encrypted with military-grade AES-256!</span>
+    <span class="use"><svg viewBox="0 0 24 24" fill="none" stroke="#4ECC21" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Vault secured.</span>
+  </div>
+  <div class="row">
+    <span class="avoid"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>Critical security warning!</span>
+    <span class="use"><svg viewBox="0 0 24 24" fill="none" stroke="#4ECC21" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>We noticed something. Here's what to do.</span>
+  </div>
+  <div class="row">
+    <span class="avoid"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>Proceed to authentication.</span>
+    <span class="use"><svg viewBox="0 0 24 24" fill="none" stroke="#4ECC21" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Continue.</span>
+  </div>
+  <div class="row">
+    <span class="avoid"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>Hacker-proof your life.</span>
+    <span class="use"><svg viewBox="0 0 24 24" fill="none" stroke="#4ECC21" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Your data. Your device. Your rules.</span>
+  </div>
+</div>
+</body>
+</html>

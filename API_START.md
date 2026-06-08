@@ -54,14 +54,15 @@ Create an API key (admin JWT required, trusted network only):
 
 ## Strict source allowlist (Vercel + localhost + Tailscale)
 
-By default, the API rejects public-internet requests that do not include an allowed browser `Origin`.
-Set stable Vercel alias origins (not preview URLs):
+Set stable Vercel app origins (not preview URLs):
 ```env
-ALLOWED_ORIGINS=https://dispatch-wares-frontend.vercel.app,https://glass-ui-preview.vercel.app
+ALLOWED_ORIGINS=https://vaultwares-dispatch-frontend.vercel.app,https://vaultwares-glass-preview.vercel.app
 ```
 
-For stronger protection (recommended), require requests from the public internet to pass through a gateway
-(Brume 2 reverse proxy and/or a Vercel server-side API route) that adds a shared secret header:
+Note: `/auth/login` requires an allowlisted `Origin` so only your frontends can initiate sessions.
+
+For stronger protection (recommended), require public-internet requests to pass through a gateway
+(recommended: a VPS that forwards to your local API over Tailscale) that adds a shared secret header:
 ```env
 GATEWAY_REQUIRED_PUBLIC=1
 GATEWAY_SHARED_SECRET=change-me-long-random
@@ -73,9 +74,26 @@ If you want a different header name:
 GATEWAY_HEADER_NAME=x-vw-gateway-secret
 ```
 
-See `brume2_nginx.conf.example` for an OpenWrt-friendly Nginx starting point (adjust cert paths).
+See `vps_nginx.conf.example` for a VPS-friendly Nginx config (TLS termination + proxy over Tailscale).
 
-### Brume 2 (OpenWrt) Nginx quick start
+### VPS gateway (recommended) quick start
+
+1. Install Tailscale on the VPS and join it to your tailnet.
+2. Point Nginx upstream to your local PC's **Tailscale** address (not your LAN IP).
+3. Inject `X-VW-Gateway-Secret` on the VPS when proxying to the API.
+4. On the API host, set `TRUSTED_PROXY_CIDRS` to your VPS Tailscale IP (so X-Forwarded-For can't be spoofed).
+
+Example:
+```env
+TRUSTED_PROXY_CIDRS=100.73.57.6/32,127.0.0.1/32,::1/128
+```
+
+If you want to trust only known Tailnet devices instead of the full Tailnet range, set an exact IP allowlist:
+```env
+TRUSTED_CLIENT_IPS=100.67.153.112,100.71.101.21,100.91.249.45,100.75.112.67,100.73.57.6
+```
+
+### Brume 2 (OpenWrt) Nginx (optional alternative)
 
 1. Copy the example to your Brume (adjust as needed for your Nginx install):
    - Common locations: `/etc/nginx/conf.d/vaultwares-api.conf` or `/etc/nginx/sites-enabled/vaultwares-api.conf`
@@ -92,7 +110,7 @@ Tailscale networks (defaults to `100.64.0.0/10` and `fd7a:115c:a1e0::/48`):
 TAILSCALE_CIDRS=100.64.0.0/10,fd7a:115c:a1e0::/48
 ```
 
-When using the Brume gateway over LAN, run the API bound to LAN:
+When using a LAN gateway (like Brume) over your local network, run the API bound to LAN:
 ```env
 API_HOST=0.0.0.0
 API_PORT=9001
@@ -139,8 +157,26 @@ See `Caddyfile.example` for a minimal Caddy config.
 
 If you run behind a reverse proxy, ensure the API only trusts `X-Forwarded-For` from that proxy:
 ```env
-TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128
+TRUSTED_PROXY_CIDRS=10.0.0.50/32,127.0.0.1/32,::1/128
 ```
+
+## Traffic verification
+
+After deploying the VPS gateway, verify that public traffic is actually reaching your local PC through the Tailnet:
+
+```bash
+curl https://api.vaultwares.ca/diagnostics/network \
+  -H "Authorization: Bearer <admin-jwt>"
+```
+
+Expected signals in the JSON response:
+- `served_by` should be your local PC hostname, such as `clopeux-desktop`
+- `peer_ip` should be `100.73.57.6`
+- `via_trusted_proxy` should be `true`
+- `effective_scheme` should be `https`
+- `client_ip` should be the original caller, not the VPS
+
+If you call the same endpoint directly from a trusted Tailnet device instead of through the public domain, `peer_ip` will be that device and `via_trusted_proxy` will be `false`.
 
 ---
 

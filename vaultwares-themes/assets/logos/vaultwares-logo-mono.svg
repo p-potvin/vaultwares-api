@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 120">
+  <!--
+    VaultWares — Wordmark Logo (Monochrome variant)
+    Use on: embossing, watermarks, single-color print
+    Color is set via currentColor — override with CSS or SVG fill attribute
+    Default: Slate #4A5459
+  -->
+  <style>
+    .mono { fill: #4A5459; font-family: 'Segoe UI Semilight', 'Inter', sans-serif; font-size: 64px; font-weight: 300; }
+    .mono-stroke { fill: none; stroke: #4A5459; stroke-width: 3; }
+    .mono-circle { fill: #4A5459; }
+  </style>
+  <!-- V glyph -->
+  <path class="mono" d="M10 20 L30 20 L55 85 L80 20 L100 20 L63 108 L47 108 Z"/>
+  <circle class="mono-stroke" cx="55" cy="62" r="10"/>
+  <circle class="mono-circle" cx="55" cy="62" r="4"/>
+  <!-- Wordmark -->
+  <text x="112" y="84" class="mono">aultWares</text>
+</svg>
