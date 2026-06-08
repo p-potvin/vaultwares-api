@@ -6,7 +6,7 @@ set "PROJECT_ROOT=%~dp0"
 set "PYTHON_EXE=%PROJECT_ROOT%.venv\Scripts\python.exe"
 
 :: Environment setup
-set "PYTHONPATH=%PROJECT_ROOT%;%PROJECT_ROOT%vaultwares-agentciation"
+set "PYTHONPATH=%PROJECT_ROOT%;%PROJECT_ROOT%vaultwares-adk;%PROJECT_ROOT%..\vaultwares-adk"
 
 :: Check for Redis (required for coordination)
 echo [System] Checking for Redis...
@@ -28,7 +28,7 @@ echo.
 
 :: Launch the coordination script
 if exist "%PYTHON_EXE%" (
-    set PYTHONPATH=%PROJECT_ROOT%;%PROJECT_ROOT%vaultwares-agentciation
+    set PYTHONPATH=%PROJECT_ROOT%;%PROJECT_ROOT%vaultwares-adk;%PROJECT_ROOT%..\vaultwares-adk
     "%PYTHON_EXE%" assign_spa_tasks.py
 ) else (
     echo [Error] Virtual environment not found at .venv\Scripts\python.exe

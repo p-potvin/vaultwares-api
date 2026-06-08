@@ -33,9 +33,7 @@ from ai_model.text.prompts import (
     STYLE_PROMPTS,
 )
 
-import importlib
-ExtrovertAgent = importlib.import_module('vaultwares_agentciation.extrovert_agent').ExtrovertAgent
-AgentStatus = importlib.import_module('vaultwares_agentciation.enums').AgentStatus
+from ai_model.adk_imports import AgentStatus, ExtrovertAgent
 
 logger = logging.getLogger(__name__)
 

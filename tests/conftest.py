@@ -1,12 +1,22 @@
 import pytest
+import importlib
+import sys
+from pathlib import Path
 from unittest.mock import MagicMock
-import vaultwares_agentciation.redis_coordinator
-import vaultwares_agentciation.agent_base
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+for candidate in (REPO_ROOT / "vaultwares-adk", REPO_ROOT.parent / "vaultwares-adk"):
+    if (candidate / "vaultwares_adk" / "__init__.py").is_file():
+        sys.path.insert(0, str(candidate))
+        break
+
+agent_base = importlib.import_module("vaultwares_adk.agent_base")
+redis_coordinator = importlib.import_module("vaultwares_adk.redis_coordinator")
 
 @pytest.fixture(autouse=True)
 def mock_redis_coordinator(monkeypatch):
-    monkeypatch.setattr(vaultwares_agentciation.redis_coordinator, "RedisCoordinator", MagicMock())
-    monkeypatch.setattr(vaultwares_agentciation.agent_base, "RedisCoordinator", MagicMock())
+    monkeypatch.setattr(redis_coordinator, "RedisCoordinator", MagicMock())
+    monkeypatch.setattr(agent_base, "RedisCoordinator", MagicMock())
 
     # In case redis itself is accessed directly somewhere during instantiation
     import redis

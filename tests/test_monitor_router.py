@@ -62,6 +62,7 @@ def test_monitor_overview_normalizes_health_agent_and_kiwi(monkeypatch, tmp_path
             {"event_type": "ollama_resource_sample", "gpu_snapshot": {"available": True}},
         ],
     )
+    from app.routers import monitor
     from app.routers.telemetry import agent_ledger_db
 
     async def fake_changes(limit=500):
@@ -92,8 +93,12 @@ def test_monitor_overview_normalizes_health_agent_and_kiwi(monkeypatch, tmp_path
             }
         }
 
+    async def fake_input_tracker():
+        return {"source": "vaultwares-api", "status": "unavailable"}
+
     monkeypatch.setattr(agent_ledger_db, "get_agent_changes", fake_changes)
     monkeypatch.setattr(agent_ledger_db, "get_agent_work_impact", fake_work_impact)
+    monkeypatch.setattr(monitor, "get_input_tracker", fake_input_tracker)
 
     response = client.get("/monitor/overview?kiwi_check=false")
 

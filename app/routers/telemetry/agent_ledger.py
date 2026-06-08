@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .agent_ledger_db import (
     get_agent_changes,
@@ -17,13 +17,12 @@ router = APIRouter(prefix="/api/ledger/agent", tags=["agent-ledger"])
 
 
 class AgentLedgerEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     id: str = Field(min_length=6, max_length=180)
     project: Optional[str] = Field(default=None, max_length=120)
     kind: Optional[str] = Field(default=None, max_length=120)
     summary: Optional[str] = Field(default=None, max_length=12000)
-
-    class Config:
-        extra = "allow"
 
 
 class AgentLedgerBatch(BaseModel):

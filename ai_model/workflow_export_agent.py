@@ -9,7 +9,7 @@ import ai_model.event_bus as event_bus
 
 import secrets
 import string
-from vaultwares_agentciation import RedisCoordinator
+from ai_model.adk_imports import RedisCoordinator
 
 class WorkflowExportAgent:
     def __init__(self, shared_context: SharedContext):

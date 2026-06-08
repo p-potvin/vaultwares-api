@@ -26,7 +26,7 @@ echo.
 echo --- ?? VaultWares Pipeline Stream: SPA Deployment Team ---
 echo.
 
-set "PYTHONPATH=%PROJECT_ROOT%;%PROJECT_ROOT%vaultwares-agentciation"
+set "PYTHONPATH=%PROJECT_ROOT%;%PROJECT_ROOT%vaultwares-adk;%PROJECT_ROOT%..\vaultwares-adk"
 
 if exist "%PYTHON_EXE%" (
     "%PYTHON_EXE%" assign_spa_tasks.py
