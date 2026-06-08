@@ -202,6 +202,8 @@ def _verify_api_key(raw_key: str, hashed_key: str) -> bool:
     if not API_KEY_PEPPER:
         raise HTTPException(status_code=500, detail="API key pepper is not configured")
     if hashed_key.startswith("$2"):
+        if raw_key.startswith("vwk_"):
+            return False
         # Legacy bcrypt hash
         return pwd_context.verify(API_KEY_PEPPER + raw_key, hashed_key)
     expected = _hash_api_key(raw_key)
