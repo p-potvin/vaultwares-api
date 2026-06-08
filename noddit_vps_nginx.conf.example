@@ -1,0 +1,76 @@
+# Example Nginx config for noddit.org on a VPS gateway.
+#
+# Intent:
+# - VPS terminates TLS for `noddit.org` + `www.noddit.org`
+# - VPS serves the Vault Flows SPA from the PC over the tailnet
+# - VPS proxies browser API calls from `/api/*` to the PC-hosted pipelines API
+# - Browser never talks to tailnet IPs directly (avoids mixed-content + privacy leaks)
+#
+# Requirements:
+# - Tailscale installed on VPS + joined to tailnet
+# - PC reachable from VPS over tailnet:
+#   - SPA: http://100.71.101.21:3100
+#   - API: http://100.71.101.21:9001
+# - PC API trusts the VPS as a proxy:
+#   - set `TRUSTED_PROXY_CIDRS=<VPS_TAILNET_IP>/32,...` so X-Forwarded-* is honored
+# - PC API remains private (no router port-forward for 9001)
+#
+# NOTE:
+# - Replace placeholders: <VPS_TAILNET_IP>, <GATEWAY_SHARED_SECRET>
+# - Keep upstream over Tailscale as plain HTTP unless you explicitly run TLS on the PC services.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    server_name noddit.org www.noddit.org;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name noddit.org www.noddit.org;
+
+    ssl_certificate     /etc/letsencrypt/live/noddit.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/noddit.org/privkey.pem;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # --- API: same-origin /api -> PC API (9001) ---
+    location ^~ /api/ {
+        proxy_pass http://100.71.101.21:9001/;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        # Optional: gateway secret injection for public traffic hardening.
+        proxy_set_header X-VW-Gateway-Secret <GATEWAY_SHARED_SECRET>;
+
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+    }
+
+    # --- SPA: everything else -> PC SPA (3100) ---
+    location / {
+        proxy_pass http://100.71.101.21:3100;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+    }
+}
+

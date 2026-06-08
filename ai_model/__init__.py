@@ -18,7 +18,7 @@ from ai_model.text.processor import TextProcessor
 from ai_model.workflows.base import Workflow
 from ai_model.utils.device import DeviceManager
 from ai_model.context_schema import ImageContext, VideoContext, TextContext, WorkflowContext
-from ai_model.agent_registry import AgentRegistry
+from vaultwares_agentciation import AgentRegistry
 from ai_model.event_bus import EventBus
 
 # Register core agents for discovery

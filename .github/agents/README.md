@@ -1,4 +1,9 @@
-# Skills snapshot
+# Skills snapshot (Managed)
+
+This folder is a **managed snapshot** of agent skills.
+
+- Canonical location: `vaultwares-agentciation/skills/mirrors/vaultwares-pipelines/.github/agents`
+- Consumer repos should treat `.github/agents` as generated output and sync it from the canonical snapshot.
 
 Generated: 2026-04-13 01:40:30 -04:00
 Repo: C:\Users\Administrator\Desktop\Github Repos\Projects\vaultwares-pipelines

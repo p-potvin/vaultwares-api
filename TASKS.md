@@ -1,15 +1,19 @@
 # Project Roadmap: Advanced Workflow SPA
 
 ## System Rules
+
+- Review the entire roadmap before starting any task to ensure alignment with project goals and dependencies.
+- All tasks are assigned to a single agent.
 - Tasks use numbers: `1 [ ] Task`
-- Subtasks use letters: `  1a [ ] Subtask`
+- Subtasks use letters: `1a [ ] Subtask`
 - Status indicators: `[ ]` (Free), `[~]` (In Progress), `[x]` (Finished)
 - Agents in `RELAXING` state will be assigned the next available main task.
-- Agents in `WAITING_FOR_INPUT` are locked until PRs are merged and they are manually reset.
+- Agents in `WAITING_FOR_INPUT` are locked until PRs are merged by human intervention and are manually reset.
 
 ---
 
 ## 1 Backend & API Infrastructure
+
 1 [ ] Define API Endpoints & Models
   1a [ ] Design OpenAPI spec for all endpoints (GET/POST/PUT/DELETE)
   1b [ ] Define Pydantic models for workflows and user preferences
@@ -29,6 +33,7 @@
   5b [ ] Perform integration tests (DB and NIM VM)
 
 ## 2 Frontend Development (React/Vite)
+
 6 [ ] UI/UX Design & Architecture
   6a [ ] Define Design System using Tailwind and Vault-Themes
   6b [ ] Create wireframes for Category Sidebar and Workflow List
@@ -47,6 +52,7 @@
   10b [ ] Perform E2E testing with Playwright
 
 ## 3 Cross-Cutting Features
+
 11 [ ] NIM VM API Integration
   11a [ ] Build client/server logic for remote execution
   11b [ ] Implement status polling for long-running workflows
@@ -56,4 +62,3 @@
 13 [ ] CI/CD & Deployment
   13a [ ] Setup GitHub Actions for Build/Test/Deploy
   13b [ ] Write User & Admin guides
-

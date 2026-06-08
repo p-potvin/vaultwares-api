@@ -7,15 +7,15 @@ from ai_model.shared_context import SharedContext
 import ai_model.validation_utils as validation_utils
 import ai_model.event_bus as event_bus
 
-import random
+import secrets
 import string
-from ai_model.redis_coordination import RedisCoordinator
+from vaultwares_agentciation import RedisCoordinator
 
 class WorkflowExportAgent:
     def __init__(self, shared_context: SharedContext):
         self.shared_context = shared_context
         # Generate unique agent ID: workflow-XXXX
-        agent_id = 'workflow-' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+        agent_id = 'workflow-' + ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(4))
         self._coordinator = RedisCoordinator(agent_id=agent_id)
         # Example: self._coordinator.publish('STATUS', 'init', {'msg': 'WorkflowExportAgent ready'})
 

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 120">
+  <style>
+    .text { font-family: 'Segoe UI Semilight', 'Inter', sans-serif; font-size: 64px; fill: #4A5459; font-weight: 300; }
+    .v-door { fill: #CC9B21; }
+  </style>
+  <!-- V with vault door -->
+  <path class="v-door" d="M30 20 L50 20 L65 70 L80 20 L100 20 L75 100 L55 100 Z M65 45 a12 12 0 1 0 0.1 0"/>
+  <!-- Wordmark -->
+  <text x="120" y="78" class="text">aultWares</text>
+</svg>

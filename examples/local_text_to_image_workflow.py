@@ -14,7 +14,6 @@ import torch
 from diffusers import StableDiffusionPipeline, StableDiffusionControlNetPipeline, ControlNetModel, StableDiffusionImg2ImgPipeline
 from diffusers.utils import load_image
 from realesrgan import RealESRGAN
-# CodeFormer and SAM imports would go here (see comments)
 
 MODEL_ROOT = r"D:/comfyui/resources/comfyui/models"
 CHECKPOINT = os.path.join(MODEL_ROOT, "checkpoints", "illustrious_v6NS.safetensors")
@@ -70,18 +69,12 @@ def upscale(img_path):
     return save_and_log("upscale", out)
 
 # 4. Face Restore (CodeFormer)
-# Placeholder: You would import and use CodeFormer here, e.g.:
-# from codeformer import CodeFormer
-# def face_restore(img_path): ...
 def face_restore(img_path):
     # Placeholder: Save input as output
     img = Image.open(img_path)
     return save_and_log("facerestore", img)
 
 # 5. Segmentation (SAM)
-# Placeholder: You would import and use SAM here, e.g.:
-# from segment_anything import SamPredictor, sam_model_registry
-# def segment(img_path): ...
 def segment(img_path):
     # Placeholder: Save input as output
     img = Image.open(img_path)

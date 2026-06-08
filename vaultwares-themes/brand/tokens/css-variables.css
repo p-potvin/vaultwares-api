@@ -1,0 +1,41 @@
+:root {
+  --vault-base: #002B36;
+  --vault-paper: #FDF6E3;
+  --vault-paper-bright: #FDFCF7;
+  --vault-ink: #002B36;
+  --vault-slate: #4A5459;
+  --vault-muted: #586E75;
+  --vault-gold: #CC9B21;
+  --vault-gold-muted: #B78C1E;
+  --vault-gold-light: #E5C06A;
+  --vault-cyan: #21B8CC;
+  --vault-green: #4ECC21;
+  --vault-burgundy: #A63D40;
+  --vault-deep-sea: #0A2540;
+  --vault-font-sans: "Segoe UI Semilight", "Segoe UI", Inter, system-ui, sans-serif;
+  --vault-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --vault-radius: 8px;
+  --vault-radius-panel: 20px;
+  --vault-motion-base: 180ms;
+  --vault-glass-blur-panel: 16px;
+}
+
+:root,
+[data-vault-theme="light"] {
+  --vault-background: var(--vault-paper);
+  --vault-surface: var(--vault-paper-bright);
+  --vault-surface-elevated: rgba(253, 252, 247, 0.86);
+  --vault-text-primary: var(--vault-ink);
+  --vault-text-secondary: var(--vault-muted);
+  --vault-border-subtle: rgba(0, 43, 54, 0.14);
+}
+
+[data-vault-theme="dark"],
+.dark {
+  --vault-background: var(--vault-base);
+  --vault-surface: var(--vault-slate);
+  --vault-surface-elevated: rgba(74, 84, 89, 0.72);
+  --vault-text-primary: var(--vault-paper);
+  --vault-text-secondary: #D8D0B8;
+  --vault-border-subtle: rgba(253, 246, 227, 0.18);
+}

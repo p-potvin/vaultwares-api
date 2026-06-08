@@ -1,0 +1,33 @@
+@import "tailwindcss";
+@import "../../../brand/tokens/css-variables.css";
+
+@theme {
+  --color-vault-base: #002B36;
+  --color-vault-paper: #FDF6E3;
+  --color-vault-paper-bright: #FDFCF7;
+  --color-vault-ink: #002B36;
+  --color-vault-slate: #4A5459;
+  --color-vault-muted: #586E75;
+  --color-vault-gold: #CC9B21;
+  --color-vault-cyan: #21B8CC;
+  --color-vault-green: #4ECC21;
+  --color-vault-burgundy: #A63D40;
+  --font-vault-sans: "Segoe UI Semilight", "Segoe UI", Inter, system-ui, sans-serif;
+}
+
+html {
+  background: var(--vault-paper);
+  color: var(--vault-ink);
+  font-family: var(--vault-font-sans);
+}
+
+body {
+  margin: 0;
+}
+
+.glass-panel {
+  background: rgba(253, 252, 247, 0.62);
+  border: 1px solid rgba(0, 43, 54, 0.14);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}

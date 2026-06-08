@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>VaultWares — Radii & shadows</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<style>
+  html,body{margin:0;background:var(--vault-paper);font-family:var(--vault-font-sans);color:var(--vault-text-primary)}
+  .wrap{padding:22px;display:flex;flex-direction:column;gap:18px}
+  .row{display:flex;gap:14px;align-items:flex-end}
+  .tile{background:var(--vault-paper-bright);border:1px solid var(--vault-border-subtle);width:80px;height:60px;display:flex;align-items:flex-end;justify-content:center;padding:6px;font-family:var(--vault-font-mono);font-size:10px;color:var(--vault-muted)}
+  .shadow{background:var(--vault-paper-bright);border-radius:12px;width:120px;height:60px;display:flex;align-items:flex-end;justify-content:center;padding:6px;font-family:var(--vault-font-mono);font-size:10px;color:var(--vault-muted)}
+  .label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--vault-muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <div class="label">Radii</div>
+    <div class="row" style="margin-top:10px">
+      <div class="tile" style="border-radius:4px">4 sm</div>
+      <div class="tile" style="border-radius:8px">8 md</div>
+      <div class="tile" style="border-radius:12px">12 lg</div>
+      <div class="tile" style="border-radius:16px">16 xl</div>
+      <div class="tile" style="border-radius:20px">20 panel</div>
+      <div class="tile" style="border-radius:999px;width:120px">999 pill</div>
+    </div>
+  </div>
+  <div>
+    <div class="label">Shadows</div>
+    <div class="row" style="margin-top:10px">
+      <div class="shadow" style="box-shadow:var(--vault-shadow-sm)">sm</div>
+      <div class="shadow" style="box-shadow:var(--vault-shadow-md)">md</div>
+      <div class="shadow" style="box-shadow:var(--vault-shadow-lg)">lg</div>
+      <div class="shadow" style="box-shadow:var(--vault-shadow-panel)">panel</div>
+      <div class="shadow" style="box-shadow:var(--vault-shadow-focus);border:1px solid var(--vault-border-subtle)">focus</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

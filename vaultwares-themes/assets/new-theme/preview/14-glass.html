@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>VaultWares — Glass panel</title>
+<link rel="stylesheet" href="../colors_and_type.css" />
+<style>
+  html,body{margin:0;background:var(--vault-paper);font-family:var(--vault-font-sans)}
+  .wrap{padding:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .stage{height:140px;border-radius:16px;padding:14px;position:relative;overflow:hidden}
+  .stage.warm{background:linear-gradient(135deg,#FDF6E3 0%,#FDFCF7 50%,#E5C06A 100%)}
+  .stage.cool{background:linear-gradient(135deg,#002B36 0%,#4A5459 50%,#21B8CC 100%)}
+  .glass{position:absolute;left:18px;right:18px;bottom:14px;border-radius:14px;padding:12px 14px;display:flex;align-items:center;gap:10px;border:1px solid rgba(0,43,54,.14);background:rgba(253,252,247,.62);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);color:var(--vault-ink);font-size:13px;box-shadow:0 12px 32px rgba(0,43,54,.12)}
+  .stage.cool .glass{background:rgba(255,255,255,.10);border-color:rgba(255,255,255,.30);color:#FDF6E3}
+  .icon{width:24px;height:24px;border-radius:6px;background:rgba(204,155,33,.18);display:flex;align-items:center;justify-content:center;color:#CC9B21;flex-shrink:0}
+  .stage.cool .icon{background:rgba(255,255,255,.12);color:#E5C06A}
+  svg{width:14px;height:14px}
+  .body{display:flex;flex-direction:column;gap:1px}
+  .t{font-weight:500}
+  .d{font-size:11px;opacity:.75}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stage warm">
+    <div class="glass">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+      <div class="body"><span class="t">Vault secured</span><span class="d">8 GB volume mounted at /vault</span></div>
+    </div>
+  </div>
+  <div class="stage cool">
+    <div class="glass">
+      <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9 1.65 1.65 0 0 0 4.27 7.18l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>
+      <div class="body"><span class="t">Settings panel</span><span class="d">Glass uses 16px panel blur</span></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

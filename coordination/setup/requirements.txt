@@ -1,0 +1,22 @@
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.8.0
+torchvision==0.19.0+cu124
+torchaudio==2.4.0+cu124
+transformers==5.0.0rc3
+accelerate==0.30.0
+bitsandbytes==0.43.1
+datasets==2.19.1
+peft==0.10.0
+scikit-learn==1.5.0
+sentencepiece==0.2.1
+trl==0.8.6
+protobuf==5.29.6
+ipykernel==6.29.4
+onnxruntime-gpu==1.19.0
+einops==0.8.0
+promptflow==1.10.1
+promptflow-tools==1.6.0
+gradio==6.7.0
+onnxruntime-genai-cuda==0.4.0
+optimum==1.21.4
+olive_ai==0.7.0

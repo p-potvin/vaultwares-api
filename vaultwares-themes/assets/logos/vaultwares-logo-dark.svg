@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 120">
+  <!--
+    VaultWares — Wordmark Logo (Dark variant)
+    Use on: dark backgrounds (#002B36)
+    Minimum size: 32px height
+    Clear space: ½ logo height on all sides
+  -->
+  <style>
+    .wordmark { font-family: 'Segoe UI Semilight', 'Inter', sans-serif; font-size: 64px; fill: #FDF6E3; font-weight: 300; }
+    .v-mark { fill: #CC9B21; }
+    .v-dial { fill: none; stroke: #CC9B21; stroke-width: 3; }
+  </style>
+  <!-- V glyph with vault-door circle motif -->
+  <path class="v-mark" d="M10 20 L30 20 L55 85 L80 20 L100 20 L63 108 L47 108 Z"/>
+  <circle class="v-dial" cx="55" cy="62" r="10"/>
+  <circle class="v-mark" cx="55" cy="62" r="4"/>
+  <!-- Wordmark on dark: paper white -->
+  <text x="112" y="84" class="wordmark">aultWares</text>
+</svg>

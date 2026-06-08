@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 120">
+  
+  
+  
+  <path class="v-mark" d="M10 20 L30 20 L55 85 L80 20 L100 20 L63 108 L47 108 Z"></path>
+  <circle class="v-dial" cx="55" cy="62" r="10"></circle>
+  <circle class="v-mark" cx="55" cy="62" r="4"></circle>
+  
+  <text x="112" y="84" class="wordmark">aultWares</text>
+</svg>
