@@ -12,7 +12,7 @@ import asyncpg
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "migrations" / "telemetry" / "001_input_telemetry.sql"
+MIGRATIONS_DIR = ROOT / "migrations" / "telemetry"
 
 
 def _dsn() -> str:
@@ -26,13 +26,13 @@ def _dsn() -> str:
 
 
 async def main() -> int:
-    sql = MIGRATION.read_text(encoding="utf-8")
     conn = await asyncpg.connect(dsn=_dsn())
     try:
-        await conn.execute(sql)
+        for migration in sorted(MIGRATIONS_DIR.glob("*.sql")):
+            await conn.execute(migration.read_text(encoding="utf-8"))
+            print(f"applied {migration.relative_to(ROOT)}")
     finally:
         await conn.close()
-    print(f"applied {MIGRATION.relative_to(ROOT)}")
     return 0
 
 

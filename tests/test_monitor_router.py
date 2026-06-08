@@ -62,32 +62,38 @@ def test_monitor_overview_normalizes_health_agent_and_kiwi(monkeypatch, tmp_path
             {"event_type": "ollama_resource_sample", "gpu_snapshot": {"available": True}},
         ],
     )
-    _write_json(
-        agent_root / "events" / "2026" / "06" / "20260606-120000-000-vault-monitor-test.json",
-        {
-            "project": "Vault Monitor",
-            "kind": "code-change",
-            "summary": "Added monitor API without leaking sensitive values",
-            "createdAt": "2026-06-06T12:00:00Z",
-            "runtime": {"model": "gpt-5.2", "mcpServers": ["VaultWares_MCP"]},
-            "commands": ["pytest tests/test_monitor_router.py"],
-            "secret_token": "do-not-render",
-        },
-    )
-    _write_json(
-        agent_root / "site" / "public" / "data" / "work-impact-data.json",
-        {
+    from app.routers.telemetry import agent_ledger_db
+
+    async def fake_changes(limit=500):
+        return {
+            "events": [
+                {
+                    "source": "agent-ledger",
+                    "project": "Vault Monitor",
+                    "kind": "code-change",
+                    "summary": "Added monitor API without leaking sensitive values",
+                    "createdAt": "2026-06-06T12:00:00Z",
+                    "runtime": {"model": "gpt-5.2", "mcpServers": ["VaultWares_MCP"]},
+                    "commands": ["pytest tests/test_monitor_router.py"],
+                }
+            ]
+        }
+
+    async def fake_work_impact():
+        return {
             "data": {
                 "agentData": {
                     "totalEvents": 1,
-                    "models": [["gpt-5.2", 3], ["malformed"]],
-                    "tools": [["pytest", 2]],
-                    "mcpServers": [["VaultWares_MCP", 4]],
+                    "models": [{"name": "gpt-5.2", "count": 3}],
+                    "tools": [{"name": "pytest", "count": 2}],
+                    "mcpServers": [{"name": "VaultWares_MCP", "count": 4}],
                     "daySeries": [{"day": "2026-06-06", "count": 1}],
                 }
             }
-        },
-    )
+        }
+
+    monkeypatch.setattr(agent_ledger_db, "get_agent_changes", fake_changes)
+    monkeypatch.setattr(agent_ledger_db, "get_agent_work_impact", fake_work_impact)
 
     response = client.get("/monitor/overview?kiwi_check=false")
 
@@ -102,16 +108,18 @@ def test_monitor_overview_normalizes_health_agent_and_kiwi(monkeypatch, tmp_path
     assert "secret_token" not in json.dumps(body)
 
 
-def test_monitor_exposes_agent_site_data_through_api(monkeypatch, tmp_path):
+def test_monitor_exposes_agent_db_data_through_api(monkeypatch, tmp_path):
     client, _, agent_root = _client(monkeypatch, tmp_path)
-    _write_json(
-        agent_root / "site" / "public" / "data" / "work-impact-data.json",
-        {"generatedAtLocal": "2026-06-07", "data": {"totals": {"events": 1}}},
-    )
-    _write_json(
-        agent_root / "site" / "public" / "data" / "changes-data.json",
-        {"events": [{"project": "agent-ledger", "kind": "code-change"}]},
-    )
+    from app.routers.telemetry import agent_ledger_db
+
+    async def fake_changes(limit=500):
+        return {"source": "vaultwares-api", "events": [{"project": "agent-ledger", "kind": "code-change"}]}
+
+    async def fake_work_impact():
+        return {"source": "vaultwares-api", "data": {"totals": {"events": 1}}}
+
+    monkeypatch.setattr(agent_ledger_db, "get_agent_changes", fake_changes)
+    monkeypatch.setattr(agent_ledger_db, "get_agent_work_impact", fake_work_impact)
 
     work_impact = client.get("/monitor/work-impact")
     changes = client.get("/monitor/changes")
@@ -137,16 +145,23 @@ def test_monitor_search_filters_ledgers_case_insensitively(monkeypatch, tmp_path
             }
         ],
     )
-    _write_json(
-        agent_root / "events" / "2026" / "06" / "20260606-120000-000-vault-monitor-test.json",
-        {
-            "project": "Vault Monitor",
-            "kind": "verification",
-            "summary": "Gateway probe correction verified",
-            "createdAt": "2026-06-06T12:00:00Z",
-            "runtime": {"model": "gpt-5.2"},
-        },
-    )
+    from app.routers.telemetry import agent_ledger_db
+
+    async def fake_search(**kwargs):
+        return {
+            "items": [
+                {
+                    "source": "agent-ledger",
+                    "project": "Vault Monitor",
+                    "kind": "verification",
+                    "summary": "Gateway probe correction verified",
+                    "createdAt": "2026-06-06T12:00:00Z",
+                    "runtime": {"model": "gpt-5.2"},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(agent_ledger_db, "search_agent_ledger_events", fake_search)
 
     response = client.get("/monitor/events/search?q=GATEWAY&kind=verification&service=gateway&limit=10")
 

@@ -2,8 +2,8 @@
 V.A.U.L.T Monitor read-only API.
 
 The browser-facing monitor consumes these normalized endpoints only. Source
-ledger file formats stay behind this adapter until durable DB ingestion replaces
-the transitional JSON/JSONL reads.
+ledger file formats stay behind API ingestion; browser views read normalized
+DB-backed API responses.
 """
 from __future__ import annotations
 
@@ -270,23 +270,27 @@ def _agent_event_summary(event: Dict[str, Any], path: Path) -> Dict[str, Any]:
     )
 
 
-def get_agent_ledger() -> Dict[str, Any]:
-    root = _agent_root()
-    recent: List[Dict[str, Any]] = []
-    for path in _json_files(root / "events", limit=80):
-        payload = _read_json(path, {})
-        if isinstance(payload, dict):
-            recent.append(_agent_event_summary(payload, path))
-    recent.sort(key=lambda item: item.get("timestamp") or item.get("id") or "", reverse=True)
+async def get_agent_ledger() -> Dict[str, Any]:
+    try:
+        from app.routers.telemetry.agent_ledger_db import get_agent_changes, get_agent_work_impact
 
-    work_impact = _load_work_impact(root)
-    agent_data = {}
-    if isinstance(work_impact, dict):
-        data = work_impact.get("data") if isinstance(work_impact.get("data"), dict) else {}
-        agent_data = data.get("agentData") if isinstance(data.get("agentData"), dict) else {}
+        changes_payload = await get_agent_changes(limit=80)
+        work_impact = await get_agent_work_impact()
+    except Exception as exc:
+        return {
+            "source": "vaultwares-api",
+            "status": "unavailable",
+            "recent": [],
+            "usage": {"total_events": 0, "models": [], "tools": [], "mcp_servers": [], "day_series": []},
+            "message": f"Agent ledger DB summary unavailable: {exc}",
+        }
+
+    recent = changes_payload.get("events") if isinstance(changes_payload.get("events"), list) else []
+    data = work_impact.get("data") if isinstance(work_impact.get("data"), dict) else {}
+    agent_data = data.get("agentData") if isinstance(data.get("agentData"), dict) else {}
     return {
-        "source": "agent-ledger",
-        "status": "ok" if recent or agent_data else "missing",
+        "source": "vaultwares-api",
+        "status": "ok" if recent or agent_data else "empty",
         "recent": recent[:40],
         "usage": {
             "total_events": agent_data.get("totalEvents") or len(recent),
@@ -296,8 +300,7 @@ def get_agent_ledger() -> Dict[str, Any]:
             "day_series": _sanitize(agent_data.get("daySeries") or [])[-21:],
         },
         "notes": [
-            "WorkImpact aggregates are normalized here so malformed tuple shapes do not leak to vault-monitor.",
-            "DB-backed ingestion behind the central API is still required; file reads are transitional.",
+            "Agent ledger aggregates are read from Postgres behind vaultwares-api.",
         ],
     }
 
@@ -345,18 +348,22 @@ def health_ledger() -> Dict[str, Any]:
 
 
 @router.get("/agent-ledger")
-def agent_ledger() -> Dict[str, Any]:
-    return get_agent_ledger()
+async def agent_ledger() -> Dict[str, Any]:
+    return await get_agent_ledger()
 
 
 @router.get("/work-impact")
-def work_impact() -> Dict[str, Any]:
-    return _sanitize(_load_work_impact(_agent_root()))
+async def work_impact() -> Dict[str, Any]:
+    from app.routers.telemetry.agent_ledger_db import get_agent_work_impact
+
+    return _sanitize(await get_agent_work_impact())
 
 
 @router.get("/changes")
-def changes() -> Dict[str, Any]:
-    return _sanitize(_load_changes(_agent_root()))
+async def changes(limit: int = Query(500, ge=1, le=2000)) -> Dict[str, Any]:
+    from app.routers.telemetry.agent_ledger_db import get_agent_changes
+
+    return _sanitize(await get_agent_changes(limit=limit))
 
 
 @router.get("/logging/kiwi")
@@ -372,7 +379,7 @@ async def input_tracker() -> Dict[str, Any]:
 @router.get("/overview")
 async def overview(kiwi_check: bool = Query(False)) -> Dict[str, Any]:
     health = get_health_ledger()
-    agents = get_agent_ledger()
+    agents = await get_agent_ledger()
     logging = {"kiwi": get_kiwi_status(check=kiwi_check)}
     input_tracker = await get_input_tracker()
     return {
@@ -385,8 +392,8 @@ async def overview(kiwi_check: bool = Query(False)) -> Dict[str, Any]:
         "input_tracker": input_tracker,
         "api_owner": "vaultwares-api",
         "storage_note": (
-            "health-ledger, agent-ledger, Kiwi summaries, and input tracker summaries need durable DB-backed ingestion "
-            "behind the central API; JSON/file reads are transitional."
+            "agent-ledger and input tracker summaries are DB-backed behind vaultwares-api; "
+            "health-ledger and Kiwi richer summaries still need durable ingestion."
         ),
     }
 
@@ -458,7 +465,7 @@ def _agent_search_items(filters: Dict[str, Optional[str]], query: str, limit: in
 
 
 @router.get("/events/search")
-def events_search(
+async def events_search(
     q: str = "",
     project: Optional[str] = None,
     kind: Optional[str] = None,
@@ -484,7 +491,19 @@ def events_search(
         "date": date,
         "ok": ok,
     }
-    agent_items = _agent_search_items(filters, q, limit)
+    from app.routers.telemetry.agent_ledger_db import search_agent_ledger_events
+
+    agent_result = await search_agent_ledger_events(
+        q=q,
+        project=project,
+        kind=kind,
+        model=model,
+        tool=tool,
+        mcp_server=mcp_server,
+        date=date,
+        limit=limit,
+    )
+    agent_items = agent_result.get("items") if isinstance(agent_result.get("items"), list) else []
     remaining = max(0, limit - len(agent_items))
     health_items = _health_search_items(filters, q, remaining) if remaining else []
     items = agent_items + health_items
@@ -495,6 +514,6 @@ def events_search(
         "items": items,
         "notes": [
             "Filters follow the LEDGER_LOOKUP/MCP semantics conceptually: project, kind, model, service, run, event, date, and case-insensitive search.",
-            "Search is bounded to recent files while JSON/JSONL reads remain transitional.",
+            "Agent ledger search is DB-backed; health-ledger search still uses bounded JSONL reads until health ingestion lands.",
         ],
     }

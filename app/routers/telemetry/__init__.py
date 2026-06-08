@@ -1,5 +1,12 @@
-"""Telemetry routers owned by vaultwares-api."""
+"""Telemetry and ledger routers owned by vaultwares-api."""
 
-from .input import router
+from fastapi import APIRouter
+
+from .agent_ledger import router as agent_ledger_router
+from .input import router as input_router
+
+router = APIRouter()
+router.include_router(input_router)
+router.include_router(agent_ledger_router)
 
 __all__ = ["router"]

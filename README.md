@@ -30,7 +30,14 @@ the agent-ledger input tracker:
 - `POST /api/telemetry/input/batches`
 - `GET /api/telemetry/input/summary`
 - `GET /api/telemetry/input/events/search`
+- `POST /api/ledger/agent/events`
+- `POST /api/ledger/agent/events/batches`
+- `GET /api/ledger/agent/changes`
+- `GET /api/ledger/agent/work-impact`
+- `GET /api/ledger/agent/events/search`
 - `GET /monitor/input-tracker`
+- `GET /monitor/changes`
+- `GET /monitor/work-impact`
 
 Set these environment variables for local input telemetry:
 
@@ -51,6 +58,11 @@ python scripts/apply-telemetry-migrations.py
 Input tracker clients batch privacy-safe aggregate metrics to this API. They do
 not connect to Postgres directly. Replay is idempotent through `batch_id` and
 `event_id`.
+
+Agent-ledger clients keep append-only JSON event files as local evidence, but
+live dashboards read the Postgres-backed API. Historical event files are
+backfilled through `POST /api/ledger/agent/events/batches`; new events are
+posted one at a time by `agent-ledger/scripts/record-agent-change.ps1`.
 
 ## Quick Start
 
