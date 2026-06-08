@@ -296,7 +296,7 @@ async def require_auth(
             if not _verify_api_key(api_key, key_row.key_hash):
                 key_row = None
 
-        if not key_row:
+        if not key_row and not api_key.startswith("vwk_"):
             key_hash = _hash_api_key(api_key)
             key_row = await ApiKey.get_or_none(key_hash=key_hash)
 
