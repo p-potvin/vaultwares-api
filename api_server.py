@@ -16,7 +16,6 @@ from collections import defaultdict, deque
 import ipaddress
 import secrets
 import socket
-import string
 
 import asyncio
 import httpx
@@ -36,6 +35,14 @@ from app.security.ml_kem import VaultMLKEM
 # --- Configurable Settings ---
 AUTH_ENABLED = os.environ.get("AUTH_ENABLED", "1") == "1"
 DEFAULT_MODELS_DIR = os.environ.get("DEFAULT_MODELS_DIR") or os.environ.get("MODELS_DIR")
+
+
+def _env_int_with_floor(name: str, default: int, minimum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    return max(value, minimum)
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "")
 JWT_ISSUER = os.environ.get("JWT_ISSUER", "vault-server")
@@ -96,8 +103,8 @@ for _cidr in TRUSTED_PROXY_CIDRS:
 
 RATE_LIMIT_ENABLED = os.environ.get("RATE_LIMIT_ENABLED", "1") == "1"
 RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "60"))
-RATE_LIMIT_MAX_PUBLIC = int(os.environ.get("RATE_LIMIT_MAX_PUBLIC", "120"))
-RATE_LIMIT_MAX_TRUSTED = int(os.environ.get("RATE_LIMIT_MAX_TRUSTED", "1200"))
+RATE_LIMIT_MAX_PUBLIC = _env_int_with_floor("RATE_LIMIT_MAX_PUBLIC", 3000, 3000)
+RATE_LIMIT_MAX_TRUSTED = _env_int_with_floor("RATE_LIMIT_MAX_TRUSTED", 30000, 30000)
 MAINTENANCE_MODE = os.environ.get("MAINTENANCE_MODE", "0") == "1"
 
 GATEWAY_REQUIRED_PUBLIC = os.environ.get("GATEWAY_REQUIRED_PUBLIC", "1") == "1"
@@ -115,7 +122,7 @@ JOB_WORKER_CONCURRENCY = max(1, int(os.environ.get("JOB_WORKER_CONCURRENCY", "1"
 JOB_DEFAULT_TTL_SECONDS = int(os.environ.get("JOB_DEFAULT_TTL_SECONDS", "86400"))
 
 JOBS_PUBLIC_SUBMIT_ENABLED = os.environ.get("JOBS_PUBLIC_SUBMIT_ENABLED", "0") == "1"
-JOB_SUBMIT_RATE_LIMIT_MAX_PUBLIC = int(os.environ.get("JOB_SUBMIT_RATE_LIMIT_MAX_PUBLIC", "12"))
+JOB_SUBMIT_RATE_LIMIT_MAX_PUBLIC = _env_int_with_floor("JOB_SUBMIT_RATE_LIMIT_MAX_PUBLIC", 120, 120)
 JOB_SUBMIT_RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("JOB_SUBMIT_RATE_LIMIT_WINDOW_SECONDS", "60"))
 
 _jobs_fs_lock = Lock()
@@ -241,7 +248,149 @@ def _enforce_register_rate_limit(client_ip: str) -> None:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("vaultwares.api")
 
-app = FastAPI(title="Vaultwares Workflow API", description="API for managing workflows, favorites, backup, NIM integration, and storage.", version="0.2.0")
+import requests
+import queue
+import threading
+import sys
+import uuid
+from datetime import datetime, timezone
+from urllib.parse import urlparse, urljoin
+
+class KiwiLogHandler(logging.Handler):
+    def __init__(
+        self,
+        target_url=None,
+        max_batch_size=None,
+        flush_interval=None,
+        syslog_host=None,
+        syslog_port=None,
+        transport=None,
+        start_worker=True,
+    ):
+        super().__init__()
+        self.target_url = target_url or os.environ.get("VW_KIWI_LOG_URL")
+        self.transport = (transport or os.environ.get("VW_KIWI_LOG_TRANSPORT") or ("http_json" if self.target_url else "syslog_udp")).lower()
+        self.syslog_host = syslog_host or os.environ.get("VW_KIWI_SYSLOG_HOST", "127.0.0.1")
+        self.syslog_port = int(syslog_port or os.environ.get("VW_KIWI_SYSLOG_PORT", "514"))
+        self.max_batch_size = int(max_batch_size or os.environ.get("VW_KIWI_LOG_BATCH_SIZE", "25"))
+        self.flush_interval = float(flush_interval or os.environ.get("VW_KIWI_LOG_FLUSH_SECONDS", "2.0"))
+        self.lock = threading.RLock()
+        self.batch = []
+        self.first_log_time = None
+        self.thread = None
+
+        if start_worker:
+            self.thread = threading.Thread(target=self._flush_loop, daemon=True)
+            self.thread.start()
+
+    def emit(self, record):
+        if record.name.startswith(("urllib3", "requests", "httpx")):
+            return
+        try:
+            msg = self.format(record)
+            timestamp = datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat()
+            
+            with self.lock:
+                if not self.batch:
+                    self.first_log_time = time.time()
+                self.batch.append({
+                    "timestamp": timestamp,
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "message": msg,
+                    "correlationId": getattr(record, "correlation_id", None),
+                    "method": getattr(record, "method", None),
+                    "path": getattr(record, "path", None),
+                    "status_code": getattr(record, "status_code", None),
+                    "duration_ms": getattr(record, "duration_ms", None),
+                })
+                
+                if len(self.batch) >= self.max_batch_size:
+                    self._flush_now()
+        except Exception:
+            self.handleError(record)
+
+    def _flush_now(self):
+        if not self.batch:
+            return
+        
+        payload = self.batch
+        self.batch = []
+        self.first_log_time = None
+        
+        def send_http_json():
+            try:
+                requests.post(self.target_url, json=payload, timeout=3)
+            except Exception:
+                pass
+
+        def send_syslog_udp():
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    for item in payload:
+                        corr = item.get("correlationId") or "-"
+                        method = item.get("method") or "-"
+                        path = item.get("path") or "-"
+                        status = item.get("status_code") or "-"
+                        duration = item.get("duration_ms") or "-"
+                        message = item.get("message") or ""
+                        line = (
+                            f"<14>1 {item['timestamp']} vaultwares-api vaultwares-api - - "
+                            f"[vaultwares correlationId=\"{corr}\" method=\"{method}\" path=\"{path}\" status=\"{status}\" durationMs=\"{duration}\"] "
+                            f"{message}"
+                        )
+                        sock.sendto(line.encode("utf-8", errors="replace"), (self.syslog_host, self.syslog_port))
+            except Exception:
+                pass
+
+        if self.transport == "http_json" and self.target_url:
+            target = send_http_json
+        else:
+            target = send_syslog_udp
+
+        threading.Thread(target=target, daemon=True).start()
+
+    def _flush_loop(self):
+        while True:
+            time.sleep(1.0)
+            with self.lock:
+                if self.batch and (time.time() - self.first_log_time >= self.flush_interval):
+                    self._flush_now()
+
+# Instantiate and register handler
+kiwi_handler = KiwiLogHandler()
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+kiwi_handler.setFormatter(formatter)
+root_logger = logging.getLogger()
+root_logger.addHandler(kiwi_handler)
+
+app = FastAPI(
+    title="VaultWares API",
+    description="Central API for VaultWares auth, DB-backed telemetry, monitor reads, logging, workflows, and media services.",
+    version="0.2.0",
+)
+
+# --- Correlation ID Middleware ---
+def _resolve_correlation_id(request: Request) -> str:
+    corr_id = request.headers.get("x-correlation-id")
+    if not corr_id:
+        corr_id = request.headers.get("x-request-id")
+    if not corr_id:
+        corr_id = request.query_params.get("correlationId")
+    if not corr_id:
+        corr_id = getattr(request.state, "correlation_id", None)
+    if not corr_id:
+        corr_id = f"vw_{uuid.uuid4().hex[:12]}"
+    request.state.correlation_id = corr_id
+    return corr_id
+
+
+@app.middleware("http")
+async def correlation_id_middleware(request: Request, call_next):
+    corr_id = _resolve_correlation_id(request)
+    response = await call_next(request)
+    response.headers["X-Correlation-ID"] = corr_id
+    return response
 
 # ─── Prom-King router ──────────────────────────────────────────────────────
 # Mounts /api/promking/* (videos, taxonomies, fetcher, settings, stats).
@@ -532,6 +681,10 @@ RATE_LIMIT_MAX_STATE_SIZE = 10000
 
 @app.middleware("http")
 async def gate_requests(request: Request, call_next):
+    correlation_id = _resolve_correlation_id(request)
+    method = request.method
+    path = request.url.path
+    started = time.perf_counter()
     try:
         if len(_rate_state) > RATE_LIMIT_MAX_STATE_SIZE:
             # Prevent clearing the whole dictionary to avoid rate limit bypass
@@ -541,6 +694,16 @@ async def gate_requests(request: Request, call_next):
 
         client_ip = _get_client_ip(request) or ""
         is_trusted_ip = _is_trusted_client_ip(client_ip)
+        logger.info(
+            "request.start",
+            extra={
+                "correlation_id": correlation_id,
+                "method": method,
+                "path": path,
+                "client_ip": client_ip,
+                "trusted_client": is_trusted_ip,
+            },
+        )
 
         if MAINTENANCE_MODE and not is_trusted_ip:
             raise HTTPException(status_code=503, detail="Temporarily unavailable")
@@ -562,20 +725,20 @@ async def gate_requests(request: Request, call_next):
                     raise HTTPException(status_code=403, detail="Forbidden source")
 
         if RATE_LIMIT_ENABLED:
-            now = time.time()
-            key = f"{client_ip}:{origin}" if origin else client_ip
-            bucket = _rate_state[key]
-            while bucket and (now - bucket[0]) > RATE_LIMIT_WINDOW_SECONDS:
-                bucket.popleft()
-            limit = RATE_LIMIT_MAX_TRUSTED if is_trusted_ip else RATE_LIMIT_MAX_PUBLIC
-            if len(bucket) >= limit:
-                raise HTTPException(status_code=429, detail="Rate limit exceeded")
-            bucket.append(now)
-
-        correlation_id = "c" + "".join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(6))
-        request.state.correlation_id = correlation_id
+            is_media_pipeline = path in ["/health", "/scrape", "/download", "/abort", "/api/abort", "/api/jobs"]
+            if not is_media_pipeline:
+                now = time.time()
+                key = f"{client_ip}:{origin}" if origin else client_ip
+                bucket = _rate_state[key]
+                while bucket and (now - bucket[0]) > RATE_LIMIT_WINDOW_SECONDS:
+                    bucket.popleft()
+                limit = RATE_LIMIT_MAX_TRUSTED if is_trusted_ip else RATE_LIMIT_MAX_PUBLIC
+                if len(bucket) >= limit:
+                    raise HTTPException(status_code=429, detail="Rate limit exceeded")
+                bucket.append(now)
 
         response = await call_next(request)
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
 
         response.headers["Content-Security-Policy"] = "default-src 'self'"
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -583,18 +746,58 @@ async def gate_requests(request: Request, call_next):
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["X-Correlation-Id"] = correlation_id
+        logger.info(
+            "request.complete",
+            extra={
+                "correlation_id": correlation_id,
+                "method": method,
+                "path": path,
+                "status_code": response.status_code,
+                "duration_ms": duration_ms,
+                "client_ip": client_ip,
+                "trusted_client": is_trusted_ip,
+            },
+        )
 
         return response
     except HTTPException as exc:
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        logger.warning(
+            "request.blocked",
+            extra={
+                "correlation_id": correlation_id,
+                "method": method,
+                "path": path,
+                "status_code": exc.status_code,
+                "duration_ms": duration_ms,
+                "reason": exc.detail,
+            },
+        )
+        response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        response.headers["X-Correlation-Id"] = correlation_id
+        return response
     except Exception:
         peer_ip = request.client.host if request.client else None
         try:
             client_ip = _get_client_ip(request)
         except Exception:
             client_ip = None
-        logger.exception("gate_requests crashed", extra={"peer_ip": peer_ip, "client_ip": client_ip})
-        return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        logger.exception(
+            "request.crashed",
+            extra={
+                "correlation_id": correlation_id,
+                "method": method,
+                "path": path,
+                "status_code": 500,
+                "duration_ms": duration_ms,
+                "peer_ip": peer_ip,
+                "client_ip": client_ip,
+            },
+        )
+        response = JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
+        response.headers["X-Correlation-Id"] = correlation_id
+        return response
 
 # --- Models ---
 class Workflow(BaseModel):
@@ -3094,6 +3297,483 @@ def set_models_dir(req: ModelsDirRequest, principal=Depends(require_auth)):
     DEFAULT_MODELS_DIR = resolved
     APP_CONFIG["modelsDir"] = resolved
     return {"models_dir": DEFAULT_MODELS_DIR, "dir_path": DEFAULT_MODELS_DIR, "modelsDir": DEFAULT_MODELS_DIR}
+
+
+
+
+# --- Media Pipeline Configuration ---
+ZIPPER_DEST_DIR = r"C:\Users\Administrator\Desktop\Github Repos\python-zipper\.downloaded"
+RD_TOKEN_PATH = r"C:\Users\Administrator\Desktop\Github Repos\.access\realdebrid_api.txt"
+
+# Add python-zipper scraper module path dynamically
+sys.path.append(r"C:\Users\Administrator\Desktop\Github Repos\python-zipper\dataset_builder")
+try:
+    import scraper
+except ImportError:
+    scraper = None
+    logger.warning("Media Pipeline: Failed to import 'scraper' module. Check path.")
+
+zipper_cancel_event = threading.Event()
+THROTTLE_SPEED_BPS = 5 * 1024 * 1024  # 5 MiB/s default
+
+active_zipper_jobs = {}
+zipper_jobs_lock = threading.Lock()
+
+def update_job_progress(corr_id: str, status: Optional[str] = None, increment_processed: bool = False, increment_images: bool = False, increment_other: bool = False, total_links: Optional[int] = None):
+    parent_id = corr_id.split("-")[0] if "-" in corr_id else corr_id
+    with zipper_jobs_lock:
+        if parent_id not in active_zipper_jobs:
+            return
+        job = active_zipper_jobs[parent_id]
+        if status:
+            job["status"] = status
+        if increment_processed:
+            job["processed_links"] += 1
+        if increment_images:
+            job["images_count"] += 1
+        if increment_other:
+            job["other_files_count"] += 1
+        if total_links is not None:
+            job["total_links"] = total_links
+        job["updated_at"] = time.time()
+        
+        # Auto-complete status
+        if job["processed_links"] >= job["total_links"] and job["status"] == "running":
+            job["status"] = "completed"
+            
+        # Limit memory to 50 jobs
+        if len(active_zipper_jobs) > 50:
+            sorted_jobs = sorted(active_zipper_jobs.items(), key=lambda x: x[1]["created_at"])
+            for old_id, _ in sorted_jobs[:len(active_zipper_jobs) - 50]:
+                active_zipper_jobs.pop(old_id, None)
+
+def throttle_chunk(chunk_size, start_time):
+    if THROTTLE_SPEED_BPS:
+        min_time = chunk_size / THROTTLE_SPEED_BPS
+        elapsed = time.time() - start_time
+        if elapsed < min_time:
+            time.sleep(min_time - elapsed)
+
+def get_rd_token():
+    try:
+        if os.path.exists(RD_TOKEN_PATH):
+            with open(RD_TOKEN_PATH, 'r') as f:
+                return f.read().strip()
+    except Exception as e:
+        logger.error(f"[Media Pipeline] Failed to read Real-Debrid token: {e}")
+    return None
+
+def unrestrict_link_rd(url, rd_token, corr_id):
+    if not rd_token:
+        logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Real-Debrid token not available. Skipping unrestriction.")
+        return url
+    try:
+        headers = {
+            'Authorization': f'Bearer {rd_token}',
+            'User-Agent': 'Mozilla/5.0'
+        }
+        resp = requests.post(
+            "https://api.real-debrid.com/rest/1.0/unrestrict/link",
+            headers=headers,
+            data={'link': url},
+            timeout=12
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            dl_url = data.get('download')
+            if dl_url:
+                logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Real-Debrid successfully unrestricted: {url} -> {dl_url}")
+                return dl_url
+        else:
+            logger.warning(f"[correlationId: {corr_id}] [Media Pipeline] Real-Debrid error {resp.status_code}: {resp.text}")
+    except Exception as e:
+        logger.error(f"[correlationId: {corr_id}] [Media Pipeline] Real-Debrid unrestriction exception: {e}")
+    return url
+
+def bypass_linkvertise(url, corr_id):
+    bypass_services = [
+        "https://trw.lat/api/bypass",
+        "https://api.bypass.vip/bypass",
+        "https://free.bypass-api.com/bypass"
+    ]
+    for service in bypass_services:
+        try:
+            logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Attempting bypass via {service} for: {url}")
+            resp = requests.get(service, params={'url': url}, timeout=12)
+            if resp.status_code == 200:
+                data = resp.json()
+                res_link = None
+                if data.get('success'):
+                    res_link = data.get('result') or data.get('destination')
+                elif 'destination' in data:
+                    res_link = data['destination']
+                elif 'result' in data:
+                    res_link = data['result']
+                
+                if res_link and res_link.lower().startswith("http"):
+                    return res_link
+        except Exception as e:
+            logger.warning(f"[correlationId: {corr_id}] [Media Pipeline] Bypass service {service} error: {e}")
+    return url
+
+def download_image_throttled(url, headers, corr_id):
+    try:
+        resp = requests.get(url, headers=headers, stream=True, timeout=10)
+        if resp.status_code != 200:
+            return None
+        
+        content = bytearray()
+        for chunk in resp.iter_content(chunk_size=8192):
+            if zipper_cancel_event.is_set():
+                return None
+            if chunk:
+                start_chunk = time.time()
+                content.extend(chunk)
+                throttle_chunk(len(chunk), start_chunk)
+        return bytes(content)
+    except Exception as e:
+        logger.error(f"[correlationId: {corr_id}] [Media Pipeline] Failed to download image from {url}: {e}")
+        return None
+
+def _run_scraper_thread(url, selector, playwright, batch_size, corr_id):
+    logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Background scraper task started for URL: {url}")
+    if not scraper:
+        logger.error(f"[correlationId: {corr_id}] [Media Pipeline] Scraper module not loaded. Aborting scraper.")
+        update_job_progress(corr_id, status="failed")
+        return
+        
+    os.makedirs(ZIPPER_DEST_DIR, exist_ok=True)
+    try:
+        if playwright:
+            urls = scraper.scrape_with_playwright(url, selector)
+        else:
+            urls = scraper.scrape_with_requests(url, selector)
+    except Exception as e:
+        logger.error(f"[correlationId: {corr_id}] [Media Pipeline] Scraping exception: {e}")
+        update_job_progress(corr_id, status="failed")
+        return
+        
+    if not urls:
+        logger.info(f"[correlationId: {corr_id}] [Media Pipeline] No media URLs found for: {url}")
+        update_job_progress(corr_id, status="completed")
+        return
+        
+    update_job_progress(corr_id, total_links=len(urls))
+    _download_and_process_links(url, urls, batch_size, corr_id)
+
+def _run_downloader_thread(url, links, batch_size, corr_id):
+    logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Background downloader task started for URL: {url} ({len(links)} links)")
+    os.makedirs(ZIPPER_DEST_DIR, exist_ok=True)
+    _download_and_process_links(url, links, batch_size, corr_id)
+
+def _download_and_process_links(page_url, raw_links, batch_size, corr_id):
+    if not scraper:
+        logger.error(f"[correlationId: {corr_id}] [Media Pipeline] Scraper module not loaded. Aborting process.")
+        update_job_progress(corr_id, status="failed")
+        return
+        
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    url_slug = scraper.get_url_slug(page_url)
+    rd_token = get_rd_token()
+    
+    # De-duplicate links
+    unique_urls = []
+    seen = set()
+    for u in raw_links:
+        full_url = urljoin(page_url, u)
+        if (full_url.startswith("http://") or full_url.startswith("https://")) and full_url not in seen:
+            seen.add(full_url)
+            unique_urls.append(full_url)
+
+    update_job_progress(corr_id, total_links=len(unique_urls))
+    logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Processing {len(unique_urls)} link(s)...")
+
+    image_urls = []
+    
+    for idx, url in enumerate(unique_urls):
+        if zipper_cancel_event.is_set():
+            logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Task aborted by user before processing links.")
+            update_job_progress(corr_id, status="aborted")
+            return
+            
+        file_corr_id = f"{corr_id}-{idx:03d}"
+        
+        # 1. Bypass shorteners
+        resolved_url = url
+        if any(domain in url.lower() for domain in ["linkvertise.com", "direct-link.net", "link-center.net", "link-hub.net", "link-target.net"]):
+            resolved_url = bypass_linkvertise(url, file_corr_id)
+            logger.info(f"[correlationId: {file_corr_id}] [Media Pipeline] Bypassed {url} -> {resolved_url}")
+
+        # 2. Unrestrict premium hosts
+        final_url = resolved_url
+        is_premium = any(domain in resolved_url.lower() for domain in [
+            "mega.nz", "keep2share.cc", "k2s.cc", "fileboom.me", "fboom.me",
+            "rapidgator.net", "rg.to", "katfile.com", "tezfiles.com", "pixeldrain.com"
+        ])
+        if is_premium:
+            final_url = unrestrict_link_rd(resolved_url, rd_token, file_corr_id)
+            logger.info(f"[correlationId: {file_corr_id}] [Media Pipeline] Unrestricted {resolved_url} -> {final_url}")
+
+        # 3. Determine if it's an image or other file
+        parsed = urlparse(final_url)
+        ext = os.path.splitext(parsed.path)[1].lower().strip(".")
+        
+        is_image = ext in ["jpg", "jpeg", "png", "gif", "webp", "svg"]
+        
+        if is_image:
+            image_urls.append((final_url, file_corr_id))
+        else:
+            # Save non-image file directly in background
+            threading.Thread(target=_download_direct_file_worker, args=(final_url, headers, file_corr_id), daemon=True).start()
+
+    # Download and zip remaining image files in batches
+    if image_urls:
+        _download_and_zip_images_worker(url_slug, page_url, image_urls, batch_size, headers, corr_id)
+
+def _download_direct_file_worker(url, headers, file_corr_id):
+    file_path = None
+    try:
+        logger.info(f"[correlationId: {file_corr_id}] [Media Pipeline] Starting direct download for: {url}")
+        resp = requests.get(url, headers=headers, stream=True, timeout=120)
+        if resp.status_code != 200:
+            logger.warning(f"[correlationId: {file_corr_id}] [Media Pipeline] Direct download failed for {url}: status {resp.status_code}")
+            update_job_progress(file_corr_id, increment_processed=True)
+            return
+            
+        content_disp = resp.headers.get('content-disposition', '')
+        filename = ""
+        if 'filename=' in content_disp:
+            filename = content_disp.split('filename=')[1].strip('"\'')
+        
+        if not filename:
+            parsed = urlparse(url)
+            filename = os.path.basename(parsed.path)
+            
+        if not filename:
+            filename = f"download_{hashlib.md5(url.encode()).hexdigest()[:8]}.bin"
+
+        # Clean filename
+        filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+        file_path = os.path.join(ZIPPER_DEST_DIR, filename)
+        
+        logger.info(f"[correlationId: {file_corr_id}] [Media Pipeline] Saving to: {file_path}")
+        
+        with open(file_path, 'wb') as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                if zipper_cancel_event.is_set():
+                    logger.info(f"[correlationId: {file_corr_id}] [Media Pipeline] Direct download aborted by user.")
+                    f.close()
+                    if os.path.exists(file_path):
+                        try: os.remove(file_path)
+                        except: pass
+                    update_job_progress(file_corr_id, status="aborted", increment_processed=True)
+                    return
+                if chunk:
+                    start_chunk = time.time()
+                    f.write(chunk)
+                    throttle_chunk(len(chunk), start_chunk)
+                    
+        logger.info(f"[correlationId: {file_corr_id}] [Media Pipeline] Completed download: {filename}")
+        update_job_progress(file_corr_id, increment_processed=True, increment_other=True)
+    except Exception as e:
+        logger.error(f"[correlationId: {file_corr_id}] [Media Pipeline] Error downloading {url}: {e}")
+        update_job_progress(file_corr_id, increment_processed=True)
+
+def _download_and_zip_images_worker(url_slug, page_url, img_info_list, batch_size, headers, corr_id):
+    import zipfile
+    import random
+    
+    zip_writer = None
+    zip_path = None
+    count = 0
+    zip_file_count = 0
+    
+    logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Downloading {len(img_info_list)} images for slug '{url_slug}'...")
+
+    for img_url, file_corr_id in img_info_list:
+        if zipper_cancel_event.is_set():
+            if zip_writer is not None:
+                zip_writer.close()
+                logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Closed active ZIP during cancellation: {zip_path}")
+            logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Zipping task aborted by user.")
+            update_job_progress(corr_id, status="aborted")
+            return
+
+        parsed_img = urlparse(img_url)
+        ext = os.path.splitext(parsed_img.path)[1].lower().strip(".")
+        if ext not in ["jpg", "jpeg", "png", "gif", "webp", "svg"]:
+            ext = "jpg"
+
+        logger.info(f"[correlationId: {file_corr_id}] [Media Pipeline] Downloading image: {img_url}")
+        content = download_image_throttled(img_url, headers, file_corr_id)
+        if not content:
+            update_job_progress(file_corr_id, increment_processed=True)
+            continue
+
+        if len(content) < 40 * 1024:
+            logger.info(f"[correlationId: {file_corr_id}] [Media Pipeline] Skipping image under 40KB ({len(content)} bytes): {img_url}")
+            update_job_progress(file_corr_id, increment_processed=True)
+            continue
+
+        if zip_writer is None:
+            random_suffix = random.randint(0, 9000)
+            zip_filename = f"{url_slug}_{random_suffix}.zip"
+            zip_path = os.path.join(ZIPPER_DEST_DIR, zip_filename)
+            zip_writer = zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED)
+            zip_file_count += 1
+            logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Created new ZIP archive: {zip_path}")
+
+        filename_in_zip = f"{url_slug}_{str(count + 1).zfill(3)}.{ext}"
+        try:
+            zip_writer.writestr(filename_in_zip, content)
+            count += 1
+            logger.info(f"[correlationId: {file_corr_id}] [Media Pipeline] Added to archive {filename_in_zip}")
+            update_job_progress(file_corr_id, increment_processed=True, increment_images=True)
+        except Exception as e:
+            logger.error(f"[correlationId: {file_corr_id}] [Media Pipeline] Failed to write to zip: {e}")
+            update_job_progress(file_corr_id, increment_processed=True)
+
+        if count > 0 and count % batch_size == 0:
+            zip_writer.close()
+            zip_writer = None
+            logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Closed ZIP archive {zip_path}")
+            count = 0
+
+    if zip_writer is not None:
+        zip_writer.close()
+        logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Closed final ZIP archive {zip_path}")
+
+    logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Finished downloading and zipping task for: {page_url}")
+
+
+# --- Media Pipeline FastAPI Endpoints ---
+class ScrapePayload(BaseModel):
+    url: str
+    selector: Optional[str] = ""
+    playwright: Optional[bool] = False
+    batch_size: Optional[int] = 100
+
+class DownloadPayload(BaseModel):
+    url: str
+    links: List[str]
+    batch_size: Optional[int] = 100
+
+@app.get("/health")
+def api_health():
+    return {"status": "online"}
+
+@app.get("/api/jobs")
+def api_get_jobs():
+    with zipper_jobs_lock:
+        return {"jobs": active_zipper_jobs}
+
+@app.post("/scrape")
+def api_scrape(payload: ScrapePayload, request: Request):
+    corr_id = request.state.correlation_id
+    with zipper_jobs_lock:
+        active_zipper_jobs[corr_id] = {
+            "status": "running",
+            "url": payload.url,
+            "total_links": 0,
+            "processed_links": 0,
+            "images_count": 0,
+            "other_files_count": 0,
+            "created_at": time.time(),
+            "updated_at": time.time()
+        }
+    zipper_cancel_event.clear()
+    threading.Thread(
+        target=_run_scraper_thread,
+        args=(payload.url, payload.selector, payload.playwright, payload.batch_size, corr_id),
+        daemon=True
+    ).start()
+    return {"status": "Scraping task started", "correlationId": corr_id}
+
+@app.post("/download")
+def api_download(payload: DownloadPayload, request: Request):
+    corr_id = request.state.correlation_id
+    with zipper_jobs_lock:
+        active_zipper_jobs[corr_id] = {
+            "status": "running",
+            "url": payload.url,
+            "total_links": len(payload.links),
+            "processed_links": 0,
+            "images_count": 0,
+            "other_files_count": 0,
+            "created_at": time.time(),
+            "updated_at": time.time()
+        }
+    zipper_cancel_event.clear()
+    threading.Thread(
+        target=_run_downloader_thread,
+        args=(payload.url, payload.links, payload.batch_size, corr_id),
+        daemon=True
+    ).start()
+    return {"status": "Download task started", "count": len(payload.links), "correlationId": corr_id}
+
+@app.post("/abort")
+@app.post("/api/abort")
+def api_abort():
+    zipper_cancel_event.set()
+    logger.info("[Media Pipeline] Cancellation event triggered by user.")
+    with zipper_jobs_lock:
+        for job in active_zipper_jobs.values():
+            if job["status"] == "running":
+                job["status"] = "aborted"
+                job["updated_at"] = time.time()
+    return {"status": "Aborted"}
+
+
+# --- Wildcard Proxy Endpoints ---
+async def _async_proxy(target_url: str, request: Request):
+    params = dict(request.query_params)
+    body = await request.body()
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in ["host", "content-length"]}
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            resp = await client.request(
+                method=request.method,
+                url=target_url,
+                params=params,
+                headers=headers,
+                content=body,
+                follow_redirects=False
+            )
+            
+            resp_headers = {}
+            for k, v in resp.headers.items():
+                if k.lower() not in ["content-encoding", "transfer-encoding", "content-length", "access-control-allow-origin"]:
+                    resp_headers[k] = v
+                    
+            return Response(
+                content=resp.content,
+                status_code=resp.status_code,
+                headers=resp_headers
+            )
+        except Exception as e:
+            return Response(
+                content=f"Proxy error: {e}".encode("utf-8"),
+                status_code=502
+            )
+
+@app.api_route("/api/huggingface/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+async def proxy_huggingface(path: str, request: Request):
+    return await _async_proxy(f"https://huggingface.co/api/{path}", request)
+
+@app.api_route("/api/civitai/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+async def proxy_civitai(path: str, request: Request):
+    return await _async_proxy(f"https://civitai.red/api/{path}", request)
+
+@app.api_route("/api/comfyui/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+async def proxy_comfyui(path: str, request: Request):
+    return await _async_proxy(f"{COMFYUI_URL}/{path}", request)
+
+@app.api_route("/api/ollama/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+async def proxy_ollama(path: str, request: Request):
+    return await _async_proxy(f"{OLLAMA_URL}/{path}", request)
 
 
 

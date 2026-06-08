@@ -2,6 +2,7 @@ import asyncio
 import ipaddress
 from types import SimpleNamespace
 
+from starlette.responses import Response
 from starlette.requests import Request
 
 import api_server
@@ -93,3 +94,52 @@ def test_spoofed_forwarded_for_is_ignored_without_trusted_proxy():
 
     assert api_server._get_client_ip(request) == "198.51.100.50"
     assert api_server._effective_scheme(request) == "http"
+
+
+def test_gate_requests_preserves_inbound_correlation_id(monkeypatch):
+    monkeypatch.setattr(api_server, "REQUIRE_HTTPS", False)
+    monkeypatch.setattr(api_server, "GATEWAY_REQUIRED_PUBLIC", False)
+    monkeypatch.setattr(api_server, "_origin_allowed", lambda origin: True)
+    monkeypatch.setattr(api_server, "RATE_LIMIT_ENABLED", False)
+
+    request = _make_request(
+        "198.51.100.50",
+        headers={"origin": "https://stats.vaultwares.ca", "x-correlation-id": "corr-client-123"},
+        scheme="https",
+    )
+
+    async def call_next(req):
+        assert req.state.correlation_id == "corr-client-123"
+        return Response()
+
+    response = asyncio.run(api_server.gate_requests(request, call_next))
+
+    assert response.headers["X-Correlation-Id"] == "corr-client-123"
+
+
+def test_gate_requests_default_public_limit_allows_dashboard_burst(monkeypatch):
+    api_server._rate_state.clear()
+    monkeypatch.setattr(api_server, "REQUIRE_HTTPS", False)
+    monkeypatch.setattr(api_server, "GATEWAY_REQUIRED_PUBLIC", False)
+    monkeypatch.setattr(api_server, "_origin_allowed", lambda origin: True)
+    monkeypatch.setattr(api_server, "RATE_LIMIT_ENABLED", True)
+
+    async def call_next(_req):
+        return Response()
+
+    for _ in range(200):
+        request = _make_request(
+            "198.51.100.51",
+            headers={"origin": "https://stats.vaultwares.ca"},
+            scheme="https",
+        )
+        response = asyncio.run(api_server.gate_requests(request, call_next))
+        assert response.status_code != 429
+
+
+def test_kiwi_log_handler_uses_configurable_ingest_url(monkeypatch):
+    monkeypatch.setenv("VW_KIWI_LOG_URL", "http://127.0.0.1:5959/api/logs")
+
+    handler = api_server.KiwiLogHandler(start_worker=False)
+
+    assert handler.target_url == "http://127.0.0.1:5959/api/logs"

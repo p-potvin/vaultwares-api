@@ -124,8 +124,36 @@ UVICORN_RELOAD=1
 ```env
 RATE_LIMIT_ENABLED=1
 RATE_LIMIT_WINDOW_SECONDS=60
-RATE_LIMIT_MAX_PUBLIC=120
-RATE_LIMIT_MAX_TRUSTED=1200
+RATE_LIMIT_MAX_PUBLIC=3000
+RATE_LIMIT_MAX_TRUSTED=30000
+JOB_SUBMIT_RATE_LIMIT_MAX_PUBLIC=120
+```
+
+The broad API gate enforces those loose floors even if an older local `.env`
+still contains lower values. Expensive job submission keeps its own smaller
+bucket.
+
+## Kiwi request logging
+
+Every request gets or preserves a correlation ID from `X-Correlation-ID`,
+`X-Request-ID`, or `correlationId`, then emits `request.start`,
+`request.complete`, `request.blocked`, or `request.crashed` with the same ID.
+
+By default logs are sent to the local Kiwi Syslog Server UDP listener:
+
+```env
+VW_KIWI_LOG_TRANSPORT=syslog_udp
+VW_KIWI_SYSLOG_HOST=127.0.0.1
+VW_KIWI_SYSLOG_PORT=514
+VW_KIWI_LOG_BATCH_SIZE=25
+VW_KIWI_LOG_FLUSH_SECONDS=2.0
+```
+
+For a JSON HTTP collector, set:
+
+```env
+VW_KIWI_LOG_TRANSPORT=http_json
+VW_KIWI_LOG_URL=http://127.0.0.1:5959/api/logs
 ```
 
 Emergency switch (blocks public internet, still allows localhost/Tailscale):
@@ -212,4 +240,3 @@ Recommended local API base:
 If you need a different port, set `API_PORT` before running the script.
 
 ---
-

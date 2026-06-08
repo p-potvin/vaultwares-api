@@ -102,6 +102,11 @@ VPS:
 
 API:
 - `RATE_LIMIT_*` and `MAINTENANCE_MODE`
+- broad API defaults are intentionally loose (`3000/min` public,
+  `30000/min` trusted); expensive job submission uses
+  `JOB_SUBMIT_RATE_LIMIT_MAX_PUBLIC`
+- request logs include `X-Correlation-ID` and go to the local Kiwi syslog
+  listener by default (`127.0.0.1:514`)
 - revoke API keys (`api_keys.is_revoked`)
 - shorten `JWT_TTL_SECONDS` during an incident
 
