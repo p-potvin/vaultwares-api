@@ -25,6 +25,6 @@ class NIMCosmosClient:
         """
         headers = {"Authorization": f"Bearer {self.api_key}"}
         payload = {"frames": frames}
-        response = requests.post(self.api_url, json=payload, headers=headers)
+        response = requests.post(self.api_url, json=payload, headers=headers, timeout=30)
         response.raise_for_status()
         return response.json()
