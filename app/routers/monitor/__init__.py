@@ -224,18 +224,18 @@ def _load_changes(root: Path) -> Dict[str, Any]:
     return {"events": events}
 
 
-async def get_input_tracker() -> Dict[str, Any]:
+async def get_input_tracker(hours: int = 24) -> Dict[str, Any]:
     try:
         from app.routers.telemetry.db import get_input_summary
 
-        return await get_input_summary(hours=24)
+        return await get_input_summary(hours=hours)
     except Exception:
         return {
             "source": "vaultwares-api",
             "status": "unavailable",
             "generated_at": _utc_now(),
             "latest_received_at": None,
-            "window_hours": 24,
+            "window_hours": hours,
             "totals": {},
             "derived": {"wpm": 0, "cpm": 0, "correction_ratio": 0, "click_to_travel_ratio": 0},
             "key_latency_buckets": [],
@@ -372,16 +372,19 @@ def logging_kiwi(check: bool = Query(True)) -> Dict[str, Any]:
 
 
 @router.get("/input-tracker")
-async def input_tracker() -> Dict[str, Any]:
-    return await get_input_tracker()
+async def input_tracker(hours: int = Query(24, ge=1, le=24 * 14)) -> Dict[str, Any]:
+    return await get_input_tracker(hours=hours)
 
 
 @router.get("/overview")
-async def overview(kiwi_check: bool = Query(False)) -> Dict[str, Any]:
+async def overview(
+    kiwi_check: bool = Query(False),
+    hours: int = Query(24, ge=1, le=24 * 14),
+) -> Dict[str, Any]:
     health = get_health_ledger()
     agents = await get_agent_ledger()
     logging = {"kiwi": get_kiwi_status(check=kiwi_check)}
-    input_tracker = await get_input_tracker()
+    input_tracker = await get_input_tracker(hours=hours)
     return {
         "name": "V.A.U.L.T Monitor",
         "internal_name": "Vault Authenticated Unified Ledger Telemetry Monitor",
