@@ -52,11 +52,11 @@ Create an API key (admin JWT required, trusted network only):
 
 ---
 
-## Strict source allowlist (Vercel + localhost + Tailscale)
+## Strict source allowlist (frontend domains + localhost + Tailscale)
 
-Set stable Vercel app origins (not preview URLs):
+Set stable frontend origins served by the VPS (not preview URLs):
 ```env
-ALLOWED_ORIGINS=https://vaultwares-dispatch-frontend.vercel.app,https://vaultwares-glass-preview.vercel.app
+ALLOWED_ORIGINS=https://flows.vaultwares.ca,https://noddit.org
 ```
 
 Note: `/auth/login` requires an allowlisted `Origin` so only your frontends can initiate sessions.

@@ -6,7 +6,7 @@ publicly reachable from the internet.
 
 ## Architecture (high level)
 
-- Public client (browser / Vercel site)
+- Public client (browser / VaultWares frontend served by the VPS)
   -> HTTPS -> VPS (Nginx + real TLS cert)
   -> Tailscale (private network)
   -> Local PC (FastAPI on port 9001 + Postgres)
@@ -73,11 +73,11 @@ Start from `vps_nginx.conf.example`:
 - Point `proxy_pass` to your local PC's Tailscale IP (or MagicDNS name).
 - Inject `X-VW-Gateway-Secret` to match `GATEWAY_SHARED_SECRET` on the API.
 
-## Step 5: Point Vercel apps at the VPS domain
+## Step 5: Point frontend apps at the VPS domain
 
 - Set your frontend `API_BASE` (or env var) to `https://api.vaultwares.ca`.
 - Keep all direct API traffic going to the VPS, never to your home IP.
-- On the API host, set `ALLOWED_ORIGINS` to your stable Vercel app domains so `/auth/login` only works from your sites.
+- On the API host, set `ALLOWED_ORIGINS` to your stable frontend domains so `/auth/login` only works from your sites.
 
 ## Traffic verification
 

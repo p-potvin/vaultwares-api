@@ -57,7 +57,7 @@ BOOTSTRAP_ADMIN_IS_DISABLED = os.environ.get("BOOTSTRAP_ADMIN_IS_DISABLED", "0")
 REQUIRE_HTTPS = os.environ.get("REQUIRE_HTTPS", "1") == "1"
 ALLOW_HTTP_TRUSTED = os.environ.get("ALLOW_HTTP_TRUSTED", "1") == "1"
 
-# Exact origins only by default (no wildcards). Use stable Vercel alias domains.
+# Exact origins only by default (no wildcards). Use stable frontend domains.
 ALLOWED_ORIGINS = set(
     origin.strip()
     for origin in os.environ.get("ALLOWED_ORIGINS", "").split(",")
@@ -3650,17 +3650,21 @@ def _run_scraper_thread(url, selector, playwright, batch_size, corr_id):
         return
         
     update_job_progress(corr_id, total_links=len(urls))
-    _download_and_process_links(url, urls, batch_size, corr_id)
+    _download_and_process_links(url, urls, batch_size, corr_id, upscale_enabled=False, upscale_model='4xNomos8k_atd')
 
-def _run_downloader_thread(url, links, batch_size, corr_id):
+def _run_downloader_thread(url, links, batch_size, corr_id, upscale_enabled=False, upscale_model='4xNomos8k_atd'):
     logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Background downloader task started for URL: {url} ({len(links)} links)")
     os.makedirs(ZIPPER_DEST_DIR, exist_ok=True)
-    _download_and_process_links(url, links, batch_size, corr_id)
+    _download_and_process_links(url, links, batch_size, corr_id, upscale_enabled, upscale_model)
 
 def _download_and_process_links(page_url, raw_links, batch_size, corr_id):
+    global active_download_jobs
+    
     if not scraper:
         logger.error(f"[correlationId: {corr_id}] [Media Pipeline] Scraper module not loaded. Aborting process.")
         update_job_progress(corr_id, status="failed")
+        with download_task_lock:
+            active_download_jobs -= 1
         return
         
     headers = {
@@ -3772,14 +3776,30 @@ def _download_direct_file_worker(url, headers, file_corr_id):
         logger.error(f"[correlationId: {file_corr_id}] [Media Pipeline] Error downloading {url}: {e}")
         update_job_progress(file_corr_id, increment_processed=True)
 
-def _download_and_zip_images_worker(url_slug, page_url, img_info_list, batch_size, headers, corr_id):
+def _download_and_zip_images_worker(url_slug, page_url, img_info_list, batch_size, headers, corr_id, upscale_enabled=False, upscale_model='4xNomos8k_atd'):
     import zipfile
     import random
+    
+    global active_download_jobs
     
     zip_writer = None
     zip_path = None
     count = 0
     zip_file_count = 0
+    upscaler = None
+    upscale_success_count = 0
+    upscale_fail_count = 0
+    start_time = time.time()
+    
+    # Initialize upscaler if enabled
+    if upscale_enabled:
+        try:
+            from app.services.upscaler import ImageUpscaler
+            upscaler = ImageUpscaler()
+            logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Upscaling enabled with model: {upscale_model}")
+        except Exception as e:
+            logger.error(f"[correlationId: {corr_id}] [Media Pipeline] Failed to initialize upscaler: {e}")
+            upscale_enabled = False
     
     logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Downloading {len(img_info_list)} images for slug '{url_slug}'...")
 
@@ -3849,7 +3869,9 @@ class ScrapePayload(BaseModel):
 class DownloadPayload(BaseModel):
     url: str
     links: List[str]
-    batch_size: Optional[int] = 100
+    batch_size: Optional[int] = 5
+    upscale_enabled: Optional[bool] = False
+    upscale_model: Optional[str] = "4xNomos8k_atd"
 
 @app.get("/health")
 def api_health():
