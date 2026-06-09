@@ -22,7 +22,7 @@ import httpx
 from dataclasses import dataclass
 from dotenv import load_dotenv
 from db import init_db, close_db, UserAccount, ApiKey
-from tortoise import Tortoise
+from tortoise import Tortoise, connections
 import logging
 from jose import jwt, JWTError
 from passlib.context import CryptContext
@@ -3854,6 +3854,32 @@ class DownloadPayload(BaseModel):
 @app.get("/health")
 def api_health():
     return {"status": "online"}
+
+@app.get("/healthz")
+async def api_healthz():
+    # DB-aware liveness. Returns 503 if Postgres is unreachable so probes
+    # can distinguish "API process up but DB dead" from "API process down".
+    started = time.perf_counter()
+    if not db_available():
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "db": "uninitialized"},
+        )
+    try:
+        conn = connections.get("default")
+        await asyncio.wait_for(conn.execute_query("SELECT 1"), timeout=2.0)
+    except asyncio.TimeoutError:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "db": "timeout"},
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "db": "error", "error": str(exc)[:200]},
+        )
+    duration_ms = int((time.perf_counter() - started) * 1000)
+    return {"status": "ok", "db": "up", "duration_ms": duration_ms}
 
 @app.get("/api/jobs")
 def api_get_jobs():
