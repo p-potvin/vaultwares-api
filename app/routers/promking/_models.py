@@ -7,8 +7,14 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 Site = Literal["fxv", "pkt"]
-EmbedType = Literal["iframe", "mp4", "hls"]
+EmbedType = Literal["mp4", "hls"]
 TaxonomyKind = Literal["actors", "studios", "categories"]
+
+
+class TermRef(BaseModel):
+    id: int
+    name: str
+    slug: str
 
 
 class VideoListItem(BaseModel):
@@ -21,6 +27,9 @@ class VideoListItem(BaseModel):
     duration_seconds: Optional[int] = None
     views: int = 0
     created_at: datetime
+    actors: list[TermRef] = Field(default_factory=list)
+    studios: list[TermRef] = Field(default_factory=list)
+    qualities: Optional[list[dict]] = None
 
 
 class VideoDetail(VideoListItem):
@@ -28,16 +37,8 @@ class VideoDetail(VideoListItem):
     source_url: str
     embed_url: str
     embed_type: EmbedType
-    actors: list[dict] = Field(default_factory=list)
-    studios: list[dict] = Field(default_factory=list)
-    categories: list[dict] = Field(default_factory=list)
+    categories: list[TermRef] = Field(default_factory=list)
     updated_at: datetime
-
-
-class TermRef(BaseModel):
-    id: int
-    name: str
-    slug: str
 
 
 class FetchRunRequest(BaseModel):

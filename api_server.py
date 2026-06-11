@@ -3494,15 +3494,17 @@ def set_models_dir(req: ModelsDirRequest, principal=Depends(require_auth)):
 
 # --- Media Pipeline Configuration ---
 ZIPPER_DEST_DIR = r"C:\Users\Administrator\Desktop\Github Repos\python-zipper\.downloaded"
+os.makedirs(ZIPPER_DEST_DIR, exist_ok=True)
+from fastapi.staticfiles import StaticFiles
+app.mount("/downloaded", StaticFiles(directory=ZIPPER_DEST_DIR), name="downloaded")
 RD_TOKEN_PATH = r"C:\Users\Administrator\Desktop\Github Repos\.access\realdebrid_api.txt"
 
-# Add python-zipper scraper module path dynamically
-sys.path.append(r"C:\Users\Administrator\Desktop\Github Repos\python-zipper\dataset_builder")
+# Import media scraper module from internal services package
 try:
-    import scraper
+    from app.services.zipper import scraper
 except ImportError:
     scraper = None
-    logger.warning("Media Pipeline: Failed to import 'scraper' module. Check path.")
+    logger.warning("Media Pipeline: Failed to import scraper module from app.services.zipper.")
 
 zipper_cancel_event = threading.Event()
 THROTTLE_SPEED_BPS = 5 * 1024 * 1024  # 5 MiB/s default
@@ -3657,7 +3659,7 @@ def _run_downloader_thread(url, links, batch_size, corr_id, upscale_enabled=Fals
     os.makedirs(ZIPPER_DEST_DIR, exist_ok=True)
     _download_and_process_links(url, links, batch_size, corr_id, upscale_enabled, upscale_model)
 
-def _download_and_process_links(page_url, raw_links, batch_size, corr_id):
+def _download_and_process_links(page_url, raw_links, batch_size, corr_id, upscale_enabled=False, upscale_model='4xNomos8k_atd'):
     global active_download_jobs
     
     if not scraper:
@@ -3725,7 +3727,7 @@ def _download_and_process_links(page_url, raw_links, batch_size, corr_id):
 
     # Download and zip remaining image files in batches
     if image_urls:
-        _download_and_zip_images_worker(url_slug, page_url, image_urls, batch_size, headers, corr_id)
+        _download_and_zip_images_worker(url_slug, page_url, image_urls, batch_size, headers, corr_id, upscale_enabled=upscale_enabled, upscale_model=upscale_model)
 
 def _download_direct_file_worker(url, headers, file_corr_id):
     file_path = None
@@ -3771,10 +3773,30 @@ def _download_direct_file_worker(url, headers, file_corr_id):
                     throttle_chunk(len(chunk), start_chunk)
                     
         logger.info(f"[correlationId: {file_corr_id}] [Media Pipeline] Completed download: {filename}")
+        parent_id = file_corr_id.split("-")[0] if "-" in file_corr_id else file_corr_id
+        with zipper_jobs_lock:
+            if parent_id in active_zipper_jobs:
+                if "archives" not in active_zipper_jobs[parent_id]:
+                    active_zipper_jobs[parent_id]["archives"] = []
+                active_zipper_jobs[parent_id]["archives"].append(filename)
         update_job_progress(file_corr_id, increment_processed=True, increment_other=True)
+        
+        # Trigger post-download pipeline
+        try:
+            from app.services.zipper.post_download import trigger_post_download_pipeline
+            threading.Thread(
+                target=trigger_post_download_pipeline,
+                args=(file_path, url),
+                daemon=True
+            ).start()
+        except Exception as pd_err:
+            logger.error(f"[Media Pipeline] Failed to trigger post-download pipeline for {file_path}: {pd_err}")
+            
     except Exception as e:
         logger.error(f"[correlationId: {file_corr_id}] [Media Pipeline] Error downloading {url}: {e}")
         update_job_progress(file_corr_id, increment_processed=True)
+
+
 
 def _download_and_zip_images_worker(url_slug, page_url, img_info_list, batch_size, headers, corr_id, upscale_enabled=False, upscale_model='4xNomos8k_atd'):
     import zipfile
@@ -3794,9 +3816,13 @@ def _download_and_zip_images_worker(url_slug, page_url, img_info_list, batch_siz
     # Initialize upscaler if enabled
     if upscale_enabled:
         try:
-            from app.services.upscaler import ImageUpscaler
-            upscaler = ImageUpscaler()
-            logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Upscaling enabled with model: {upscale_model}")
+            from app.services.upscaler import get_upscaler
+            upscaler = get_upscaler()
+            if not upscaler.is_available():
+                logger.warning(f"[correlationId: {corr_id}] [Media Pipeline] Upscaler not available (device={upscaler.device}, models={upscaler.available_models})")
+                upscale_enabled = False
+            else:
+                logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Upscaling enabled with model: {upscale_model}")
         except Exception as e:
             logger.error(f"[correlationId: {corr_id}] [Media Pipeline] Failed to initialize upscaler: {e}")
             upscale_enabled = False
@@ -3835,27 +3861,64 @@ def _download_and_zip_images_worker(url_slug, page_url, img_info_list, batch_siz
             zip_writer = zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED)
             zip_file_count += 1
             logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Created new ZIP archive: {zip_path}")
+            with zipper_jobs_lock:
+                if corr_id in active_zipper_jobs:
+                    if "archives" not in active_zipper_jobs[corr_id]:
+                        active_zipper_jobs[corr_id]["archives"] = []
+                    active_zipper_jobs[corr_id]["archives"].append(zip_filename)
 
-        filename_in_zip = f"{url_slug}_{str(count + 1).zfill(3)}.{ext}"
+        # Upscale if enabled
+        write_content = content
+        out_ext = ext
+        if upscale_enabled and upscaler and ext in ['jpg', 'jpeg', 'png', 'webp']:
+            try:
+                logger.info(f"[correlationId: {file_corr_id}] [Media Pipeline] Upscaling image ({len(content)} bytes)...")
+                write_content = upscaler.upscale_image(content, model_name=upscale_model)
+                out_ext = 'png'  # upscaled output is always PNG
+                upscale_success_count += 1
+                logger.info(f"[correlationId: {file_corr_id}] [Media Pipeline] Upscaled successfully ({len(content)} -> {len(write_content)} bytes)")
+            except Exception as e:
+                logger.error(f"[correlationId: {file_corr_id}] [Media Pipeline] Upscale failed, using original: {e}")
+                upscale_fail_count += 1
+
+        filename_in_zip = f"{url_slug}_{str(count + 1).zfill(3)}.{out_ext}"
         try:
-            zip_writer.writestr(filename_in_zip, content)
+            zip_writer.writestr(filename_in_zip, write_content)
             count += 1
             logger.info(f"[correlationId: {file_corr_id}] [Media Pipeline] Added to archive {filename_in_zip}")
             update_job_progress(file_corr_id, increment_processed=True, increment_images=True)
         except Exception as e:
             logger.error(f"[correlationId: {file_corr_id}] [Media Pipeline] Failed to write to zip: {e}")
             update_job_progress(file_corr_id, increment_processed=True)
-
         if count > 0 and count % batch_size == 0:
             zip_writer.close()
-            zip_writer = None
             logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Closed ZIP archive {zip_path}")
+            try:
+                from app.services.zipper.post_download import trigger_post_download_pipeline
+                threading.Thread(
+                    target=trigger_post_download_pipeline,
+                    args=(zip_path, page_url),
+                    daemon=True
+                ).start()
+            except Exception as pd_err:
+                logger.error(f"[Media Pipeline] Failed to trigger post-download pipeline for batch {zip_path}: {pd_err}")
+            zip_writer = None
             count = 0
 
     if zip_writer is not None:
         zip_writer.close()
         logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Closed final ZIP archive {zip_path}")
-
+        try:
+            from app.services.zipper.post_download import trigger_post_download_pipeline
+            threading.Thread(
+                target=trigger_post_download_pipeline,
+                args=(zip_path, page_url),
+                daemon=True
+            ).start()
+        except Exception as pd_err:
+            logger.error(f"[Media Pipeline] Failed to trigger post-download pipeline for final {zip_path}: {pd_err}")
+    if upscale_enabled:
+        logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Upscale stats: {upscale_success_count} ok, {upscale_fail_count} failed")
     logger.info(f"[correlationId: {corr_id}] [Media Pipeline] Finished downloading and zipping task for: {page_url}")
 
 
@@ -3908,6 +3971,46 @@ def api_get_jobs():
     with zipper_jobs_lock:
         return {"jobs": active_zipper_jobs}
 
+@app.get("/api/upscaler/status")
+def api_upscaler_status():
+    try:
+        from app.services.upscaler import get_upscaler
+        upscaler = get_upscaler()
+        return {
+            "available": upscaler.is_available(),
+            "device": upscaler.device,
+            "models": upscaler.get_available_models(),
+            "stats": upscaler.get_stats()
+        }
+    except Exception as e:
+        logger.error(f"Failed to get upscaler status: {e}")
+        return {"available": False, "error": str(e)}
+
+class OpenPayload(BaseModel):
+    filename: Optional[str] = None
+    folder: Optional[bool] = False
+
+@app.post("/api/open-downloaded")
+def api_open_downloaded(payload: OpenPayload):
+    try:
+        import subprocess
+        if payload.folder or not payload.filename:
+            if os.path.exists(ZIPPER_DEST_DIR):
+                subprocess.Popen(f'explorer.exe "{ZIPPER_DEST_DIR}"', shell=True)
+                return {"status": "success", "message": "Opened downloaded folder"}
+            else:
+                return {"status": "error", "message": "Folder does not exist"}
+        
+        file_path = os.path.join(ZIPPER_DEST_DIR, payload.filename)
+        if os.path.exists(file_path):
+            subprocess.Popen(f'explorer.exe /select,"{file_path}"', shell=True)
+            return {"status": "success", "message": f"Opened file {payload.filename}"}
+        else:
+            return {"status": "error", "message": "File does not exist"}
+    except Exception as e:
+        logger.error(f"Failed to open path: {e}")
+        return {"status": "error", "message": str(e)}
+
 @app.post("/scrape")
 def api_scrape(payload: ScrapePayload, request: Request):
     corr_id = request.state.correlation_id
@@ -3947,7 +4050,7 @@ def api_download(payload: DownloadPayload, request: Request):
     zipper_cancel_event.clear()
     threading.Thread(
         target=_run_downloader_thread,
-        args=(payload.url, payload.links, payload.batch_size, corr_id),
+        args=(payload.url, payload.links, payload.batch_size, corr_id, payload.upscale_enabled, payload.upscale_model),
         daemon=True
     ).start()
     return {"status": "Download task started", "count": len(payload.links), "correlationId": corr_id}

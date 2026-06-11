@@ -403,14 +403,20 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
             if any(not v.get(k) for k in required):
                 skipped_bad += 1
                 continue
+            qualities_json = None
+            if v.get("qualities"):
+                try:
+                    qualities_json = json.dumps(v.get("qualities"))
+                except Exception:
+                    pass
             try:
                 row = await conn.fetchrow(
                     """
                     INSERT INTO videos (
                         site, source, source_url, embed_url, embed_type,
-                        title, slug, thumbnail_url, preview_url, duration_seconds
+                        title, slug, thumbnail_url, preview_url, duration_seconds, qualities
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
                     ON CONFLICT (site, source_url) DO NOTHING
                     RETURNING id
                     """,
@@ -424,8 +430,9 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                     v.get("thumbnailUrl"),
                     v.get("previewUrl"),
                     v.get("durationSeconds"),
+                    qualities_json,
                 )
-            except Exception:
+            except Exception as e:
                 # Bad row — log it via skipped_bad, keep the run alive.
                 skipped_bad += 1
                 continue

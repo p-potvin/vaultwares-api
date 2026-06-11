@@ -1,0 +1,4 @@
+Traceback (most recent call last):
+  File "C:\Users\Administrator\Desktop\Github Repos\vaultwares-api\api_server.py", line 2, in <module>
+    from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form
+ModuleNotFoundError: No module named 'fastapi'

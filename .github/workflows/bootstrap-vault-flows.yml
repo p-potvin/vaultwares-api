@@ -26,7 +26,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout vaultwares-pipelines
+      - name: Checkout vaultwares-api
         uses: actions/checkout@v4
 
       - name: Determine target owner
@@ -52,7 +52,7 @@ jobs:
               -H "Authorization: token $GH_TOKEN" \
               -H "Content-Type: application/json" \
               "https://api.github.com/user/repos" \
-              -d '{"name":"vault-flows","description":"VaultFlows — React frontend for vaultwares-pipelines","private":false,"auto_init":false}'
+              -d '{"name":"vault-flows","description":"VaultFlows — React frontend for vaultwares-api","private":false,"auto_init":false}'
           else
             echo "vault-flows repository already exists (HTTP $HTTP_CODE), continuing."
           fi
@@ -116,7 +116,7 @@ jobs:
           cat > /tmp/vault-flows/README.md << README_EOF
           # VaultFlows
 
-          VaultFlows is the React frontend for the [vaultwares-pipelines](https://github.com/${REPO}) backend API.
+          VaultFlows is the React frontend for the [vaultwares-api](https://github.com/${REPO}) backend API.
 
           ## Development
 
