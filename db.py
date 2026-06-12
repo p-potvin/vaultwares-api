@@ -50,7 +50,7 @@ async def init_db(db_url: str):
     # Register both db and api_server modules for Tortoise ORM
     await Tortoise.init(
         db_url=db_url,
-        modules={"models": ["db", "api_server"]}
+        modules={"models": ["db", "api.database", "api_server"]}
     )
     await Tortoise.generate_schemas()
 

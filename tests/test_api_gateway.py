@@ -2,12 +2,17 @@ import asyncio
 import ipaddress
 import logging
 import re
+import socket
 from types import SimpleNamespace
 
 from starlette.responses import Response
 from starlette.requests import Request
 
 import api_server
+from api import middleware as api_middleware
+from api import auth as api_auth
+from api import routes_workflows
+from api import routes_uploads as api_uploads
 
 
 def _make_request(
@@ -39,7 +44,7 @@ def _make_request(
 
 def test_trusted_client_ip_allowlist_overrides_tailnet(monkeypatch):
     monkeypatch.setattr(
-        api_server,
+        api_auth,
         "_trusted_client_ips",
         [
             ipaddress.ip_address("100.67.153.112"),
@@ -49,16 +54,16 @@ def test_trusted_client_ip_allowlist_overrides_tailnet(monkeypatch):
             ipaddress.ip_address("100.73.57.6"),
         ],
     )
-    monkeypatch.setattr(api_server, "_tailscale_networks", [ipaddress.ip_network("100.64.0.0/10")])
+    monkeypatch.setattr(api_auth, "_tailscale_networks", [ipaddress.ip_network("100.64.0.0/10")])
 
-    assert api_server._is_trusted_client_ip("100.71.101.21") is True
-    assert api_server._is_trusted_client_ip("100.64.0.99") is False
+    assert api_auth._is_trusted_client_ip("100.71.101.21") is True
+    assert api_auth._is_trusted_client_ip("100.64.0.99") is False
 
 
 def test_network_diagnostics_shows_local_pc_received_vps_forwarded_request(monkeypatch):
-    monkeypatch.setattr(api_server, "_trusted_proxy_networks", [ipaddress.ip_network("100.73.57.6/32")])
+    monkeypatch.setattr(api_auth, "_trusted_proxy_networks", [ipaddress.ip_network("100.73.57.6/32")])
     monkeypatch.setattr(
-        api_server,
+        api_auth,
         "_trusted_client_ips",
         [
             ipaddress.ip_address("100.67.153.112"),
@@ -68,9 +73,20 @@ def test_network_diagnostics_shows_local_pc_received_vps_forwarded_request(monke
             ipaddress.ip_address("100.73.57.6"),
         ],
     )
-    monkeypatch.setattr(api_server, "GATEWAY_REQUIRED_PUBLIC", True)
-    monkeypatch.setattr(api_server, "GATEWAY_HEADER_NAME", "x-vw-gateway-secret")
-    monkeypatch.setattr(api_server.socket, "gethostname", lambda: "clopeux-desktop")
+    monkeypatch.setattr(
+        routes_workflows,
+        "_trusted_client_ips",
+        [
+            ipaddress.ip_address("100.67.153.112"),
+            ipaddress.ip_address("100.71.101.21"),
+            ipaddress.ip_address("100.91.249.45"),
+            ipaddress.ip_address("100.75.112.67"),
+            ipaddress.ip_address("100.73.57.6"),
+        ],
+    )
+    monkeypatch.setattr(routes_workflows, "GATEWAY_REQUIRED_PUBLIC", True)
+    monkeypatch.setattr(routes_workflows, "GATEWAY_HEADER_NAME", "x-vw-gateway-secret")
+    monkeypatch.setattr(routes_workflows.socket, "gethostname", lambda: "clopeux-desktop")
 
     request = _make_request(
         "100.73.57.6",
@@ -82,7 +98,7 @@ def test_network_diagnostics_shows_local_pc_received_vps_forwarded_request(monke
     )
     principal = {"kind": "user", "user": SimpleNamespace(is_admin=True)}
 
-    response = asyncio.run(api_server.network_diagnostics(request, principal))
+    response = asyncio.run(routes_workflows.network_diagnostics(request, principal))
 
     assert response.served_by == "clopeux-desktop"
     assert response.peer_ip == "100.73.57.6"
@@ -100,15 +116,15 @@ def test_spoofed_forwarded_for_is_ignored_without_trusted_proxy():
         headers={"x-forwarded-for": "100.71.101.21", "x-forwarded-proto": "https"},
     )
 
-    assert api_server._get_client_ip(request) == "198.51.100.50"
-    assert api_server._effective_scheme(request) == "http"
+    assert api_auth._get_client_ip(request) == "198.51.100.50"
+    assert api_auth._effective_scheme(request) == "http"
 
 
 def test_gate_requests_uses_query_param_correlation_id(monkeypatch):
-    monkeypatch.setattr(api_server, "REQUIRE_HTTPS", False)
-    monkeypatch.setattr(api_server, "GATEWAY_REQUIRED_PUBLIC", False)
-    monkeypatch.setattr(api_server, "_origin_allowed", lambda origin: True)
-    monkeypatch.setattr(api_server, "RATE_LIMIT_ENABLED", False)
+    monkeypatch.setattr(api_middleware, "REQUIRE_HTTPS", False)
+    monkeypatch.setattr(api_middleware, "GATEWAY_REQUIRED_PUBLIC", False)
+    monkeypatch.setattr(api_middleware, "_origin_allowed", lambda origin: True)
+    monkeypatch.setattr(api_middleware, "RATE_LIMIT_ENABLED", False)
 
     request = _make_request(
         "198.51.100.50",
@@ -121,27 +137,27 @@ def test_gate_requests_uses_query_param_correlation_id(monkeypatch):
         assert req.state.correlation_id == "vw_STS_c123abc4"
         return Response()
 
-    response = asyncio.run(api_server.gate_requests(request, call_next))
+    response = asyncio.run(api_middleware.gate_requests(request, call_next))
 
     assert response.headers["X-Correlation-Id"] == "vw_STS_c123abc4"
 
 
 def test_generated_vaultwares_correlation_id_uses_standard_format(monkeypatch):
-    monkeypatch.setattr(api_server, "VW_CORRELATION_APP_CODE", "API", raising=False)
+    monkeypatch.setattr(api_middleware, "VW_CORRELATION_APP_CODE", "API", raising=False)
     request = _make_request("198.51.100.50")
     request.state.correlation_id = None
 
-    corr_id = api_server._resolve_correlation_id(request)
+    corr_id = api_middleware._resolve_correlation_id(request)
 
     assert re.fullmatch(r"vw_API_c[0-9a-f]{7}", corr_id)
 
 
 def test_gate_requests_default_public_limit_allows_dashboard_burst(monkeypatch):
-    api_server._rate_state.clear()
-    monkeypatch.setattr(api_server, "REQUIRE_HTTPS", False)
-    monkeypatch.setattr(api_server, "GATEWAY_REQUIRED_PUBLIC", False)
-    monkeypatch.setattr(api_server, "_origin_allowed", lambda origin: True)
-    monkeypatch.setattr(api_server, "RATE_LIMIT_ENABLED", True)
+    api_middleware._rate_state.clear()
+    monkeypatch.setattr(api_middleware, "REQUIRE_HTTPS", False)
+    monkeypatch.setattr(api_middleware, "GATEWAY_REQUIRED_PUBLIC", False)
+    monkeypatch.setattr(api_middleware, "_origin_allowed", lambda origin: True)
+    monkeypatch.setattr(api_middleware, "RATE_LIMIT_ENABLED", True)
 
     async def call_next(_req):
         return Response()
@@ -152,20 +168,20 @@ def test_gate_requests_default_public_limit_allows_dashboard_burst(monkeypatch):
             headers={"origin": "https://stats.vaultwares.ca"},
             scheme="https",
         )
-        response = asyncio.run(api_server.gate_requests(request, call_next))
+        response = asyncio.run(api_middleware.gate_requests(request, call_next))
         assert response.status_code != 429
 
 
 def test_kiwi_log_handler_uses_configurable_ingest_url(monkeypatch):
     monkeypatch.setenv("VW_KIWI_LOG_URL", "http://127.0.0.1:5959/api/logs")
 
-    handler = api_server.KiwiLogHandler(start_worker=False)
+    handler = api_middleware.KiwiLogHandler(start_worker=False)
 
     assert handler.target_url == "http://127.0.0.1:5959/api/logs"
 
 
 def test_kiwi_syslog_line_includes_sender_identity():
-    handler = api_server.KiwiLogHandler(start_worker=False)
+    handler = api_middleware.KiwiLogHandler(start_worker=False)
 
     line = handler._format_syslog_line({
         "timestamp": "2026-06-08T12:00:00+00:00",
@@ -188,13 +204,13 @@ def test_kiwi_syslog_line_includes_sender_identity():
 
 
 def test_default_request_logging_skips_successful_noise(monkeypatch, caplog):
-    api_server._rate_state.clear()
-    monkeypatch.setattr(api_server, "REQUIRE_HTTPS", False)
-    monkeypatch.setattr(api_server, "GATEWAY_REQUIRED_PUBLIC", False)
-    monkeypatch.setattr(api_server, "_origin_allowed", lambda origin: True)
-    monkeypatch.setattr(api_server, "RATE_LIMIT_ENABLED", False)
-    monkeypatch.setattr(api_server, "VW_REQUEST_LOG_MODE", "important", raising=False)
-    monkeypatch.setattr(api_server, "VW_REQUEST_LOG_SLOW_MS", 10_000, raising=False)
+    api_middleware._rate_state.clear()
+    monkeypatch.setattr(api_middleware, "REQUIRE_HTTPS", False)
+    monkeypatch.setattr(api_middleware, "GATEWAY_REQUIRED_PUBLIC", False)
+    monkeypatch.setattr(api_middleware, "_origin_allowed", lambda origin: True)
+    monkeypatch.setattr(api_middleware, "RATE_LIMIT_ENABLED", False)
+    monkeypatch.setattr(api_middleware, "VW_REQUEST_LOG_MODE", "important", raising=False)
+    monkeypatch.setattr(api_middleware, "VW_REQUEST_LOG_SLOW_MS", 10_000, raising=False)
 
     async def call_next(_req):
         return Response(status_code=200)
@@ -206,7 +222,7 @@ def test_default_request_logging_skips_successful_noise(monkeypatch, caplog):
     )
 
     with caplog.at_level(logging.INFO, logger="vaultwares.api"):
-        response = asyncio.run(api_server.gate_requests(request, call_next))
+        response = asyncio.run(api_middleware.gate_requests(request, call_next))
 
     assert response.status_code == 200
     assert "request.start" not in caplog.text
@@ -225,14 +241,14 @@ def test_workflow_runs_are_serialized(monkeypatch):
         active -= 1
         return {"ok": True}
 
-    monkeypatch.setattr(api_server, "_execute_workflow_run", fake_execute)
+    monkeypatch.setattr(api_uploads, "_execute_workflow_run", fake_execute)
     if hasattr(api_server.app.state, "workflow_job_lock"):
         delattr(api_server.app.state, "workflow_job_lock")
 
     async def run_two():
         return await asyncio.gather(
-            api_server._execute_workflow_run_serialized(api_server.app, "wf-1", "local", {}),
-            api_server._execute_workflow_run_serialized(api_server.app, "wf-2", "local", {}),
+            api_uploads._execute_workflow_run_serialized(api_server.app, "wf-1", "local", {}),
+            api_uploads._execute_workflow_run_serialized(api_server.app, "wf-2", "local", {}),
         )
 
     results = asyncio.run(run_two())

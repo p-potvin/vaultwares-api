@@ -11,7 +11,7 @@ from typing import Optional, Dict
 # =========================================================================
 # Configuration
 # =========================================================================
-VPS_BASE_URL = "http://127.0.0.1:9001"  # Replace with Tailscale VPS internal IP during deployment
+VPS_BASE_URL = "http://100.67.25.118:9001"
 KATFILE_API_KEY = os.environ.get("KATFILE_API_KEY", "your_katfile_api_key")
 POLL_INTERVAL = 3.0  # Seconds between claims
 

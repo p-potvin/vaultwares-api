@@ -93,7 +93,7 @@ def test_monitor_overview_normalizes_health_agent_and_kiwi(monkeypatch, tmp_path
             }
         }
 
-    async def fake_input_tracker():
+    async def fake_input_tracker(*args, **kwargs):
         return {"source": "vaultwares-api", "status": "unavailable"}
 
     monkeypatch.setattr(agent_ledger_db, "get_agent_changes", fake_changes)

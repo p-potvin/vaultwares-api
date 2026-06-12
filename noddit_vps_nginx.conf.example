@@ -10,7 +10,7 @@
 # - Tailscale installed on VPS + joined to tailnet
 # - PC reachable from VPS over tailnet:
 #   - SPA: http://100.71.101.21:3100
-#   - API: http://100.71.101.21:9001
+#   - API: http://100.67.25.118:9001
 # - PC API trusts the VPS as a proxy:
 #   - set `TRUSTED_PROXY_CIDRS=<VPS_TAILNET_IP>/32,...` so X-Forwarded-* is honored
 # - PC API remains private (no router port-forward for 9001)
@@ -41,7 +41,7 @@ server {
 
     # --- API: same-origin /api -> PC API (9001) ---
     location ^~ /api/ {
-        proxy_pass http://100.71.101.21:9001/;
+        proxy_pass http://100.67.25.118:9001/;
 
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;

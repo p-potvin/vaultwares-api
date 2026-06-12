@@ -15,7 +15,7 @@ class TestWorkerPipeline(unittest.TestCase):
     def setUpClass(cls):
         print("\n=== Initializing Worker Pipeline Verification Test ===")
         # Point to the active local background FastAPI server
-        run_local_worker.VPS_BASE_URL = "http://127.0.0.1:9001"
+        run_local_worker.VPS_BASE_URL = "http://100.67.25.118:9001"
         run_local_worker.WORK_DIR = "./temp_test_jobs"
         run_local_worker.PROMO_ASSETS_DIR = "./temp_promo_assets"
         
