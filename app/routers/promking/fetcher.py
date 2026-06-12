@@ -163,13 +163,106 @@ def _shared_tube_path() -> Path:
     ).resolve()
 
 
-async def _drive_subprocess(state: RunState) -> None:
+async def get_manual_cursor(site: str, source: str) -> int:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT value FROM settings WHERE site = $1 AND key = 'fetcher_manual_cursor'",
+            site,
+        )
+    if row and row["value"]:
+        val = json.loads(row["value"]) if isinstance(row["value"], str) else row["value"]
+        if isinstance(val, dict):
+            try:
+                return int(val.get(source, 1))
+            except Exception:
+                pass
+    return 1
+
+
+async def update_manual_cursor(site: str, source: str, page: int) -> None:
+    pool = await get_pool()
+    async with pool.acquire() as conn, conn.transaction():
+        row = await conn.fetchrow(
+            "SELECT value FROM settings WHERE site = $1 AND key = 'fetcher_manual_cursor'",
+            site,
+        )
+        val = {}
+        if row and row["value"]:
+            val = json.loads(row["value"]) if isinstance(row["value"], str) else row["value"]
+            if not isinstance(val, dict):
+                val = {}
+        val[source] = page
+        
+        await conn.execute(
+            """
+            INSERT INTO settings (site, key, value, updated_at)
+            VALUES ($1, 'fetcher_manual_cursor', $2::jsonb, NOW())
+            ON CONFLICT (site, key) DO UPDATE
+              SET value = EXCLUDED.value,
+                  updated_at = NOW()
+            """,
+            site,
+            json.dumps(val),
+        )
+
+
+async def check_existing_links(site: str, links: list[str]) -> set[str]:
+    if not links:
+        return set()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT source_url FROM videos WHERE site = $1 AND source_url = ANY($2)",
+            site,
+            links,
+        )
+    return {r["source_url"] for r in rows}
+
+
+async def get_existing_videos_meta(site: str) -> list[dict]:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT slug, duration_seconds FROM videos WHERE site = $1",
+            site,
+        )
+    return [{"slug": r["slug"], "duration_seconds": r["duration_seconds"]} for r in rows]
+
+
+def filter_duplicate_candidates(candidates: list[dict], existing_meta: list[dict]) -> list[dict]:
+    unique_candidates = []
+    seen_slugs = {item["slug"] for item in existing_meta}
+    
+    for c in candidates:
+        slug = _slugify(c.get("title") or "")
+        if not slug:
+            continue
+        duration = c.get("durationSeconds")
+        
+        if slug in seen_slugs:
+            continue
+            
+        is_dup = False
+        for ext in existing_meta:
+            ext_duration = ext["duration_seconds"]
+            if duration is not None and ext_duration is not None and duration == ext_duration:
+                ext_slug = ext["slug"]
+                if slug in ext_slug or ext_slug in slug:
+                    is_dup = True
+                    break
+        
+        if not is_dup:
+            unique_candidates.append(c)
+            seen_slugs.add(slug)
+            
+    return unique_candidates
+
+
+async def _run_subprocess_for_page(state: RunState, page_num: int) -> list[dict]:
     cli = _shared_tube_path() / "shared" / "src" / "fetcher" / "cli.ts"
     if not cli.exists():
-        state.error = f"fetcher CLI not found at {cli}"
-        await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
-        await _finalize_run(state)
-        return
+        raise FileNotFoundError(f"fetcher CLI not found at {cli}")
 
     cwd = _shared_tube_path()
     args = [
@@ -179,61 +272,38 @@ async def _drive_subprocess(state: RunState) -> None:
         "--",
         f"--site={state.site}",
         f"--source={state.source}",
-        f"--pages={state.pages}",
+        "--pages=1",
+        f"--startPage={page_num}",
     ]
 
-    # Platform-aware spawn. On Windows, pnpm ships as `pnpm.CMD` (a Corepack
-    # shim); asyncio's create_subprocess_exec calls CreateProcess directly and
-    # can't execute .CMD without going through cmd.exe — so we wrap. On Linux
-    # the binary is plain `pnpm` and direct exec works.
-    #
-    # `limit` bumps asyncio StreamReader buffer from the 64 KiB default. The
-    # CLI's `videos` event is a single JSON line carrying every fetched item;
-    # a 3-page fullvideos run is ~60-100 KB and hits LimitOverrunError without
-    # this. 10 MiB is generous (a single page is ~30 videos × ~500 bytes).
     is_windows = platform.system() == "Windows"
     PIPE_LIMIT = 10 * 1024 * 1024  # 10 MiB
     if is_windows:
-        # Use shell=True style via create_subprocess_shell so cmd.exe resolves
-        # pnpm.CMD against PATHEXT. Quote any path that might contain spaces.
         shell_cmd = "pnpm " + " ".join(f'"{a}"' if " " in a else a for a in args)
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                shell_cmd,
-                cwd=str(cwd),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                limit=PIPE_LIMIT,
-            )
-        except (FileNotFoundError, OSError) as e:
-            state.error = f"failed to spawn pnpm (Windows shell): {e}"
-            await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
-            await _finalize_run(state)
-            return
+        proc = await asyncio.create_subprocess_shell(
+            shell_cmd,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=PIPE_LIMIT,
+        )
     else:
         pnpm_path = shutil.which("pnpm") or "pnpm"
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                pnpm_path,
-                *args,
-                cwd=str(cwd),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                limit=PIPE_LIMIT,
-            )
-        except FileNotFoundError as e:
-            state.error = f"failed to spawn pnpm: {e}"
-            await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
-            await _finalize_run(state)
-            return
+        proc = await asyncio.create_subprocess_exec(
+            pnpm_path,
+            *args,
+            cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=PIPE_LIMIT,
+        )
 
     state.process = proc
-
     assert proc.stdout is not None
     assert proc.stderr is not None
 
-    videos_payload: list[dict] = []
-    stderr_buf: list[str] = []
+    videos = []
+    stderr_buf = []
 
     async def _drain_stderr() -> None:
         assert proc.stderr is not None
@@ -242,38 +312,17 @@ async def _drive_subprocess(state: RunState) -> None:
             if not line:
                 break
             text = line.decode("utf-8", errors="replace").rstrip("\n")
-            if not text:
-                continue
-            stderr_buf.append(text)
-            # Surface stderr as log events so the operator sees it live.
-            await _broadcast(state, json.dumps({"event": "log", "line": f"stderr: {text}"}))
+            if text:
+                stderr_buf.append(text)
+                await _broadcast(state, json.dumps({"event": "log", "line": f"stderr (page {page_num}): {text}"}))
 
     stderr_task = asyncio.create_task(_drain_stderr())
 
     while True:
         try:
             line = await proc.stdout.readline()
-        except asyncio.LimitOverrunError as e:
-            # A single CLI line exceeded the (already-raised) buffer cap.
-            # Drain the rest of the line via read(e.consumed) so we don't
-            # spin forever and surface the failure to the operator.
-            state.error = f"CLI stdout line exceeded buffer: {e}"
-            await _broadcast(
-                state,
-                json.dumps({"event": "error", "message": state.error}),
-            )
-            try:
-                await proc.stdout.read(e.consumed)
-            except Exception:
-                pass
-            break
-        except ValueError as e:
-            # Older asyncio raises ValueError for the same condition.
-            state.error = f"CLI stdout read failed: {e}"
-            await _broadcast(
-                state,
-                json.dumps({"event": "error", "message": state.error}),
-            )
+        except (asyncio.LimitOverrunError, ValueError) as e:
+            await _broadcast(state, json.dumps({"event": "error", "message": f"CLI stdout read failed: {e}"}))
             break
         if not line:
             break
@@ -284,23 +333,15 @@ async def _drive_subprocess(state: RunState) -> None:
             payload = json.loads(text)
         except json.JSONDecodeError:
             payload = {"event": "log", "line": text}
-        await _broadcast(state, json.dumps(payload))
+        
         event = payload.get("event")
-        if event == "done":
-            summary = payload.get("summary") or {}
-            state.summary = {
-                "fetched": int(summary.get("fetched", 0)),
-                "added": int(summary.get("added", 0)),
-                "skipped": int(summary.get("skipped", 0)),
-                "errors": int(summary.get("errors", 0)),
-            }
+        if event == "log":
+            log_line = f"[Page {page_num}] {payload.get('line', '')}"
+            await _broadcast(state, json.dumps({"event": "log", "line": log_line}))
         elif event == "videos":
-            # CLI now emits one `videos` line per item (each with a single-
-            # element array) to stay under the asyncio StreamReader buffer.
-            # Accumulate; the persistence loop handles the union at the end.
             chunk = payload.get("videos")
             if isinstance(chunk, list):
-                videos_payload.extend(chunk)
+                videos.extend(chunk)
 
     return_code = await proc.wait()
     try:
@@ -308,30 +349,128 @@ async def _drive_subprocess(state: RunState) -> None:
     except asyncio.TimeoutError:
         stderr_task.cancel()
 
-    if return_code != 0 and not state.error:
-        tail = "\n".join(stderr_buf[-10:]) or "(no stderr captured)"
-        state.error = f"fetcher exited with code {return_code}. stderr tail:\n{tail}"
+    if return_code != 0:
+        tail = "\n".join(stderr_buf[-10:]) or "(no stderr)"
+        raise RuntimeError(f"fetcher exited with code {return_code}. stderr tail: {tail}")
 
-    state.stderr_log = "\n".join(stderr_buf[-40:]) if stderr_buf else None
+    return videos
 
-    # Persist whatever the CLI returned. The CLI itself never writes.
+
+async def _drive_subprocess(state: RunState) -> None:
     try:
-        added = await _persist_videos(state.site, videos_payload)
-    except Exception as e:
-        state.error = f"persist failed: {e}"
+        start_page = await get_manual_cursor(state.site, state.source)
+        await _broadcast(state, json.dumps({"event": "log", "line": f"▶ Back-catalog cursor: start fetching at page {start_page}"}))
+        
+        current_page = start_page
+        pages_counted = 0
+        has_hit_duplicate = False
+        awaiting_new_after_duplicate = False
+        candidates = []
+        fetched_urls = set()
+        
+        MAX_SAFETY_PAGES = 500
+        total_pages_fetched = 0
+        
+        while pages_counted < state.pages and total_pages_fetched < MAX_SAFETY_PAGES:
+            await _broadcast(state, json.dumps({"event": "log", "line": f"--- Fetching Page {current_page} ---"}))
+            try:
+                page_videos = await _run_subprocess_for_page(state, current_page)
+            except Exception as e:
+                state.error = f"Subprocess failed on page {current_page}: {e}"
+                await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
+                break
+                
+            total_pages_fetched += 1
+            if not page_videos:
+                await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} returned 0 videos. Stopping."}))
+                break
+                
+            unique_page_videos = []
+            for v in page_videos:
+                url = v.get("sourceUrl")
+                if url and url not in fetched_urls:
+                    fetched_urls.add(url)
+                    unique_page_videos.append(v)
+            
+            if not unique_page_videos:
+                await _broadcast(state, json.dumps({"event": "log", "line": f"All videos on page {current_page} were already processed in this run."}))
+                if not has_hit_duplicate:
+                    has_hit_duplicate = True
+                    awaiting_new_after_duplicate = True
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ Hit first duplicate zone at page {current_page}."}))
+                
+                if awaiting_new_after_duplicate:
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} skipped from count (in duplicate zone)."}))
+                else:
+                    pages_counted += 1
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} counted. ({pages_counted}/{state.pages})"}))
+                current_page += 1
+                continue
+
+            urls_to_check = [v["sourceUrl"] for v in unique_page_videos if v.get("sourceUrl")]
+            existing_urls = await check_existing_links(state.site, urls_to_check)
+            
+            for v in unique_page_videos:
+                url = v.get("sourceUrl")
+                if url in existing_urls:
+                    if not has_hit_duplicate:
+                        has_hit_duplicate = True
+                        awaiting_new_after_duplicate = True
+                        await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ Hit first duplicate at link: {url}"}))
+                else:
+                    candidates.append(v)
+                    if awaiting_new_after_duplicate:
+                        awaiting_new_after_duplicate = False
+                        await _broadcast(state, json.dumps({"event": "log", "line": f"✨ Found next unknown video at page {current_page}. Counting starts now."}))
+            
+            if not awaiting_new_after_duplicate:
+                pages_counted += 1
+                await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} counted towards requested pages. ({pages_counted}/{state.pages})"}))
+            else:
+                await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} skipped from count (duplicates zone)."}))
+                
+            current_page += 1
+            
+        await update_manual_cursor(state.site, state.source, current_page)
+        await _broadcast(state, json.dumps({"event": "log", "line": f"💾 Saved next cursor page P = {current_page} in DB settings."}))
+        
+        await _broadcast(state, json.dumps({"event": "log", "line": f"🔍 Comparing {len(candidates)} candidates by title and duration..."}))
+        existing_meta = await get_existing_videos_meta(state.site)
+        filtered_candidates = filter_duplicate_candidates(candidates, existing_meta)
+        
+        rejected_count = len(candidates) - len(filtered_candidates)
+        if rejected_count > 0:
+            await _broadcast(state, json.dumps({"event": "log", "line": f"🚫 Rejected {rejected_count} candidates due to similar titles/durations."}))
+            
+        await _broadcast(state, json.dumps({"event": "log", "line": f"💾 Persisting {len(filtered_candidates)} videos to database..."}))
+        
         added = 0
-    state.summary["added"] = added
-    # Tell the console the real post-persistence count — the CLI's `done`
-    # event always emits added=0 by design (CLI never writes).
-    await _broadcast(
-        state,
-        json.dumps({
-            "event": "persisted",
-            "summary": dict(state.summary),
-            "candidates": len(videos_payload),
-        }),
-    )
-    await _finalize_run(state)
+        if filtered_candidates:
+            try:
+                added = await _persist_videos(state.site, filtered_candidates)
+            except Exception as e:
+                state.error = f"persist failed: {e}"
+                
+        state.summary = {
+            "fetched": len(fetched_urls),
+            "added": added,
+            "skipped": len(fetched_urls) - added,
+            "errors": 1 if state.error else 0,
+        }
+        
+        await _broadcast(
+            state,
+            json.dumps({
+                "event": "persisted",
+                "summary": dict(state.summary),
+                "candidates": len(filtered_candidates),
+            }),
+        )
+    except Exception as e:
+        state.error = f"Subprocess driver error: {e}"
+        await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
+    finally:
+        await _finalize_run(state)
 
 
 async def _broadcast(state: RunState, line: str) -> None:
