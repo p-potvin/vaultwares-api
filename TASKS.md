@@ -1,64 +1,18 @@
-# Project Roadmap: Advanced Workflow SPA
+# vaultwares-api Tasks
 
-## System Rules
+## Completed
 
-- Review the entire roadmap before starting any task to ensure alignment with project goals and dependencies.
-- All tasks are assigned to a single agent.
-- Tasks use numbers: `1 [ ] Task`
-- Subtasks use letters: `1a [ ] Subtask`
-- Status indicators: `[ ]` (Free), `[~]` (In Progress), `[x]` (Finished)
-- Agents in `RELAXING` state will be assigned the next available main task.
-- Agents in `WAITING_FOR_INPUT` are locked until PRs are merged by human intervention and are manually reset.
+- [x] PostgreSQL Migration to OVH (2026-06-11): Started migration from Clopeux-Desktop local PG18 to vps-ovhcloud 100.67.25.118. Dumped local vaultwares/promking databases, restored PG16-compatible SQL snapshots into remote apidb cluster on port 5433. Verified /healthz db=up. Promking row counts matched. Note: local API continued writing during migration, so final cutover needs write pause and final snapshot.
+- [x] VaultWares API Cutover to OVH (2026-06-11): Cut over local VaultWares input tracker to OVH VPS API over Tailscale. Updated OVH API env with telemetry key, bound on 0.0.0.0:9001, restricted direct 9001 ingress to workstation over tailscale0. Restarted vaultwares-api service. Updated Greencloud dnsmasq exact-host record for api.vaultwares.ca to 100.67.25.118. Paused/restarted VaultWares-InputTracker with new VW_API_URL=http://100.67.25.118:9001. Verified telemetry batches reached OVH Postgres.
+- [x] WebAuthn Passkey Admin Auth (2026-06-12): Added `webauthn` dependency, created `WebAuthnCredential` DB model in `db.py`, and implemented `/auth/register` and `/auth/login` options/verify endpoints in `api_server.py`. Added corresponding UI controls to the PKT/FXV admin portals in `shared-tube`.
 
----
+## In Progress
 
-## 1 Backend & API Infrastructure
+(none)
 
-1 [ ] Define API Endpoints & Models
-  1a [ ] Design OpenAPI spec for all endpoints (GET/POST/PUT/DELETE)
-  1b [ ] Define Pydantic models for workflows and user preferences
-  1c [ ] Design DB schema (PostgreSQL/Supabase) or JSON/YAML file structure
-2 [ ] Implement Core Endpoints
-  2a [ ] Implement CRUD logic for workflows
-  2b [ ] Implement pinning and favorites logic
-  2c [ ] Implement export/import and backup/restore logic
-3 [ ] NIM/Cloud Sync Implementation
-  3a [ ] Implement /run endpoint for local vs NIM VM execution
-  3b [ ] Handle NIM VM API authentication and error states
-4 [ ] Security & Validation
-  4a [ ] Add JWT/Session authentication
-  4b [ ] Finalize Pydantic input validation layers
-5 [ ] Backend Testing
-  5a [ ] Write unit tests for endpoints and models
-  5b [ ] Perform integration tests (DB and NIM VM)
+## Backlog
 
-## 2 Frontend Development (React/Vite)
+- [ ] Final PostgreSQL migration cutover with write pause and final snapshot
+- [ ] Verify all dependent services pointing to OVH API
+- [ ] Implement write/update operations for taxonomies (bulk move/rename/gender-update) in the FastAPI router and admin portals.
 
-6 [ ] UI/UX Design & Architecture
-  6a [ ] Define Design System using Tailwind and Vault-Themes
-  6b [ ] Create wireframes for Category Sidebar and Workflow List
-7 [ ] Core Component Implementation
-  7a [ ] Build responsive Category Sidebar
-  7b [ ] Build Sortable/Filterable Workflow List
-  7c [ ] Implement Modals for Create/Import/Export/Restore
-8 [ ] State Management (Redux/Zod)
-  8a [ ] Setup Redux store for workflows and UI state
-  8b [ ] Implement Zod schemas for client-side validation
-9 [ ] API Integration
-  9a [ ] Connect Axios/Fetch to backend endpoints
-  9b [ ] Implement global error handling and loading states
-10 [ ] Testing & Optimization
-  10a [ ] Write component unit tests
-  10b [ ] Perform E2E testing with Playwright
-
-## 3 Cross-Cutting Features
-
-11 [ ] NIM VM API Integration
-  11a [ ] Build client/server logic for remote execution
-  11b [ ] Implement status polling for long-running workflows
-12 [ ] Documentation & QA
-  12a [ ] Generate Swagger/OpenAPI documentation
-  12b [ ] Perform full system audit (Accessibility & Security)
-13 [ ] CI/CD & Deployment
-  13a [ ] Setup GitHub Actions for Build/Test/Deploy
-  13b [ ] Write User & Admin guides
