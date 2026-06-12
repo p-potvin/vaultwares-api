@@ -21,7 +21,7 @@ import asyncio
 import httpx
 from dataclasses import dataclass
 from dotenv import load_dotenv
-from db import init_db, close_db, UserAccount, ApiKey
+from db import init_db, close_db, UserAccount, ApiKey, WebAuthnCredential
 from tortoise import Tortoise, connections
 import logging
 from jose import jwt, JWTError
@@ -2091,7 +2091,204 @@ async def register(payload: RegisterRequest, request: Request):
         expires_in=max(60, JWT_TTL_SECONDS),
     )
 
+# --- WebAuthn / Passkey Authentication ---
+import time
+from webauthn import (
+    generate_registration_options,
+    verify_registration_response,
+    generate_authentication_options,
+    verify_authentication_response,
+)
+from webauthn.helpers import bytes_to_base64url, base64url_to_bytes
+from webauthn.helpers.structs import (
+    AuthenticatorSelectionCriteria,
+    ResidentKeyRequirement,
+    UserVerificationRequirement,
+    PublicKeyCredentialDescriptor,
+)
+
+WEBAUTHN_CHALLENGES: dict[str, dict] = {}
+
+def _cleanup_webauthn_challenges():
+    now = time.time()
+    stale = [k for k, v in WEBAUTHN_CHALLENGES.items() if now - v["timestamp"] > 300]
+    for k in stale:
+        WEBAUTHN_CHALLENGES.pop(k, None)
+
+@app.post("/auth/register/options")
+async def webauthn_register_options(principal=Depends(require_auth)):
+    if principal.get("kind") != "user":
+        raise HTTPException(status_code=401, detail="User token required")
+    user: UserAccount = principal["user"]
+
+    _cleanup_webauthn_challenges()
+
+    rp_name = "Prom-King"
+    rp_id = os.environ.get("WEBAUTHN_RP_ID", "prom-king.xyz")
+    user_id_bytes = str(user.id).encode("utf-8")
+    
+    user_credentials = await WebAuthnCredential.filter(user=user)
+    exclude_credentials = []
+    for cred in user_credentials:
+        try:
+            exclude_credentials.append(PublicKeyCredentialDescriptor(
+                id=base64url_to_bytes(cred.credential_id)
+            ))
+        except Exception:
+            pass
+
+    options = generate_registration_options(
+        rp_id=rp_id,
+        rp_name=rp_name,
+        user_id=user_id_bytes,
+        user_name=user.username,
+        user_display_name=user.username,
+        attestation="none",
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            authenticator_attachment=None,
+            resident_key=ResidentKeyRequirement.REQUIRED,
+            user_verification=UserVerificationRequirement.PREFERRED,
+        ),
+        exclude_credentials=exclude_credentials,
+    )
+
+    challenge_str = bytes_to_base64url(options.challenge)
+    WEBAUTHN_CHALLENGES[challenge_str] = {
+        "challenge": options.challenge,
+        "username": user.username,
+        "timestamp": time.time(),
+    }
+
+    from fastapi.encoders import jsonable_encoder
+    return jsonable_encoder(options)
+
+@app.post("/auth/register/verify")
+async def webauthn_register_verify(payload: dict, principal=Depends(require_auth)):
+    if principal.get("kind") != "user":
+        raise HTTPException(status_code=401, detail="User token required")
+    user: UserAccount = principal["user"]
+
+    _cleanup_webauthn_challenges()
+
+    challenge_str = payload.get("challenge")
+    if not challenge_str or challenge_str not in WEBAUTHN_CHALLENGES:
+        raise HTTPException(status_code=400, detail="Challenge missing or expired")
+
+    challenge_info = WEBAUTHN_CHALLENGES.pop(challenge_str)
+    if challenge_info["username"] != user.username:
+        raise HTTPException(status_code=403, detail="Challenge owner mismatch")
+
+    rp_id = os.environ.get("WEBAUTHN_RP_ID", "prom-king.xyz")
+    expected_origin = payload.get("origin") or f"https://{rp_id}"
+
+    try:
+        verification = verify_registration_response(
+            credential=payload.get("credential"),
+            expected_challenge=challenge_info["challenge"],
+            expected_origin=expected_origin,
+            expected_rp_id=rp_id,
+            require_user_verification=False,
+        )
+    except Exception as e:
+        try:
+            verification = verify_registration_response(
+                credential=payload.get("credential"),
+                expected_challenge=challenge_info["challenge"],
+                expected_origin="http://localhost:4321",
+                expected_rp_id="localhost",
+                require_user_verification=False,
+            )
+        except Exception as e2:
+            raise HTTPException(status_code=400, detail=f"WebAuthn verification failed: {e2}")
+
+    credential_id_str = bytes_to_base64url(verification.credential_id)
+    public_key_str = bytes_to_base64url(verification.credential_public_key)
+
+    existing = await WebAuthnCredential.get_or_none(credential_id=credential_id_str)
+    if existing:
+        raise HTTPException(status_code=409, detail="Credential already registered")
+
+    await WebAuthnCredential.create(
+        user=user,
+        credential_id=credential_id_str,
+        public_key=public_key_str,
+        sign_count=verification.sign_count,
+    )
+
+    return {"ok": True}
+
+@app.post("/auth/login/options")
+async def webauthn_login_options():
+    _cleanup_webauthn_challenges()
+
+    rp_id = os.environ.get("WEBAUTHN_RP_ID", "prom-king.xyz")
+    
+    options = generate_authentication_options(
+        rp_id=rp_id,
+        user_verification=UserVerificationRequirement.PREFERRED,
+    )
+
+    challenge_str = bytes_to_base64url(options.challenge)
+    WEBAUTHN_CHALLENGES[challenge_str] = {
+        "challenge": options.challenge,
+        "timestamp": time.time(),
+    }
+
+    from fastapi.encoders import jsonable_encoder
+    return jsonable_encoder(options)
+
+@app.post("/auth/login/verify")
+async def webauthn_login_verify(payload: dict):
+    _cleanup_webauthn_challenges()
+
+    challenge_str = payload.get("challenge")
+    if not challenge_str or challenge_str not in WEBAUTHN_CHALLENGES:
+        raise HTTPException(status_code=400, detail="Challenge missing or expired")
+
+    challenge_info = WEBAUTHN_CHALLENGES.pop(challenge_str)
+
+    credential_payload = payload.get("credential", {})
+    credential_id_str = credential_payload.get("id")
+    
+    db_cred = await WebAuthnCredential.get_or_none(credential_id=credential_id_str).prefetch_related("user")
+    if not db_cred or db_cred.user.is_disabled:
+        raise HTTPException(status_code=401, detail="Invalid credential")
+
+    rp_id = os.environ.get("WEBAUTHN_RP_ID", "prom-king.xyz")
+    expected_origin = payload.get("origin") or f"https://{rp_id}"
+
+    try:
+        verification = verify_authentication_response(
+            credential=credential_payload,
+            expected_challenge=challenge_info["challenge"],
+            expected_origin=expected_origin,
+            expected_rp_id=rp_id,
+            credential_public_key=base64url_to_bytes(db_cred.public_key),
+            credential_current_sign_count=db_cred.sign_count,
+            require_user_verification=False,
+        )
+    except Exception as e:
+        try:
+            verification = verify_authentication_response(
+                credential=credential_payload,
+                expected_challenge=challenge_info["challenge"],
+                expected_origin="http://localhost:4321",
+                expected_rp_id="localhost",
+                credential_public_key=base64url_to_bytes(db_cred.public_key),
+                credential_current_sign_count=db_cred.sign_count,
+                require_user_verification=False,
+            )
+        except Exception as e2:
+            raise HTTPException(status_code=401, detail=f"WebAuthn verification failed: {e2}")
+
+    db_cred.sign_count = verification.new_sign_count
+    await db_cred.save()
+
+    token = _create_access_token(db_cred.user.id, db_cred.user.username, bool(db_cred.user.is_admin))
+    return LoginResponse(access_token=token, expires_in=max(60, JWT_TTL_SECONDS))
+
 @app.get("/auth/me", response_model=MeResponse)
+
 async def me(principal=Depends(require_auth)):
     if principal.get("kind") != "user":
         raise HTTPException(status_code=401, detail="User token required")

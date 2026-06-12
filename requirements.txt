@@ -53,3 +53,5 @@ pydantic
 # pyicloud  # iCloud
 
 rembg>=2.0.50
+webauthn
+

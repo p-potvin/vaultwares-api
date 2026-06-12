@@ -34,6 +34,18 @@ class ApiKey(models.Model):
     class Meta:
         table = "api_keys"
 
+class WebAuthnCredential(models.Model):
+    id = fields.IntField(pk=True)
+    user = fields.ForeignKeyField("models.UserAccount", related_name="credentials", on_delete=fields.CASCADE)
+    credential_id = fields.CharField(max_length=512, unique=True, index=True)
+    public_key = fields.TextField()  # Base64URL encoded public key string
+    sign_count = fields.IntField(default=0)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "webauthn_credentials"
+
+
 async def init_db(db_url: str):
     # Register both db and api_server modules for Tortoise ORM
     await Tortoise.init(
