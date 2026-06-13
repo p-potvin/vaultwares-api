@@ -24,6 +24,7 @@ from api.routes_uploads import router as uploads_router
 from api.routes_promking import router as promking_router
 from api.routes_proxy import router as proxy_router
 from api.routes_media import router as media_router
+from api.routes_llm import router as llm_router
 
 from api.routes_media import ZIPPER_DEST_DIR
 
@@ -126,7 +127,12 @@ app.middleware("http")(correlation_id_middleware)
 app.middleware("http")(gate_requests_middleware)
 
 # CORS
-_cors_allow_origins = sorted(set(CORS_ORIGINS) | ALLOWED_ORIGINS) if (CORS_ORIGINS or ALLOWED_ORIGINS) else []
+_extra_dev_origins = {
+    "http://localhost:3000", "http://127.0.0.1:3000",
+    "http://localhost:5173", "http://127.0.0.1:5173",
+    "http://localhost:8080", "http://127.0.0.1:8080"
+}
+_cors_allow_origins = sorted(set(CORS_ORIGINS) | ALLOWED_ORIGINS | _extra_dev_origins) if (CORS_ORIGINS or ALLOWED_ORIGINS) else list(_extra_dev_origins)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allow_origins,
@@ -152,6 +158,7 @@ app.include_router(jobs_router)
 app.include_router(uploads_router)
 app.include_router(proxy_router)
 app.include_router(media_router)
+app.include_router(llm_router)
 
 # Resiliency router imports
 _PROMKING_LOADED = False

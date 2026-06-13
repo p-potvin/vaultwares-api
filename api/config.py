@@ -164,3 +164,6 @@ APP_CONFIG = {
         },
     },
 }
+
+NGC_API_KEY = os.environ.get("NGC_API_KEY", "")
+
