@@ -563,7 +563,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                     v.get("source"),
                     v.get("sourceUrl"),
                     v.get("embedUrl"),
-                    v.get("embedType", "iframe"),
+                    v.get("embedType", "mp4"),
                     v.get("title"),
                     slug,
                     v.get("thumbnailUrl"),

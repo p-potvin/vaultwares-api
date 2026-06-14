@@ -34,7 +34,7 @@ async def list_terms(
                 FROM {table}
                 JOIN {join_table} ON {join_table}.{term_column} = {table}.id
                 JOIN videos ON videos.id = {join_table}.video_id
-                WHERE videos.site = $1 AND videos.embed_type <> 'iframe'
+                WHERE videos.site = $1
                 GROUP BY {table}.id, {table}.name, {table}.slug
                 ORDER BY COUNT(videos.id) DESC, {table}.name ASC
                 LIMIT $2

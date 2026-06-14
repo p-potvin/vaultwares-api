@@ -26,7 +26,7 @@ def build_video_filters(
     unit-tested without requiring Postgres.
     """
     joins: list[str] = []
-    where = ["videos.site = $1", "videos.embed_type <> 'iframe'"]
+    where = ["videos.site = $1"]
     params: list = [site]
 
     def add_param(value: str) -> str:
@@ -189,7 +189,7 @@ async def get_video(slug: str, site: Site = Query(...)) -> VideoDetail | None:
                    duration_seconds, views, created_at, updated_at,
                    source, source_url, embed_url, embed_type, qualities
             FROM videos
-            WHERE site = $1 AND slug = $2 AND embed_type <> 'iframe'
+            WHERE site = $1 AND slug = $2
             """,
             site,
             slug,
