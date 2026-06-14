@@ -25,6 +25,7 @@ from api.routes_promking import router as promking_router
 from api.routes_proxy import router as proxy_router
 from api.routes_media import router as media_router
 from api.routes_llm import router as llm_router
+from api.routes_linksharing import router as linksharing_router
 
 from api.routes_media import ZIPPER_DEST_DIR
 
@@ -159,6 +160,7 @@ app.include_router(uploads_router)
 app.include_router(proxy_router)
 app.include_router(media_router)
 app.include_router(llm_router)
+app.include_router(linksharing_router)
 
 # Resiliency router imports
 _PROMKING_LOADED = False

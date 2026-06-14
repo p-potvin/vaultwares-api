@@ -24,6 +24,7 @@ from .taxonomies import router as taxonomies_router
 from .fetcher import router as fetcher_router
 from .settings_routes import router as settings_router
 from .stats import router as stats_router
+from .query import router as query_router
 
 router = APIRouter(prefix="/api/promking", tags=["promking"])
 router.include_router(videos_router)
@@ -31,5 +32,6 @@ router.include_router(taxonomies_router)
 router.include_router(fetcher_router)
 router.include_router(settings_router)
 router.include_router(stats_router)
+router.include_router(query_router)
 
 __all__ = ["router"]

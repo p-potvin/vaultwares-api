@@ -6,7 +6,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
-Site = Literal["fxv", "pkt"]
+Site = Literal["fxv", "pkt", "oneporn", "sexyprn"]
 EmbedType = Literal["mp4", "hls"]
 TaxonomyKind = Literal["actors", "studios", "categories"]
 
@@ -76,3 +76,8 @@ class StatsResponse(BaseModel):
     videos_total: dict[str, int] = Field(default_factory=dict)  # site -> count
     videos_per_source: list[dict] = Field(default_factory=list)
     fetch_runs_recent: list[FetchRunSummary] = Field(default_factory=list)
+
+
+class QueryRequest(BaseModel):
+    sql: str
+
