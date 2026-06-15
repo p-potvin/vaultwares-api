@@ -1,11 +1,11 @@
 import os
 import re
-import base64
 import secrets
 import string
 import logging
 import asyncio
 from app.services.zipper.fileboom import FileboomClient
+from app.services.zipper.linkvertise import build_linkvertise_pair
 from app.routers.promking.db import get_pool
 
 logger = logging.getLogger(__name__)
@@ -27,12 +27,6 @@ def generate_slug(filename: str) -> str:
     if not slug:
         slug = f"download-{generate_id(6).lower()}"
     return slug
-
-def make_linkvertise_url(target_url: str) -> str:
-    user_id = os.environ.get("LINKVERTISE_USER_ID", "331075")
-    random_id = os.environ.get("LINKVERTISE_RANDOM_ID", "dynamic")
-    target_b64 = base64.b64encode(target_url.encode('utf-8')).decode('utf-8')
-    return f"https://link-to.net/{user_id}/{random_id}/dynamic?r={target_b64}"
 
 async def get_unique_slug(conn, base_slug: str) -> str:
     slug = base_slug
@@ -83,29 +77,27 @@ def trigger_post_download_pipeline(file_path: str, page_url: str):
 
         # 2. SEO Slug Generation
         base_slug = generate_slug(filename)
-        
-        # 3. Determine File Type path mapping
-        ext = os.path.splitext(filename)[1].lower().strip(".")
-        if ext == "zip":
-            file_type = "zip"
-        elif ext in ["mp4", "mkv", "avi", "mov"]:
-            file_type = "video"
-        else:
-            file_type = "file"
-
-        # 4. Generate Target redirection pages
-        # Format: https://links.fullxxx.video/{file_type}/{slug}
-        # and     https://links.prom-king.xyz/{file_type}/{slug}
-        fxv_target = f"https://links.fullxxx.video/{file_type}/{base_slug}"
-        pkt_target = f"https://links.prom-king.xyz/{file_type}/{base_slug}"
-
-        # 5. Generate Linkvertise monetized URLs
-        linkvertise_url_fxv = make_linkvertise_url(fxv_target)
-        linkvertise_url_pkt = make_linkvertise_url(pkt_target)
-
-        # 6. Database persistence
-        record_id = generate_id(24)
         title = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ")
+        
+        # 3. Generate Linkvertise monetized URLs
+        if fileboom_url:
+            target_mode = os.environ.get("LINKVERTISE_TARGET_MODE", "prelander").lower()
+            if target_mode not in {"fileboom", "prelander"}:
+                logger.warning("[Post-Download] Invalid LINKVERTISE_TARGET_MODE=%s; using prelander", target_mode)
+                target_mode = "prelander"
+            linkvertise_url_fxv, linkvertise_url_pkt = build_linkvertise_pair(
+                fileboom_url=fileboom_url,
+                slug=base_slug,
+                file_path=file_path,
+                title=title,
+                target_mode=target_mode,
+            )
+        else:
+            linkvertise_url_fxv = None
+            linkvertise_url_pkt = None
+
+        # 4. Database persistence
+        record_id = generate_id(24)
         record = {
             "id": record_id,
             "title": title,

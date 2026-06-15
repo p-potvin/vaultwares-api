@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vaultwares-api"
-version = "0.1.0"
+version = "0.1.1"
 description = "VaultWares core AI/media orchestration engine for multimodal pipelines"
 keywords = ["vaultwares", "ai-pipelines", "multimodal", "video-processing", "local-ai", "privacy-first"]
 authors = [{ name = "VaultWares" }]

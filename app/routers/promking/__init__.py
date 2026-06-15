@@ -25,6 +25,7 @@ from .fetcher import router as fetcher_router
 from .settings_routes import router as settings_router
 from .stats import router as stats_router
 from .query import router as query_router
+from .link_sharing import router as link_sharing_router
 
 router = APIRouter(prefix="/api/promking", tags=["promking"])
 router.include_router(videos_router)
@@ -33,5 +34,6 @@ router.include_router(fetcher_router)
 router.include_router(settings_router)
 router.include_router(stats_router)
 router.include_router(query_router)
+router.include_router(link_sharing_router)
 
 __all__ = ["router"]
