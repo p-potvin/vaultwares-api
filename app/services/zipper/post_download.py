@@ -81,10 +81,10 @@ def trigger_post_download_pipeline(file_path: str, page_url: str):
         
         # 3. Generate Linkvertise monetized URLs
         if fileboom_url:
-            target_mode = os.environ.get("LINKVERTISE_TARGET_MODE", "prelander").lower()
+            target_mode = os.environ.get("LINKVERTISE_TARGET_MODE", "fileboom").lower()
             if target_mode not in {"fileboom", "prelander"}:
-                logger.warning("[Post-Download] Invalid LINKVERTISE_TARGET_MODE=%s; using prelander", target_mode)
-                target_mode = "prelander"
+                logger.warning("[Post-Download] Invalid LINKVERTISE_TARGET_MODE=%s; using fileboom", target_mode)
+                target_mode = "fileboom"
             linkvertise_url_fxv, linkvertise_url_pkt = build_linkvertise_pair(
                 fileboom_url=fileboom_url,
                 slug=base_slug,
