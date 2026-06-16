@@ -3,7 +3,7 @@ Prom-King router — mounts /api/promking/* under the FastAPI auth-bridge.
 
 Sub-routes:
   /videos             — read + write video rows in the `promking` Postgres DB
-  /taxonomies/{kind}  — actors / studios / categories CRUD
+  /taxonomies/{kind}  — pornstars / studios / categories CRUD
   /fetcher/run        — POST: spawn shared-tube fetcher CLI as a subprocess
   /fetcher/stream/{id}— GET (SSE): relay NDJSON from the running subprocess
   /fetcher/runs       — GET: recent fetch_runs rows

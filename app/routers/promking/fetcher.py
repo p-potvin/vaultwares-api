@@ -595,10 +595,10 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
 
 
 async def _attach_terms(conn, video_id: int, v: dict) -> None:
-    for kind, table, join in (
-        ("actors", "actors", "video_actors"),
-        ("studios", "studios", "video_studios"),
-        ("categories", "categories", "video_categories"),
+    for kind, table, join, term_column in (
+        ("actors", "pornstars", "video_pornstars", "pornstar_id"),
+        ("studios", "studios", "video_studios", "studio_id"),
+        ("categories", "categories", "video_categories", "category_id"),
     ):
         names = [str(n).strip() for n in (v.get(kind) or []) if str(n).strip()]
         for name in names:
@@ -616,8 +616,8 @@ async def _attach_terms(conn, video_id: int, v: dict) -> None:
                 slug,
             )
             await conn.execute(
-                f"INSERT INTO {join} (video_id, {table[:-1]}_id) "
-                f"VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                f"INSERT INTO {join} (video_id, {term_column})"
+                " VALUES ($1, $2) ON CONFLICT DO NOTHING",
                 video_id,
                 int(term["id"]),
             )

@@ -13,7 +13,7 @@ def test_build_video_filters_adds_taxonomy_and_related_clauses():
     )
 
     assert "videos.site = $1" in where_sql
-    assert "video_actors" in joins_sql
+    assert "video_pornstars" in joins_sql
     assert "video_studios" in joins_sql
     assert "video_categories" in joins_sql
     assert "related_actors" in joins_sql

@@ -5,9 +5,49 @@ from fastapi import APIRouter, Query
 
 import json
 from .db import get_pool
-from ._models import Site, TermRef, VideoDetail, VideoListItem
+from ._models import (
+    BatchAddTaxonomyRequest,
+    BatchChangeSourceRequest,
+    BatchCountResponse,
+    BatchError,
+    BatchMetadataResponse,
+    BatchMetadataUpdateRequest,
+    BatchVideoIdsRequest,
+    Site,
+    TermRef,
+    VideoDetail,
+    VideoListItem,
+)
+from .taxonomies import get_table_config
 
 router = APIRouter(prefix="/videos", tags=["promking:videos"])
+
+_METADATA_COLUMNS = {
+    "title": "title",
+    "source_url": "source_url",
+    "embed_url": "embed_url",
+    "embed_type": "embed_type",
+    "thumbnail_url": "thumbnail_url",
+    "preview_url": "preview_url",
+    "duration_seconds": "duration_seconds",
+    "views": "views",
+    "qualities": "qualities",
+}
+
+
+def build_metadata_update_clause(updates: dict[str, object], first_param: int) -> tuple[str, list[object]]:
+    assignments: list[str] = []
+    values: list[object] = []
+    for key, value in updates.items():
+        column = _METADATA_COLUMNS.get(key)
+        if not column:
+            raise ValueError(f"Unsupported metadata field: {key}")
+        values.append(value)
+        assignments.append(f"{column} = ${first_param + len(values) - 1}")
+    if not assignments:
+        raise ValueError("No metadata updates supplied")
+    assignments.append("updated_at = now()")
+    return ", ".join(assignments), values
 
 
 def build_video_filters(
@@ -41,8 +81,8 @@ def build_video_filters(
     if actor:
         joins.extend(
             [
-                "JOIN video_actors actor_filter ON actor_filter.video_id = videos.id",
-                "JOIN actors actor_terms ON actor_terms.id = actor_filter.actor_id",
+                "JOIN video_pornstars actor_filter ON actor_filter.video_id = videos.id",
+                "JOIN pornstars actor_terms ON actor_terms.id = actor_filter.pornstar_id",
             ]
         )
         where.append(f"actor_terms.slug = {add_param(actor)}")
@@ -66,8 +106,8 @@ def build_video_filters(
         joins.extend(
             [
                 "JOIN videos related_video ON related_video.site = videos.site",
-                "LEFT JOIN video_actors related_actors ON related_actors.video_id = related_video.id",
-                "LEFT JOIN video_actors current_actors ON current_actors.video_id = videos.id AND current_actors.actor_id = related_actors.actor_id",
+                "LEFT JOIN video_pornstars related_actors ON related_actors.video_id = related_video.id",
+                "LEFT JOIN video_pornstars current_actors ON current_actors.video_id = videos.id AND current_actors.pornstar_id = related_actors.pornstar_id",
                 "LEFT JOIN video_studios related_studios ON related_studios.video_id = related_video.id",
                 "LEFT JOIN video_studios current_studios ON current_studios.video_id = videos.id AND current_studios.studio_id = related_studios.studio_id",
                 "LEFT JOIN video_categories related_categories ON related_categories.video_id = related_video.id",
@@ -78,7 +118,7 @@ def build_video_filters(
         where.append("videos.id <> related_video.id")
         where.append(
             "("
-            "current_actors.actor_id IS NOT NULL OR "
+            "current_actors.pornstar_id IS NOT NULL OR "
             "current_studios.studio_id IS NOT NULL OR "
             "current_categories.category_id IS NOT NULL"
             ")"
@@ -87,6 +127,114 @@ def build_video_filters(
         where.append(f"videos.slug <> {add_param(exclude_slug)}")
 
     return " AND ".join(where), "\n        ".join(joins), params
+
+
+@router.post("/batch/disable", response_model=BatchCountResponse)
+async def batch_disable_videos(payload: BatchVideoIdsRequest) -> BatchCountResponse:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            UPDATE videos
+            SET disabled_at = now(), updated_at = now()
+            WHERE id = ANY($1::int[]) AND disabled_at IS NULL
+            RETURNING id
+            """,
+            payload.video_ids,
+        )
+    changed = {row["id"] for row in rows}
+    skipped = [video_id for video_id in payload.video_ids if video_id not in changed]
+    return BatchCountResponse(count=len(changed), skipped=skipped)
+
+
+@router.post("/batch/change-source", response_model=BatchMetadataResponse)
+async def batch_change_source(payload: BatchChangeSourceRequest) -> BatchMetadataResponse:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            UPDATE videos
+            SET source = $2, updated_at = now()
+            WHERE id = ANY($1::int[])
+            RETURNING id
+            """,
+            payload.video_ids,
+            payload.new_source,
+        )
+    changed = {row["id"] for row in rows}
+    errors = [
+        BatchError(video_id=video_id, reason="video not found")
+        for video_id in payload.video_ids
+        if video_id not in changed
+    ]
+    return BatchMetadataResponse(count=len(changed), errors=errors)
+
+
+@router.post("/batch/metadata-update", response_model=BatchMetadataResponse)
+async def batch_update_metadata(payload: BatchMetadataUpdateRequest) -> BatchMetadataResponse:
+    try:
+        set_sql, values = build_metadata_update_clause(payload.updates, first_param=2)
+    except ValueError as exc:
+        return BatchMetadataResponse(
+            count=0,
+            errors=[BatchError(video_id=video_id, reason=str(exc)) for video_id in payload.video_ids],
+        )
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            UPDATE videos
+            SET {set_sql}
+            WHERE id = ANY($1::int[])
+            RETURNING id
+            """,
+            payload.video_ids,
+            *values,
+        )
+    changed = {row["id"] for row in rows}
+    errors = [
+        BatchError(video_id=video_id, reason="video not found")
+        for video_id in payload.video_ids
+        if video_id not in changed
+    ]
+    return BatchMetadataResponse(count=len(changed), errors=errors)
+
+
+@router.post("/batch/add-taxonomy", response_model=BatchCountResponse)
+async def batch_add_taxonomy(payload: BatchAddTaxonomyRequest) -> BatchCountResponse:
+    config = get_table_config(payload.kind)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        existing_rows = await conn.fetch(
+            f"""
+            SELECT video_id, {config.term_column} AS term_id
+            FROM {config.join_table}
+            WHERE video_id = ANY($1::int[]) AND {config.term_column} = ANY($2::int[])
+            """,
+            payload.video_ids,
+            payload.term_ids,
+        )
+        existing_pairs = {(row["video_id"], row["term_id"]) for row in existing_rows}
+        rows = await conn.fetch(
+            f"""
+            INSERT INTO {config.join_table} (video_id, {config.term_column})
+            SELECT selected_video.video_id, selected_term.term_id
+            FROM unnest($1::int[]) AS selected_video(video_id)
+            CROSS JOIN unnest($2::int[]) AS selected_term(term_id)
+            ON CONFLICT DO NOTHING
+            RETURNING video_id, {config.term_column} AS term_id
+            """,
+            payload.video_ids,
+            payload.term_ids,
+        )
+    inserted_pairs = {(row["video_id"], row["term_id"]) for row in rows}
+    skipped = [
+        video_id
+        for video_id in payload.video_ids
+        if all((video_id, term_id) in existing_pairs for term_id in payload.term_ids)
+        and not any((video_id, term_id) in inserted_pairs for term_id in payload.term_ids)
+    ]
+    return BatchCountResponse(count=len(inserted_pairs), skipped=skipped)
 
 
 @router.get("", response_model=list[VideoListItem])
@@ -115,13 +263,13 @@ async def list_videos(
     offset_param = f"${len(params) + 2}"
     params.extend([limit, offset])
     sql_base = f"""
-        SELECT videos.id, videos.site, videos.title, videos.slug,
+        SELECT videos.id, videos.site, videos.source, videos.title, videos.slug,
                videos.thumbnail_url, videos.preview_url, videos.duration_seconds,
-               videos.views, videos.created_at, videos.qualities,
+               videos.views, videos.created_at, videos.disabled_at, videos.qualities,
                (
                  SELECT coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'name', a.name, 'slug', a.slug)), '[]'::jsonb)
-                 FROM video_actors va
-                 JOIN actors a ON a.id = va.actor_id
+                 FROM video_pornstars va
+                 JOIN pornstars a ON a.id = va.pornstar_id
                  WHERE va.video_id = videos.id
                ) as actors_json,
                (
@@ -200,11 +348,11 @@ async def get_video(slug: str, site: Site = Query(...)) -> VideoDetail | None:
         video_id = row["id"]
         actors = await conn.fetch(
             """
-            SELECT actors.id, actors.name, actors.slug
-            FROM actors
-            JOIN video_actors ON video_actors.actor_id = actors.id
-            WHERE video_actors.video_id = $1
-            ORDER BY actors.name ASC
+            SELECT pornstars.id, pornstars.name, pornstars.slug
+            FROM pornstars
+            JOIN video_pornstars ON video_pornstars.pornstar_id = pornstars.id
+            WHERE video_pornstars.video_id = $1
+            ORDER BY pornstars.name ASC
             """,
             video_id,
         )
