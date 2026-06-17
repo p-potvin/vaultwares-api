@@ -120,6 +120,19 @@ def trigger_post_download_pipeline(file_path: str, page_url: str):
         else:
             loop.run_until_complete(save_to_database(record))
 
+        # Disk-pressure relief: once the file is on Fileboom and the
+        # link_sharing row holds the canonical URLs, the local copy is
+        # redundant. Skip only when the upload failed so the operator can
+        # retry from the file that's still on disk.
+        if fileboom_url:
+            try:
+                os.remove(file_path)
+                logger.info(f"[Post-Download] Local file removed: {file_path}")
+            except FileNotFoundError:
+                pass
+            except Exception as cleanup_err:
+                logger.warning(f"[Post-Download] Could not remove {file_path}: {cleanup_err}")
+
         logger.info(f"[Post-Download] Complete for {filename}!")
         logger.info(f" -> FileBoom: {fileboom_url}")
         logger.info(f" -> Linkvertise FXV: {linkvertise_url_fxv}")
