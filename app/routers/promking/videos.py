@@ -248,6 +248,15 @@ async def list_videos(
     category: str | None = Query(None, description="Filter by category slug."),
     related_to: str | None = Query(None, description="Related-video seed slug."),
     exclude_slug: str | None = Query(None, description="Slug to omit from results."),
+    actor_gender: str | None = Query(
+        None,
+        description=(
+            "Filter the embedded actors_json by gender. Accepts 'female', 'male', "
+            "'other', 'trans', a comma-separated list, or 'all' (no filter — default "
+            "for backward compat). Videos themselves are not hidden; only the "
+            "embedded pornstar pills are filtered."
+        ),
+    ),
 ) -> list[VideoListItem]:
     pool = await get_pool()
     where_sql, joins, params = build_video_filters(
@@ -259,6 +268,21 @@ async def list_videos(
         related_to=related_to,
         exclude_slug=exclude_slug,
     )
+    # Optional gender filter on the embedded actors_json subquery.
+    actor_gender_clause = ""
+    if actor_gender and actor_gender.lower() != "all":
+        token = actor_gender.lower()
+        values = [v.strip() for v in token.split(",") if v.strip()]
+        include_null = "null" in values
+        concrete = [v for v in values if v != "null"]
+        clauses: list[str] = []
+        if concrete:
+            params.append(concrete)
+            clauses.append(f"a.gender = ANY(${len(params)}::text[])")
+        if include_null:
+            clauses.append("a.gender IS NULL")
+        if clauses:
+            actor_gender_clause = " AND (" + " OR ".join(clauses) + ")"
     limit_param = f"${len(params) + 1}"
     offset_param = f"${len(params) + 2}"
     params.extend([limit, offset])
@@ -270,7 +294,7 @@ async def list_videos(
                  SELECT coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'name', a.name, 'slug', a.slug)), '[]'::jsonb)
                  FROM video_pornstars va
                  JOIN pornstars a ON a.id = va.pornstar_id
-                 WHERE va.video_id = videos.id
+                 WHERE va.video_id = videos.id{actor_gender_clause}
                ) as actors_json,
                (
                  SELECT coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name, 'slug', s.slug)), '[]'::jsonb)
@@ -327,8 +351,46 @@ async def list_videos(
     return results
 
 
+@router.get("/count")
+async def count_videos(
+    site: Site = Query(..., description="Required so the admin counter scopes per-site."),
+    q: str | None = Query(None),
+    actor: str | None = Query(None),
+    studio: str | None = Query(None),
+    category: str | None = Query(None),
+) -> dict:
+    """Count videos for the given site + filters. Cheap path for admin pagination."""
+    where_sql, joins, params = build_video_filters(
+        site=site,
+        q=q,
+        actor=actor,
+        studio=studio,
+        category=category,
+    )
+    pool = await get_pool()
+    sql = f"""
+        SELECT COUNT(DISTINCT videos.id) AS total
+        FROM videos
+        {joins}
+        WHERE {where_sql}
+    """
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(sql, *params)
+    return {"total": int(total or 0)}
+
+
 @router.get("/{slug}", response_model=VideoDetail | None)
-async def get_video(slug: str, site: Site = Query(...)) -> VideoDetail | None:
+async def get_video(
+    slug: str,
+    site: Site = Query(...),
+    actor_gender: str | None = Query(
+        None,
+        description=(
+            "Filter returned pornstars by gender (default 'all'). "
+            "Same syntax as the list endpoint."
+        ),
+    ),
+) -> VideoDetail | None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -346,16 +408,28 @@ async def get_video(slug: str, site: Site = Query(...)) -> VideoDetail | None:
             return None
 
         video_id = row["id"]
-        actors = await conn.fetch(
-            """
+        actor_sql = """
             SELECT pornstars.id, pornstars.name, pornstars.slug
             FROM pornstars
             JOIN video_pornstars ON video_pornstars.pornstar_id = pornstars.id
             WHERE video_pornstars.video_id = $1
-            ORDER BY pornstars.name ASC
-            """,
-            video_id,
-        )
+        """
+        actor_params: list = [video_id]
+        if actor_gender and actor_gender.lower() != "all":
+            token = actor_gender.lower()
+            values = [v.strip() for v in token.split(",") if v.strip()]
+            include_null = "null" in values
+            concrete = [v for v in values if v != "null"]
+            clauses: list[str] = []
+            if concrete:
+                actor_params.append(concrete)
+                clauses.append(f"pornstars.gender = ANY(${len(actor_params)}::text[])")
+            if include_null:
+                clauses.append("pornstars.gender IS NULL")
+            if clauses:
+                actor_sql += " AND (" + " OR ".join(clauses) + ")"
+        actor_sql += " ORDER BY pornstars.name ASC"
+        actors = await conn.fetch(actor_sql, *actor_params)
         studios = await conn.fetch(
             """
             SELECT studios.id, studios.name, studios.slug

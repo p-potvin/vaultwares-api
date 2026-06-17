@@ -60,6 +60,16 @@ async def list_terms(
     kind: TaxonomyKind = Path(...),
     site: Site | None = Query(None),
     limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    q: str | None = Query(None, description="Fuzzy name search (ILIKE)."),
+    gender: str | None = Query(
+        None,
+        description=(
+            "Filter pornstars by gender. Accepts a single value (e.g. 'female') "
+            "or a comma-separated list (e.g. 'female,trans'). Special tokens: "
+            "'null' (NULL only), 'has' (any non-null), 'all' (no filter, default)."
+        ),
+    ),
 ) -> list[TermRef]:
     table_config = get_table_config(kind)
     table, join_table, term_column = (
@@ -72,35 +82,137 @@ async def list_terms(
     if table_config.has_gender:
         select_cols += f", {table}.gender"
         group_cols += f", {table}.gender"
+
+    extra_where: list[str] = []
+    extra_params: list = []
+
+    def add_param(value) -> str:
+        extra_params.append(value)
+        # placeholders are filled later relative to the base param count
+        return f"__p{len(extra_params)}__"
+
+    if q:
+        extra_where.append(f"{table}.name ILIKE {add_param(f'%{q}%')}")
+
+    if gender and table_config.has_gender and gender.lower() != "all":
+        token = gender.lower()
+        if token == "null":
+            extra_where.append(f"{table}.gender IS NULL")
+        elif token == "has":
+            extra_where.append(f"{table}.gender IS NOT NULL")
+        else:
+            values = [v.strip() for v in token.split(",") if v.strip()]
+            include_null = "null" in values
+            concrete = [v for v in values if v != "null"]
+            clauses: list[str] = []
+            if concrete:
+                clauses.append(f"{table}.gender = ANY({add_param(concrete)}::text[])")
+            if include_null:
+                clauses.append(f"{table}.gender IS NULL")
+            if clauses:
+                extra_where.append("(" + " OR ".join(clauses) + ")")
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         if site:
-            rows = await conn.fetch(
-                f"""
+            sql = f"""
                 SELECT {select_cols}
                 FROM {table}
                 JOIN {join_table} ON {join_table}.{term_column} = {table}.id
                 JOIN videos ON videos.id = {join_table}.video_id
                 WHERE videos.site = $1 AND {table}.deleted_at IS NULL
+                {''.join(f' AND {clause}' for clause in extra_where)}
                 GROUP BY {group_cols}
                 ORDER BY COUNT(videos.id) DESC, {table}.name ASC
-                LIMIT $2
-                """,
-                site,
-                limit,
-            )
+                LIMIT $2 OFFSET $3
+            """
+            base_params = [site, limit, offset]
         else:
-            rows = await conn.fetch(
-                f"""
+            sql = f"""
                 SELECT {select_cols}
                 FROM {table}
                 WHERE {table}.deleted_at IS NULL
+                {''.join(f' AND {clause}' for clause in extra_where)}
                 ORDER BY {table}.name ASC
-                LIMIT $1
-                """,
-                limit,
-            )
+                LIMIT $1 OFFSET $2
+            """
+            base_params = [limit, offset]
+
+        # Renumber extra placeholders sequentially after the base ones.
+        for index, _ in enumerate(extra_params, start=len(base_params) + 1):
+            sql = sql.replace(f"__p{index - len(base_params)}__", f"${index}", 1)
+
+        rows = await conn.fetch(sql, *base_params, *extra_params)
     return [TermRef(**dict(r)) for r in rows]
+
+
+@router.get("/{kind}/count")
+async def count_terms(
+    kind: TaxonomyKind = Path(...),
+    site: Site | None = Query(None),
+    q: str | None = Query(None),
+    gender: str | None = Query(None),
+) -> dict:
+    """Count rows matching the same filters as list_terms. Cheap path the
+    admin uses to render proper pagination + a 'matching X of Y' counter."""
+    table_config = get_table_config(kind)
+    table, join_table, term_column = (
+        table_config.table,
+        table_config.join_table,
+        table_config.term_column,
+    )
+
+    extra_where: list[str] = []
+    extra_params: list = []
+
+    def add_param(value) -> str:
+        extra_params.append(value)
+        return f"__p{len(extra_params)}__"
+
+    if q:
+        extra_where.append(f"{table}.name ILIKE {add_param(f'%{q}%')}")
+    if gender and table_config.has_gender and gender.lower() != "all":
+        token = gender.lower()
+        if token == "null":
+            extra_where.append(f"{table}.gender IS NULL")
+        elif token == "has":
+            extra_where.append(f"{table}.gender IS NOT NULL")
+        else:
+            values = [v.strip() for v in token.split(",") if v.strip()]
+            include_null = "null" in values
+            concrete = [v for v in values if v != "null"]
+            clauses: list[str] = []
+            if concrete:
+                clauses.append(f"{table}.gender = ANY({add_param(concrete)}::text[])")
+            if include_null:
+                clauses.append(f"{table}.gender IS NULL")
+            if clauses:
+                extra_where.append("(" + " OR ".join(clauses) + ")")
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if site:
+            sql = f"""
+                SELECT COUNT(DISTINCT {table}.id) AS total
+                FROM {table}
+                JOIN {join_table} ON {join_table}.{term_column} = {table}.id
+                JOIN videos ON videos.id = {join_table}.video_id
+                WHERE videos.site = $1 AND {table}.deleted_at IS NULL
+                {''.join(f' AND {clause}' for clause in extra_where)}
+            """
+            base_params = [site]
+        else:
+            sql = f"""
+                SELECT COUNT(*) AS total
+                FROM {table}
+                WHERE {table}.deleted_at IS NULL
+                {''.join(f' AND {clause}' for clause in extra_where)}
+            """
+            base_params = []
+        for index, _ in enumerate(extra_params, start=len(base_params) + 1):
+            sql = sql.replace(f"__p{index - len(base_params)}__", f"${index}", 1)
+        total = await conn.fetchval(sql, *base_params, *extra_params)
+    return {"total": int(total or 0)}
 
 
 @router.post("/{kind}/batch/rename", response_model=BatchTaxonomyUpdateResponse)
