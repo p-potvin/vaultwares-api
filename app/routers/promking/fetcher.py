@@ -20,6 +20,7 @@ import os
 import platform
 import re
 import shutil
+import random
 import time
 import unicodedata
 import uuid
@@ -63,6 +64,11 @@ _runs_lock = asyncio.Lock()
 
 @router.post("/run", response_model=FetchRunHandle)
 async def run_fetcher(req: FetchRunRequest, bg: BackgroundTasks) -> FetchRunHandle:
+    if req.source == "pornxp" and req.site != "fxv":
+        raise HTTPException(status_code=400, detail="pornxp source is exclusive to fxv")
+    if req.source == "1porn" and req.site != "pkt":
+        raise HTTPException(status_code=400, detail="1porn source is exclusive to pkt")
+
     run_id = uuid.uuid4().hex
     state = RunState(run_id=run_id, site=req.site, source=req.source, pages=req.pages)
     async with _runs_lock:
@@ -359,9 +365,12 @@ async def _run_subprocess_for_page(state: RunState, page_num: int) -> list[dict]
 async def _drive_subprocess(state: RunState) -> None:
     try:
         start_page = await get_manual_cursor(state.site, state.source)
-        await _broadcast(state, json.dumps({"event": "log", "line": f"▶ Back-catalog cursor: start fetching at page {start_page}"}))
+        # Introduce randomness to the starting page to avoid different sites starting on the same page
+        start_offset = random.randint(0, 4)
+        current_page = start_page + start_offset
         
-        current_page = start_page
+        await _broadcast(state, json.dumps({"event": "log", "line": f"▶ Back-catalog cursor: start fetching at page {current_page} (cursor was {start_page}, random offset +{start_offset})"}))
+        
         pages_counted = 0
         has_hit_duplicate = False
         awaiting_new_after_duplicate = False
@@ -404,7 +413,9 @@ async def _drive_subprocess(state: RunState) -> None:
                 else:
                     pages_counted += 1
                     await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} counted. ({pages_counted}/{state.pages})"}))
-                current_page += 1
+                # Random step for the next page to implement randomized fetching
+                page_step = random.randint(1, 3)
+                current_page += page_step
                 continue
 
             urls_to_check = [v["sourceUrl"] for v in unique_page_videos if v.get("sourceUrl")]
@@ -429,7 +440,9 @@ async def _drive_subprocess(state: RunState) -> None:
             else:
                 await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} skipped from count (duplicates zone)."}))
                 
-            current_page += 1
+            # Random step for the next page to implement randomized fetching
+            page_step = random.randint(1, 3)
+            current_page += page_step
             
         await update_manual_cursor(state.site, state.source, current_page)
         await _broadcast(state, json.dumps({"event": "log", "line": f"💾 Saved next cursor page P = {current_page} in DB settings."}))
