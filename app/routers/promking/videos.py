@@ -50,6 +50,40 @@ def build_metadata_update_clause(updates: dict[str, object], first_param: int) -
     return ", ".join(assignments), values
 
 
+def build_gender_clause(
+    gender: str | None,
+    column: str,
+    next_param_index: int,
+) -> tuple[str, list[list[str]]]:
+    """Build a WHERE-fragment for filtering a `gender` enum column.
+
+    Returns (sql_fragment, extra_params). `sql_fragment` is empty when no
+    filter applies; otherwise it's a balanced expression you can join with
+    `AND`. The column is cast to text before comparing against the array so
+    Postgres can match the enum against `text[]` without a `DataError`.
+    """
+    if not gender or gender.lower() == "all":
+        return "", []
+    token = gender.lower()
+    if token == "null":
+        return f"{column} IS NULL", []
+    if token == "has":
+        return f"{column} IS NOT NULL", []
+    values = [v.strip() for v in token.split(",") if v.strip()]
+    include_null = "null" in values
+    concrete = [v for v in values if v != "null"]
+    clauses: list[str] = []
+    extra_params: list[list[str]] = []
+    if concrete:
+        extra_params.append(concrete)
+        clauses.append(f"{column}::text = ANY(${next_param_index}::text[])")
+    if include_null:
+        clauses.append(f"{column} IS NULL")
+    if not clauses:
+        return "", []
+    return "(" + " OR ".join(clauses) + ")", extra_params
+
+
 def build_video_filters(
     *,
     site: Site,
@@ -269,20 +303,11 @@ async def list_videos(
         exclude_slug=exclude_slug,
     )
     # Optional gender filter on the embedded actors_json subquery.
-    actor_gender_clause = ""
-    if actor_gender and actor_gender.lower() != "all":
-        token = actor_gender.lower()
-        values = [v.strip() for v in token.split(",") if v.strip()]
-        include_null = "null" in values
-        concrete = [v for v in values if v != "null"]
-        clauses: list[str] = []
-        if concrete:
-            params.append(concrete)
-            clauses.append(f"a.gender::text = ANY(${len(params)}::text[])")
-        if include_null:
-            clauses.append("a.gender IS NULL")
-        if clauses:
-            actor_gender_clause = " AND (" + " OR ".join(clauses) + ")"
+    gender_fragment, gender_params = build_gender_clause(
+        actor_gender, "a.gender", len(params) + 1
+    )
+    params.extend(gender_params)
+    actor_gender_clause = f" AND {gender_fragment}" if gender_fragment else ""
     limit_param = f"${len(params) + 1}"
     offset_param = f"${len(params) + 2}"
     params.extend([limit, offset])
@@ -415,19 +440,12 @@ async def get_video(
             WHERE video_pornstars.video_id = $1
         """
         actor_params: list = [video_id]
-        if actor_gender and actor_gender.lower() != "all":
-            token = actor_gender.lower()
-            values = [v.strip() for v in token.split(",") if v.strip()]
-            include_null = "null" in values
-            concrete = [v for v in values if v != "null"]
-            clauses: list[str] = []
-            if concrete:
-                actor_params.append(concrete)
-                clauses.append(f"pornstars.gender::text = ANY(${len(actor_params)}::text[])")
-            if include_null:
-                clauses.append("pornstars.gender IS NULL")
-            if clauses:
-                actor_sql += " AND (" + " OR ".join(clauses) + ")"
+        gender_fragment, gender_params = build_gender_clause(
+            actor_gender, "pornstars.gender", len(actor_params) + 1
+        )
+        actor_params.extend(gender_params)
+        if gender_fragment:
+            actor_sql += f" AND {gender_fragment}"
         actor_sql += " ORDER BY pornstars.name ASC"
         actors = await conn.fetch(actor_sql, *actor_params)
         studios = await conn.fetch(
