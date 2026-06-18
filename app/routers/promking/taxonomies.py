@@ -106,7 +106,7 @@ async def list_terms(
             concrete = [v for v in values if v != "null"]
             clauses: list[str] = []
             if concrete:
-                clauses.append(f"{table}.gender = ANY({add_param(concrete)}::text[])")
+                clauses.append(f"{table}.gender::text = ANY({add_param(concrete)}::text[])")
             if include_null:
                 clauses.append(f"{table}.gender IS NULL")
             if clauses:
@@ -183,7 +183,7 @@ async def count_terms(
             concrete = [v for v in values if v != "null"]
             clauses: list[str] = []
             if concrete:
-                clauses.append(f"{table}.gender = ANY({add_param(concrete)}::text[])")
+                clauses.append(f"{table}.gender::text = ANY({add_param(concrete)}::text[])")
             if include_null:
                 clauses.append(f"{table}.gender IS NULL")
             if clauses:

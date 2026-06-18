@@ -278,7 +278,7 @@ async def list_videos(
         clauses: list[str] = []
         if concrete:
             params.append(concrete)
-            clauses.append(f"a.gender = ANY(${len(params)}::text[])")
+            clauses.append(f"a.gender::text = ANY(${len(params)}::text[])")
         if include_null:
             clauses.append("a.gender IS NULL")
         if clauses:
@@ -423,7 +423,7 @@ async def get_video(
             clauses: list[str] = []
             if concrete:
                 actor_params.append(concrete)
-                clauses.append(f"pornstars.gender = ANY(${len(actor_params)}::text[])")
+                clauses.append(f"pornstars.gender::text = ANY(${len(actor_params)}::text[])")
             if include_null:
                 clauses.append("pornstars.gender IS NULL")
             if clauses:
