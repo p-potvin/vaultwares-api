@@ -97,9 +97,9 @@ async def list_terms(
     if gender and table_config.has_gender and gender.lower() != "all":
         token = gender.lower()
         if token == "null":
-            extra_where.append(f"{table}.gender IS NULL")
+            extra_where.append(f"({table}.gender IS NULL OR {table}.gender::text = 'unknown')")
         elif token == "has":
-            extra_where.append(f"{table}.gender IS NOT NULL")
+            extra_where.append(f"({table}.gender IS NOT NULL AND {table}.gender::text <> 'unknown')")
         else:
             values = [v.strip() for v in token.split(",") if v.strip()]
             include_null = "null" in values
@@ -108,7 +108,7 @@ async def list_terms(
             if concrete:
                 clauses.append(f"{table}.gender::text = ANY({add_param(concrete)}::text[])")
             if include_null:
-                clauses.append(f"{table}.gender IS NULL")
+                clauses.append(f"({table}.gender IS NULL OR {table}.gender::text = 'unknown')")
             if clauses:
                 extra_where.append("(" + " OR ".join(clauses) + ")")
 
@@ -174,9 +174,9 @@ async def count_terms(
     if gender and table_config.has_gender and gender.lower() != "all":
         token = gender.lower()
         if token == "null":
-            extra_where.append(f"{table}.gender IS NULL")
+            extra_where.append(f"({table}.gender IS NULL OR {table}.gender::text = 'unknown')")
         elif token == "has":
-            extra_where.append(f"{table}.gender IS NOT NULL")
+            extra_where.append(f"({table}.gender IS NOT NULL AND {table}.gender::text <> 'unknown')")
         else:
             values = [v.strip() for v in token.split(",") if v.strip()]
             include_null = "null" in values
@@ -185,7 +185,7 @@ async def count_terms(
             if concrete:
                 clauses.append(f"{table}.gender::text = ANY({add_param(concrete)}::text[])")
             if include_null:
-                clauses.append(f"{table}.gender IS NULL")
+                clauses.append(f"({table}.gender IS NULL OR {table}.gender::text = 'unknown')")
             if clauses:
                 extra_where.append("(" + " OR ".join(clauses) + ")")
 

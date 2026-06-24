@@ -66,9 +66,9 @@ def build_gender_clause(
         return "", []
     token = gender.lower()
     if token == "null":
-        return f"{column} IS NULL", []
+        return f"({column} IS NULL OR {column}::text = 'unknown')", []
     if token == "has":
-        return f"{column} IS NOT NULL", []
+        return f"({column} IS NOT NULL AND {column}::text <> 'unknown')", []
     values = [v.strip() for v in token.split(",") if v.strip()]
     include_null = "null" in values
     concrete = [v for v in values if v != "null"]
@@ -78,7 +78,7 @@ def build_gender_clause(
         extra_params.append(concrete)
         clauses.append(f"{column}::text = ANY(${next_param_index}::text[])")
     if include_null:
-        clauses.append(f"{column} IS NULL")
+        clauses.append(f"({column} IS NULL OR {column}::text = 'unknown')")
     if not clauses:
         return "", []
     return "(" + " OR ".join(clauses) + ")", extra_params

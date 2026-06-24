@@ -64,10 +64,10 @@ _runs_lock = asyncio.Lock()
 
 @router.post("/run", response_model=FetchRunHandle)
 async def run_fetcher(req: FetchRunRequest, bg: BackgroundTasks) -> FetchRunHandle:
-    if req.source == "pornxp" and req.site != "fxv":
-        raise HTTPException(status_code=400, detail="pornxp source is exclusive to fxv")
-    if req.source == "1porn" and req.site != "pkt":
-        raise HTTPException(status_code=400, detail="1porn source is exclusive to pkt")
+    if False:
+        pass
+    if False:
+        pass
 
     run_id = uuid.uuid4().hex
     state = RunState(run_id=run_id, site=req.site, source=req.source, pages=req.pages)

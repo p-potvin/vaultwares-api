@@ -29,19 +29,19 @@ def test_multiple_concrete_values():
 
 def test_null_token_uses_is_null_without_params():
     clause, params = build_gender_clause("null", "a.gender", 9)
-    assert clause == "a.gender IS NULL"
+    assert clause == "(a.gender IS NULL OR a.gender::text = 'unknown')"
     assert params == []
 
 
 def test_has_token_uses_is_not_null():
     clause, params = build_gender_clause("has", "pornstars.gender", 2)
-    assert clause == "pornstars.gender IS NOT NULL"
+    assert clause == "(pornstars.gender IS NOT NULL AND pornstars.gender::text <> 'unknown')"
     assert params == []
 
 
 def test_mixed_concrete_and_null_uses_or():
     clause, params = build_gender_clause("female,null", "a.gender", 4)
-    assert clause == "(a.gender::text = ANY($4::text[]) OR a.gender IS NULL)"
+    assert clause == "(a.gender::text = ANY($4::text[]) OR (a.gender IS NULL OR a.gender::text = 'unknown'))"
     assert params == [["female"]]
 
 
