@@ -66,7 +66,7 @@ async def list_terms(
         None,
         description=(
             "Filter pornstars by gender. Accepts a single value (e.g. 'female') "
-            "or a comma-separated list (e.g. 'female,trans'). Special tokens: "
+            "or a comma-separated list (e.g. 'female,male'). Special tokens: "
             "'null' (NULL only), 'has' (any non-null), 'all' (no filter, default)."
         ),
     ),

@@ -10,7 +10,7 @@ Site = Literal["fxv", "pkt", "oneporn", "sexyprn"]
 EmbedType = Literal["mp4", "hls"]
 TaxonomyKind = Literal["pornstars", "studios", "categories"]
 WriteTaxonomyKind = Literal["pornstars", "studios", "categories"]
-GenderValue = Literal["male", "female", "other", "trans", "unknown"]
+GenderValue = Literal["male", "female", "unknown"]
 
 
 class TermRef(BaseModel):

@@ -313,7 +313,7 @@ async def list_videos(
         None,
         description=(
             "Filter the embedded actors_json by gender. Accepts 'female', 'male', "
-            "'other', 'trans', a comma-separated list, or 'all' (no filter — default "
+            "'unknown', a comma-separated list, or 'all' (no filter — default "
             "for backward compat). Videos themselves are not hidden; only the "
             "embedded pornstar pills are filtered."
         ),
