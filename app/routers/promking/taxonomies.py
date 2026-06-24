@@ -70,6 +70,7 @@ async def list_terms(
             "'null' (NULL only), 'has' (any non-null), 'all' (no filter, default)."
         ),
     ),
+    sort: str = Query("default", description="Sort order: 'default', 'name_asc', 'name_desc', 'videos_asc', 'videos_desc', 'id_asc', 'id_desc'"),
 ) -> list[TermRef]:
     table_config = get_table_config(kind)
     table, join_table, term_column = (
@@ -113,6 +114,34 @@ async def list_terms(
                 extra_where.append("(" + " OR ".join(clauses) + ")")
 
     pool = await get_pool()
+    # Determine sorting order
+    if sort == "default":
+        if site:
+            sort_order = f"COUNT(videos.id) DESC, {table}.name ASC"
+        else:
+            sort_order = f"{table}.name ASC"
+    elif sort == "name_asc":
+        sort_order = f"{table}.name ASC"
+    elif sort == "name_desc":
+        sort_order = f"{table}.name DESC"
+    elif sort == "videos_desc":
+        if site:
+            sort_order = f"COUNT(videos.id) DESC, {table}.name ASC"
+        else:
+            sort_order = f"COUNT({join_table}.video_id) DESC, {table}.name ASC"
+    elif sort == "videos_asc":
+        if site:
+            sort_order = f"COUNT(videos.id) ASC, {table}.name ASC"
+        else:
+            sort_order = f"COUNT({join_table}.video_id) ASC, {table}.name ASC"
+    elif sort == "id_asc":
+        sort_order = f"{table}.id ASC"
+    elif sort == "id_desc":
+        sort_order = f"{table}.id DESC"
+    else:
+        sort_order = f"{table}.name ASC"
+
+    pool = await get_pool()
     async with pool.acquire() as conn:
         if site:
             sql = f"""
@@ -123,19 +152,31 @@ async def list_terms(
                 WHERE videos.site = $1 AND {table}.deleted_at IS NULL
                 {''.join(f' AND {clause}' for clause in extra_where)}
                 GROUP BY {group_cols}
-                ORDER BY COUNT(videos.id) DESC, {table}.name ASC
+                ORDER BY {sort_order}
                 LIMIT $2 OFFSET $3
             """
             base_params = [site, limit, offset]
         else:
-            sql = f"""
-                SELECT {select_cols}
-                FROM {table}
-                WHERE {table}.deleted_at IS NULL
-                {''.join(f' AND {clause}' for clause in extra_where)}
-                ORDER BY {table}.name ASC
-                LIMIT $1 OFFSET $2
-            """
+            if sort in ("videos_desc", "videos_asc"):
+                sql = f"""
+                    SELECT {select_cols}
+                    FROM {table}
+                    LEFT JOIN {join_table} ON {join_table}.{term_column} = {table}.id
+                    WHERE {table}.deleted_at IS NULL
+                    {''.join(f' AND {clause}' for clause in extra_where)}
+                    GROUP BY {group_cols}
+                    ORDER BY {sort_order}
+                    LIMIT $1 OFFSET $2
+                """
+            else:
+                sql = f"""
+                    SELECT {select_cols}
+                    FROM {table}
+                    WHERE {table}.deleted_at IS NULL
+                    {''.join(f' AND {clause}' for clause in extra_where)}
+                    ORDER BY {sort_order}
+                    LIMIT $1 OFFSET $2
+                """
             base_params = [limit, offset]
 
         # Renumber extra placeholders sequentially after the base ones.

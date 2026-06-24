@@ -29,11 +29,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from .db import get_pool
-from ._models import FetchRunHandle, FetchRunRequest
+from ._models import FetchRunHandle, FetchRunRequest, Site
 
 router = APIRouter(prefix="/fetcher", tags=["promking:fetcher"])
 
@@ -141,19 +141,33 @@ async def stream_run(run_id: str) -> StreamingResponse:
 # ─── GET /fetcher/runs ─────────────────────────────────────────────────────
 
 @router.get("/runs")
-async def recent_runs(limit: int = 25) -> list[dict]:
+async def recent_runs(limit: int = 25, site: Site | None = Query(None)) -> list[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, site::text AS site, source, started_at, finished_at,
-                   fetched, added, skipped, errors
-            FROM fetch_runs
-            ORDER BY started_at DESC
-            LIMIT $1
-            """,
-            min(max(limit, 1), 200),
-        )
+        if site:
+            rows = await conn.fetch(
+                """
+                SELECT id, site::text AS site, source, started_at, finished_at,
+                       fetched, added, skipped, errors
+                FROM fetch_runs
+                WHERE site = $1
+                ORDER BY started_at DESC
+                LIMIT $2
+                """,
+                site,
+                min(max(limit, 1), 200),
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT id, site::text AS site, source, started_at, finished_at,
+                       fetched, added, skipped, errors
+                FROM fetch_runs
+                ORDER BY started_at DESC
+                LIMIT $1
+                """,
+                min(max(limit, 1), 200),
+            )
     return [dict(r) for r in rows]
 
 
