@@ -93,6 +93,8 @@ def build_video_filters(
     category: str | None = None,
     related_to: str | None = None,
     exclude_slug: str | None = None,
+    disabled: bool | None = None,
+    source: str | None = None,
 ) -> tuple[str, str, list]:
     """Build taxonomy/related filters for list_videos.
 
@@ -159,6 +161,13 @@ def build_video_filters(
         )
     if exclude_slug:
         where.append(f"videos.slug <> {add_param(exclude_slug)}")
+    if disabled is not None:
+        if disabled:
+            where.append("videos.disabled_at IS NOT NULL")
+        else:
+            where.append("videos.disabled_at IS NULL")
+    if source:
+        where.append(f"videos.source = {add_param(source)}")
 
     return " AND ".join(where), "\n        ".join(joins), params
 
@@ -172,6 +181,24 @@ async def batch_disable_videos(payload: BatchVideoIdsRequest) -> BatchCountRespo
             UPDATE videos
             SET disabled_at = now(), updated_at = now()
             WHERE id = ANY($1::int[]) AND disabled_at IS NULL
+            RETURNING id
+            """,
+            payload.video_ids,
+        )
+    changed = {row["id"] for row in rows}
+    skipped = [video_id for video_id in payload.video_ids if video_id not in changed]
+    return BatchCountResponse(count=len(changed), skipped=skipped)
+
+
+@router.post("/batch/enable", response_model=BatchCountResponse)
+async def batch_enable_videos(payload: BatchVideoIdsRequest) -> BatchCountResponse:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            UPDATE videos
+            SET disabled_at = NULL, updated_at = now()
+            WHERE id = ANY($1::int[]) AND disabled_at IS NOT NULL
             RETURNING id
             """,
             payload.video_ids,
@@ -291,6 +318,8 @@ async def list_videos(
             "embedded pornstar pills are filtered."
         ),
     ),
+    disabled: bool | None = Query(None, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
+    source: str | None = Query(None, description="Filter by video source."),
 ) -> list[VideoListItem]:
     pool = await get_pool()
     where_sql, joins, params = build_video_filters(
@@ -301,6 +330,8 @@ async def list_videos(
         category=category,
         related_to=related_to,
         exclude_slug=exclude_slug,
+        disabled=disabled,
+        source=source,
     )
     # Optional gender filter on the embedded actors_json subquery.
     gender_fragment, gender_params = build_gender_clause(
@@ -371,11 +402,11 @@ async def list_videos(
             d["studios"] = studios_val
         else:
             d["studios"] = []
-
+ 
         results.append(VideoListItem(**d))
     return results
-
-
+ 
+ 
 @router.get("/count")
 async def count_videos(
     site: Site = Query(..., description="Required so the admin counter scopes per-site."),
@@ -383,6 +414,8 @@ async def count_videos(
     actor: str | None = Query(None),
     studio: str | None = Query(None),
     category: str | None = Query(None),
+    disabled: bool | None = Query(None, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
+    source: str | None = Query(None, description="Filter by video source."),
 ) -> dict:
     """Count videos for the given site + filters. Cheap path for admin pagination."""
     where_sql, joins, params = build_video_filters(
@@ -391,6 +424,8 @@ async def count_videos(
         actor=actor,
         studio=studio,
         category=category,
+        disabled=disabled,
+        source=source,
     )
     pool = await get_pool()
     sql = f"""

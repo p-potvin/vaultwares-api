@@ -19,6 +19,8 @@ def test_build_video_filters_adds_taxonomy_and_related_clauses():
     assert "related_actors" in joins_sql
     assert "related_studios" in joins_sql
     assert "related_categories" in joins_sql
+    assert "related_studios" in joins_sql
+    assert "related_categories" in joins_sql
     assert "to_tsvector('english', videos.title)" in where_sql
     assert "actor_terms.slug = $3" in where_sql
     assert "studio_terms.slug = $4" in where_sql
@@ -34,3 +36,26 @@ def test_build_video_filters_adds_taxonomy_and_related_clauses():
         "current-video",
         "current-video",
     ]
+
+
+def test_build_video_filters_disabled_and_source():
+    # Test disabled=False, source="pornxp"
+    where_sql, joins_sql, params = build_video_filters(
+        site="fxv",
+        disabled=False,
+        source="pornxp"
+    )
+    assert "videos.site = $1" in where_sql
+    assert "videos.disabled_at IS NULL" in where_sql
+    assert "videos.source = $2" in where_sql
+    assert params == ["fxv", "pornxp"]
+
+    # Test disabled=True, source=None
+    where_sql, joins_sql, params = build_video_filters(
+        site="fxv",
+        disabled=True
+    )
+    assert "videos.site = $1" in where_sql
+    assert "videos.disabled_at IS NOT NULL" in where_sql
+    assert "videos.source" not in where_sql
+    assert params == ["fxv"]

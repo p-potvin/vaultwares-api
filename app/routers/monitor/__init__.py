@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import sqlite3
 import ssl
 import time
 from datetime import datetime, timezone
@@ -23,7 +25,18 @@ router = APIRouter(prefix="/monitor", tags=["monitor"])
 
 DEFAULT_REPOS_ROOT = Path(os.environ.get("VW_REPOS_ROOT", r"C:\Users\Administrator\Desktop\Github Repos"))
 DEFAULT_KIWI_URL = "https://localhost:5959/home"
+DEFAULT_UPLOADS_DB = "/srv/vw-media/uploads/links.db"
+DEFAULT_UPLOADS_LOG = "/srv/vw-media/uploads/upload.log"
 SECRET_KEY_PARTS = ("secret", "token", "password", "credential", "apikey", "api_key", "private_key")
+
+_UPLOAD_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+_UPLOAD_FAIL_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[.,]\d+ ERROR FAIL (?P<path>.+?): (?P<reason>.+)$"
+)
+_UPLOAD_RUN_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[.,]\d+ INFO run complete: "
+    r"ok=(?P<ok>\d+) fail=(?P<fail>\d+) skip=(?P<skip>\d+)$"
+)
 
 
 def _utc_now() -> str:
@@ -241,6 +254,14 @@ async def get_input_tracker(hours: int = 24) -> Dict[str, Any]:
             "key_latency_buckets": [],
             "click_hotspots": [],
             "focus_categories": [],
+            "focus_windows": [],
+            "kpis": {
+                "focus": {},
+                "typing": {},
+                "pointer": {},
+                "rhythm": {},
+                "reliability": {},
+            },
             "events": [],
             "privacy": {
                 "raw_text": False,
@@ -342,6 +363,140 @@ def get_kiwi_status(check: bool = True) -> Dict[str, Any]:
         }
 
 
+def _uploads_db_path() -> Path:
+    return Path(os.environ.get("VW_UPLOADS_DB") or DEFAULT_UPLOADS_DB)
+
+
+def _uploads_log_path() -> Path:
+    return Path(os.environ.get("VW_UPLOADS_LOG") or DEFAULT_UPLOADS_LOG)
+
+
+def _tail_text(path: Path, max_bytes: int = 256 * 1024) -> List[str]:
+    if not path.exists():
+        return []
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > max_bytes:
+                handle.seek(-max_bytes, os.SEEK_END)
+            chunk = handle.read()
+    except Exception:
+        return []
+    return chunk.decode("utf-8", errors="replace").splitlines()
+
+
+def _uploads_db_rows(limit: int) -> List[Dict[str, Any]]:
+    db = _uploads_db_path()
+    if not db.exists():
+        return []
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                "SELECT id, local_path, remote_path, drive_link, size_bytes, media_type, "
+                "uploaded_at, unmonitored, linkvertise_link, linkvertise_id "
+                "FROM uploads ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+            return [dict(row) for row in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def _parse_uploads_log(limit_failures: int, limit_runs: int) -> Dict[str, Any]:
+    lines = _tail_text(_uploads_log_path())
+    failures: List[Dict[str, Any]] = []
+    runs: List[Dict[str, Any]] = []
+    other_errors: List[Dict[str, Any]] = []
+    for line in lines:
+        m_fail = _UPLOAD_FAIL_RE.match(line)
+        if m_fail:
+            failures.append(
+                {
+                    "timestamp": m_fail.group("ts"),
+                    "path": m_fail.group("path"),
+                    "reason": m_fail.group("reason"),
+                }
+            )
+            continue
+        m_run = _UPLOAD_RUN_RE.match(line)
+        if m_run:
+            runs.append(
+                {
+                    "timestamp": m_run.group("ts"),
+                    "ok": int(m_run.group("ok")),
+                    "fail": int(m_run.group("fail")),
+                    "skip": int(m_run.group("skip")),
+                }
+            )
+            continue
+        if " ERROR " in line:
+            ts_match = _UPLOAD_TS_RE.match(line)
+            other_errors.append(
+                {
+                    "timestamp": ts_match.group(1) if ts_match else None,
+                    "message": line.split(" ERROR ", 1)[1],
+                }
+            )
+    return {
+        "failures": list(reversed(failures))[:limit_failures],
+        "runs": list(reversed(runs))[:limit_runs],
+        "other_errors": list(reversed(other_errors))[:25],
+    }
+
+
+def get_uploads_summary(limit_recent: int = 30, limit_failures: int = 25) -> Dict[str, Any]:
+    db_path = _uploads_db_path()
+    log_path = _uploads_log_path()
+    log_data = _parse_uploads_log(limit_failures=limit_failures, limit_runs=60)
+    recent_uploads = _uploads_db_rows(limit_recent)
+
+    window_start = datetime.now(timezone.utc).timestamp() - 24 * 3600
+    totals = {"ok": 0, "fail": 0, "skip": 0, "runs": 0}
+    for run in log_data["runs"]:
+        try:
+            ts = (
+                datetime.strptime(run["timestamp"], "%Y-%m-%d %H:%M:%S")
+                .replace(tzinfo=timezone.utc)
+                .timestamp()
+            )
+        except Exception:
+            continue
+        if ts < window_start:
+            continue
+        totals["ok"] += run["ok"]
+        totals["fail"] += run["fail"]
+        totals["skip"] += run["skip"]
+        totals["runs"] += 1
+
+    if not db_path.exists() and not log_path.exists():
+        status = "missing"
+    elif log_data["failures"]:
+        try:
+            last_fail = (
+                datetime.strptime(log_data["failures"][0]["timestamp"], "%Y-%m-%d %H:%M:%S")
+                .replace(tzinfo=timezone.utc)
+                .timestamp()
+            )
+            status = "failed" if last_fail >= window_start else "ok"
+        except Exception:
+            status = "ok"
+    else:
+        status = "ok"
+
+    return {
+        "source": "vw-drive-upload",
+        "status": status,
+        "generated_at": _utc_now(),
+        "paths": {"db": str(db_path), "log": str(log_path)},
+        "totals_24h": totals,
+        "recent_failures": log_data["failures"],
+        "recent_runs": log_data["runs"][:15],
+        "other_errors": log_data["other_errors"],
+        "recent_uploads": recent_uploads,
+    }
+
+
 @router.get("/health-ledger")
 def health_ledger() -> Dict[str, Any]:
     return get_health_ledger()
@@ -376,6 +531,14 @@ async def input_tracker(hours: int = Query(24, ge=1, le=24 * 14)) -> Dict[str, A
     return await get_input_tracker(hours=hours)
 
 
+@router.get("/uploads")
+def uploads(
+    limit_recent: int = Query(30, ge=1, le=200),
+    limit_failures: int = Query(25, ge=1, le=200),
+) -> Dict[str, Any]:
+    return get_uploads_summary(limit_recent=limit_recent, limit_failures=limit_failures)
+
+
 @router.get("/overview")
 async def overview(
     kiwi_check: bool = Query(False),
@@ -385,6 +548,7 @@ async def overview(
     agents = await get_agent_ledger()
     logging = {"kiwi": get_kiwi_status(check=kiwi_check)}
     input_tracker = await get_input_tracker(hours=hours)
+    uploads_summary = get_uploads_summary(limit_recent=10, limit_failures=10)
     return {
         "name": "V.A.U.L.T Monitor",
         "internal_name": "Vault Authenticated Unified Ledger Telemetry Monitor",
@@ -393,6 +557,7 @@ async def overview(
         "agents": agents,
         "logging": logging,
         "input_tracker": input_tracker,
+        "uploads": uploads_summary,
         "api_owner": "vaultwares-api",
         "storage_note": (
             "agent-ledger and input tracker summaries are DB-backed behind vaultwares-api; "

@@ -145,14 +145,155 @@ def _num(metrics: Dict[str, Any], key: str) -> float:
         return 0.0
 
 
+def _row_dt(row: Any, key: str) -> datetime | None:
+    try:
+        value = row[key]
+    except Exception:
+        value = None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    return None
+
+
+def _sum_numeric_metrics(rows: Iterable[Any]) -> Dict[str, float]:
+    totals: Dict[str, float] = {}
+    for row in rows:
+        metrics = _as_dict(row["metrics"])
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)):
+                totals[key] = totals.get(key, 0.0) + float(value)
+    return totals
+
+
+def _duration_weight(metrics: Dict[str, Any]) -> float:
+    return max(1.0, _num(metrics, "active_seconds") or _num(metrics, "duration_seconds"))
+
+
 def _bucket_counts(rows: Iterable[Any], key: str) -> list[dict[str, Any]]:
     counts: Dict[str, float] = {}
     for row in rows:
         metrics = _as_dict(row["metrics"])
         dimensions = _as_dict(row["dimensions"])
         bucket = str(dimensions.get(key) or "unknown")
-        counts[bucket] = counts.get(bucket, 0.0) + max(1.0, _num(metrics, "duration_seconds"))
+        counts[bucket] = counts.get(bucket, 0.0) + _duration_weight(metrics)
     return [{"name": name, "count": round(count, 2)} for name, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)]
+
+
+def _window_counts(rows: Iterable[Any]) -> list[dict[str, Any]]:
+    counts: Dict[tuple[str, str], float] = {}
+    for row in rows:
+        metrics = _as_dict(row["metrics"])
+        dimensions = _as_dict(row["dimensions"])
+        category = str(dimensions.get("focus_category") or "unknown")
+        name = str(dimensions.get("window_name") or dimensions.get("window_app") or "unknown")
+        key = (category, name)
+        counts[key] = counts.get(key, 0.0) + _duration_weight(metrics)
+    return [
+        {"category": category, "name": name, "count": round(count, 2)}
+        for (category, name), count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:20]
+    ]
+
+
+def _max_metric(rows: Iterable[Any], key: str) -> float:
+    values = [_num(_as_dict(row["metrics"]), key) for row in rows]
+    return max(values) if values else 0.0
+
+
+def _hotspot_top_share(rows: Iterable[Any], clicks: float) -> float:
+    hotspots: Dict[str, float] = {}
+    for row in rows:
+        metrics = _as_dict(row["metrics"])
+        for key, value in (metrics.get("click_hotspots") or {}).items():
+            hotspots[key] = hotspots.get(key, 0.0) + float(value or 0)
+    if not hotspots or clicks <= 0:
+        return 0.0
+    return max(hotspots.values()) / clicks
+
+
+def _kpi_signals(
+    rows: Iterable[Any],
+    totals: Dict[str, float],
+    *,
+    hours: int,
+    latest_received_at: datetime | None,
+    generated_at: datetime,
+) -> Dict[str, Any]:
+    rows_list = list(rows)
+    active_minutes = max(0.0, totals.get("active_seconds", 0.0) / 60.0)
+    active_hours = active_minutes / 60.0
+    context_switches = totals.get("context_switches", 0.0)
+    chars_typed = totals.get("chars_typed", 0.0)
+    chars_pasted = totals.get("chars_pasted", 0.0)
+    keystrokes = totals.get("keystrokes", 0.0)
+    clicks = totals.get("clicks", 0.0)
+    focus_streak_samples = totals.get("focus_streak_samples", 0.0)
+    recovery_samples = totals.get("switch_recovery_samples", 0.0)
+
+    active_by_hour: Dict[int, float] = {}
+    active_by_day: Dict[str, float] = {}
+    for row in rows_list:
+        timestamp = _row_dt(row, "bucket_start") or _row_dt(row, "timestamp") or _row_dt(row, "received_at")
+        if not timestamp:
+            continue
+        active = _duration_weight(_as_dict(row["metrics"]))
+        active_by_hour[timestamp.hour] = active_by_hour.get(timestamp.hour, 0.0) + active
+        day = timestamp.date().isoformat()
+        active_by_day[day] = active_by_day.get(day, 0.0) + active
+
+    best_hour = max(active_by_hour.items(), key=lambda item: item[1])[0] if active_by_hour else None
+    best_day = max(active_by_day.items(), key=lambda item: item[1])[0] if active_by_day else None
+    expected_minutes = max(1, hours * 60)
+    lag_minutes = 0.0
+    if latest_received_at:
+        lag_minutes = max(0.0, (generated_at - latest_received_at).total_seconds() / 60.0)
+
+    return {
+        "focus": {
+            "context_switches_per_hour": round(context_switches / max(1.0, hours), 2),
+            "avg_focus_minutes_per_switch": round(active_minutes / max(1.0, context_switches), 2),
+            "longest_focus_block_minutes": round(_max_metric(rows_list, "longest_focus_streak_seconds") / 60.0, 2),
+            "avg_recorded_focus_streak_minutes": round(
+                (totals.get("focus_streak_seconds_total", 0.0) / max(1.0, focus_streak_samples)) / 60.0,
+                2,
+            ),
+            "avg_switch_recovery_seconds": round(
+                totals.get("switch_recovery_seconds_total", 0.0) / max(1.0, recovery_samples),
+                2,
+            ),
+            "longest_active_block_minutes": round(_max_metric(rows_list, "longest_active_block_seconds") / 60.0, 2),
+        },
+        "typing": {
+            "paste_share": round(chars_pasted / max(1.0, chars_typed + chars_pasted), 4),
+            "shortcut_density_per_1000_keys": round((totals.get("shortcut_count", 0.0) / max(1.0, keystrokes)) * 1000.0, 2),
+            "save_cadence_minutes": round(active_minutes / max(1.0, totals.get("saves", 0.0)), 2),
+            "undo_redo_per_1000_keys": round((totals.get("undo_redo", 0.0) / max(1.0, keystrokes)) * 1000.0, 2),
+        },
+        "pointer": {
+            "clicks_per_active_minute": round(clicks / max(1.0, active_minutes), 2),
+            "scrolls_per_active_minute": round(totals.get("scroll_ticks", 0.0) / max(1.0, active_minutes), 2),
+            "pointer_meters_per_active_hour": round(totals.get("mouse_distance_m", 0.0) / max(0.01, active_hours), 2),
+            "hotspot_top_share": round(_hotspot_top_share(rows_list, clicks), 4),
+        },
+        "rhythm": {
+            "best_hour_utc": best_hour,
+            "best_day": best_day,
+            "active_minutes_per_day": round(active_minutes / max(1.0, len(active_by_day)), 2),
+            "avg_rest_gap_minutes": round((totals.get("rest_gap_seconds_total", 0.0) / max(1.0, totals.get("active_starts_after_rest", 0.0))) / 60.0, 2),
+            "longest_rest_gap_minutes": round(_max_metric(rows_list, "rest_gap_seconds_max") / 60.0, 2),
+        },
+        "reliability": {
+            "data_coverage_percent": round((len(rows_list) / expected_minutes) * 100.0, 2),
+            "missing_minutes_estimate": max(0, expected_minutes - len(rows_list)),
+            "batch_lag_minutes": round(lag_minutes, 2),
+            "spool_backlog_batches": int(_max_metric(rows_list, "spool_backlog_batches")),
+            "spool_backlog_bytes": int(_max_metric(rows_list, "spool_backlog_bytes")),
+        },
+    }
 
 
 async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
@@ -171,16 +312,17 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
             """,
             since,
         )
-    totals: Dict[str, float] = {}
+    rows_list = list(rows)
+    totals = _sum_numeric_metrics(rows_list)
     latency: Dict[str, float] = {}
     hotspots: Dict[str, float] = {}
     latest = None
-    for row in rows:
+    latest_dt = None
+    for row in rows_list:
         metrics = _as_dict(row["metrics"])
-        latest = latest or (row["received_at"].isoformat() if row["received_at"] else None)
-        for key, value in metrics.items():
-            if isinstance(value, (int, float)):
-                totals[key] = totals.get(key, 0.0) + float(value)
+        if latest is None:
+            latest_dt = row["received_at"]
+            latest = latest_dt.isoformat() if latest_dt else None
         for key, value in (metrics.get("key_latency_buckets") or {}).items():
             latency[key] = latency.get(key, 0.0) + float(value or 0)
         for key, value in (metrics.get("click_hotspots") or {}).items():
@@ -195,10 +337,11 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
             stale = datetime.fromisoformat(latest.replace("Z", "+00:00")) < datetime.now(timezone.utc) - timedelta(minutes=10)
         except Exception:
             stale = True
+    generated_at = datetime.now(timezone.utc)
     return {
         "source": "vaultwares-api",
         "status": "stale" if stale else "online",
-        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
         "latest_received_at": latest,
         "window_hours": hours,
         "totals": {key: round(value, 4) for key, value in totals.items()},
@@ -210,7 +353,9 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
         },
         "key_latency_buckets": [{"name": key, "count": count} for key, count in sorted(latency.items())],
         "click_hotspots": [{"name": key, "count": count} for key, count in sorted(hotspots.items(), key=lambda item: item[1], reverse=True)[:20]],
-        "focus_categories": _bucket_counts(rows, "focus_category"),
+        "focus_categories": _bucket_counts(rows_list, "focus_category"),
+        "focus_windows": _window_counts(rows_list),
+        "kpis": _kpi_signals(rows_list, totals, hours=hours, latest_received_at=latest_dt, generated_at=generated_at),
         "events": [
             {
                 "event_id": row["event_id"],
@@ -219,7 +364,7 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
                 "metrics": _as_dict(row["metrics"]),
                 "dimensions": _as_dict(row["dimensions"]),
             }
-            for row in rows[:100]
+            for row in rows_list[:100]
         ],
         "privacy": {
             "raw_text": False,
