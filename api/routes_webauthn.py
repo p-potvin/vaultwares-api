@@ -39,6 +39,7 @@ def _get_rp_id(request: Request) -> str:
         host = host.split(":")[0]
     return host or os.environ.get("WEBAUTHN_RP_ID", "prom-king.xyz")
 
+@router.post("/auth/passkey/register")
 @router.post("/auth/register/options")
 async def webauthn_register_options(request: Request, principal=Depends(require_auth)):
     if principal.get("kind") != "user":
@@ -83,6 +84,7 @@ async def webauthn_register_options(request: Request, principal=Depends(require_
     }
     return Response(content=options_to_json(options), media_type="application/json")
 
+@router.post("/auth/passkey/register/verify")
 @router.post("/auth/register/verify")
 async def webauthn_register_verify(request: Request, payload: dict, principal=Depends(require_auth)):
     if principal.get("kind") != "user":
@@ -136,6 +138,7 @@ async def webauthn_register_verify(request: Request, payload: dict, principal=De
     )
     return {"ok": True}
 
+@router.post("/auth/passkey/login")
 @router.post("/auth/login/options")
 async def webauthn_login_options(request: Request):
     _cleanup_webauthn_challenges()
@@ -151,6 +154,7 @@ async def webauthn_login_options(request: Request):
     }
     return Response(content=options_to_json(options), media_type="application/json")
 
+@router.post("/auth/passkey/login/verify")
 @router.post("/auth/login/verify")
 async def webauthn_login_verify(request: Request, payload: dict):
     _cleanup_webauthn_challenges()
