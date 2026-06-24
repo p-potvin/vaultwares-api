@@ -301,7 +301,7 @@ async def batch_add_taxonomy(payload: BatchAddTaxonomyRequest) -> BatchCountResp
 @router.get("", response_model=list[VideoListItem])
 async def list_videos(
     site: Site = Query(..., description="fxv or pkt — required."),
-    limit: int = Query(24, ge=1, le=200),
+    limit: int = Query(24, ge=1, le=100000),
     offset: int = Query(0, ge=0),
     q: str | None = Query(None, description="Postgres FTS query over title."),
     actor: str | None = Query(None, description="Filter by actor slug."),

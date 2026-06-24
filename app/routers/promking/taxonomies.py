@@ -59,7 +59,7 @@ def slugify(value: str) -> str:
 async def list_terms(
     kind: TaxonomyKind = Path(...),
     site: Site | None = Query(None),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=100000),
     offset: int = Query(0, ge=0),
     q: str | None = Query(None, description="Fuzzy name search (ILIKE)."),
     gender: str | None = Query(
