@@ -8,6 +8,8 @@ DB-backed API responses.
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
 import re
 import sqlite3
@@ -19,7 +21,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 import yaml
 
 router = APIRouter(prefix="/monitor", tags=["monitor"])
@@ -29,6 +31,7 @@ DEFAULT_KIWI_URL = "https://localhost:5959/home"
 DEFAULT_UPLOADS_DB = "/srv/vw-media/uploads/links.db"
 DEFAULT_UPLOADS_LOG = "/srv/vw-media/uploads/upload.log"
 SECRET_KEY_PARTS = ("secret", "token", "password", "credential", "apikey", "api_key", "private_key")
+PROBE_LOCATIONS = {"greencloud-vps", "vps-ovhcloud", "clopeux-desktop"}
 
 _UPLOAD_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 _UPLOAD_FAIL_RE = re.compile(
@@ -53,6 +56,51 @@ def _read_json(path: Path, default: Any = None) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return default
+
+
+def _valid_rollup_signature(body: bytes, timestamp: str, signature: str) -> bool:
+    secret = os.environ.get("HEALTH_LEDGER_INGEST_SECRET", "")
+    if not secret or not timestamp or not signature:
+        return False
+    try:
+        age = abs(int(time.time()) - int(timestamp))
+    except ValueError:
+        return False
+    if age > 300:
+        return False
+    expected = hmac.new(
+        secret.encode("utf-8"),
+        timestamp.encode("ascii") + b"." + body,
+        hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+
+@router.post("/probe-rollups/{location_id}", include_in_schema=False)
+async def ingest_probe_rollup(location_id: str, request: Request) -> Dict[str, Any]:
+    if location_id not in PROBE_LOCATIONS:
+        raise HTTPException(status_code=404, detail="unknown probe location")
+    body = await request.body()
+    if len(body) > 1024 * 1024:
+        raise HTTPException(status_code=413, detail="rollup too large")
+    if not _valid_rollup_signature(
+        body,
+        request.headers.get("x-health-ledger-timestamp", ""),
+        request.headers.get("x-health-ledger-signature", ""),
+    ):
+        raise HTTPException(status_code=401, detail="invalid rollup signature")
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="invalid rollup json") from exc
+    if payload.get("probe_location_id") != location_id or not isinstance(payload.get("services"), list):
+        raise HTTPException(status_code=400, detail="rollup location mismatch")
+    target = _health_root() / "data" / "rollups" / "locations" / f"{location_id}.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_bytes(body + (b"\n" if not body.endswith(b"\n") else b""))
+    temporary.replace(target)
+    return {"status": "accepted", "location": location_id}
 
 
 def _json_files(root: Path, limit: int = 100) -> List[Path]:
@@ -233,6 +281,8 @@ def _service_status(status: Optional[str], checked_at: Optional[str]) -> str:
         return "offline"
     if normalized in {"stale", "missing"}:
         return "stale"
+    if normalized == "unmonitored":
+        return "unmonitored"
     return "degraded"
 
 
@@ -265,8 +315,12 @@ def _service_type(service_id: str, service: Dict[str, Any]) -> str:
 
 def get_services_summary() -> Dict[str, Any]:
     root = _health_root()
-    latest = _read_json(root / "data" / "rollups" / "latest.json", {}) or {}
-    checked_at = latest.get("generated_at")
+    latest = (
+        _read_json(root / "data" / "rollups" / "fleet-latest.json", {})
+        or _read_json(root / "data" / "rollups" / "latest.json", {})
+        or {}
+    )
+    document_checked_at = latest.get("generated_at")
     rollup_services = latest.get("services") if isinstance(latest.get("services"), list) else []
     by_id = {
         str(item.get("service_id")): item
@@ -280,6 +334,9 @@ def get_services_summary() -> Dict[str, Any]:
             continue
         service_id = str(service["id"])
         rollup = by_id.get(service_id)
+        checked_at = (
+            rollup.get("checked_at") if isinstance(rollup, dict) else None
+        ) or document_checked_at
         paths = rollup.get("paths") if isinstance(rollup, dict) and isinstance(rollup.get("paths"), list) else []
         latencies = [
             int(path["duration_ms"])
@@ -287,8 +344,7 @@ def get_services_summary() -> Dict[str, Any]:
             if isinstance(path, dict) and isinstance(path.get("duration_ms"), (int, float))
         ]
         status = _service_status(rollup.get("status") if rollup else None, checked_at if rollup else None)
-        items.append(
-            {
+        item = {
                 "id": service_id,
                 "name": service.get("name") or service_id,
                 "product": service.get("product") or (rollup or {}).get("product") or _service_product(service_id),
@@ -297,8 +353,12 @@ def get_services_summary() -> Dict[str, Any]:
                 "runtime": service.get("runtime") or (rollup or {}).get("runtime"),
                 "status": status,
                 "checkedAt": checked_at if rollup else None,
-                "lastSuccessAt": checked_at if status == "healthy" else None,
-                "lastFailureAt": checked_at if status in {"degraded", "offline"} else None,
+                "lastSuccessAt": (
+                    rollup.get("last_success_at") if isinstance(rollup, dict) else None
+                ) or (checked_at if status == "healthy" else None),
+                "lastFailureAt": (
+                    rollup.get("last_failure_at") if isinstance(rollup, dict) else None
+                ) or (checked_at if status in {"degraded", "offline"} else None),
                 "latencyMs": max(latencies) if latencies else None,
                 "dependencies": (
                     service.get("dependencies")
@@ -306,7 +366,13 @@ def get_services_summary() -> Dict[str, Any]:
                     else (rollup or {}).get("dependencies") or []
                 ),
             }
-        )
+        if isinstance(rollup, dict) and "locations" in rollup:
+            item["locations"] = rollup.get("locations") or []
+            item["confirmationCount"] = int(rollup.get("confirmation_count") or 0)
+            item["hostHeartbeat"] = rollup.get("host_heartbeat") or "unknown"
+            if rollup.get("expected_state"):
+                item["expectedState"] = rollup["expected_state"]
+        items.append(item)
 
     return {
         "source": "health-ledger",
