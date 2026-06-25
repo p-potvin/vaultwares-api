@@ -457,7 +457,8 @@ async def get_video(
             """
             SELECT id, site, title, slug, thumbnail_url, preview_url,
                    duration_seconds, views, created_at, updated_at,
-                   source, source_url, embed_url, embed_type, qualities
+                   source, source_url, embed_url, embed_type, qualities,
+                   description
             FROM videos
             WHERE site = $1 AND slug = $2
             """,

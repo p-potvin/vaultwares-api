@@ -136,6 +136,7 @@ class VideoDetail(VideoListItem):
     source_url: str
     embed_url: str
     embed_type: EmbedType
+    description: Optional[str] = None
     categories: list[TermRef] = Field(default_factory=list)
     updated_at: datetime
 

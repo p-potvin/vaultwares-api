@@ -582,15 +582,18 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                 views = int(raw_views) if raw_views is not None else 0
             except (TypeError, ValueError):
                 views = 0
+            description = v.get("description")
+            if description is not None and not isinstance(description, str):
+                description = str(description)
             try:
                 row = await conn.fetchrow(
                     """
                     INSERT INTO videos (
                         site, source, source_url, embed_url, embed_type,
                         title, slug, thumbnail_url, preview_url, duration_seconds,
-                        views, qualities
+                        views, description, qualities
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
                     ON CONFLICT (site, source_url) DO NOTHING
                     RETURNING id
                     """,
@@ -605,6 +608,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                     v.get("previewUrl"),
                     v.get("durationSeconds"),
                     views,
+                    description,
                     qualities_json,
                 )
             except Exception as e:
