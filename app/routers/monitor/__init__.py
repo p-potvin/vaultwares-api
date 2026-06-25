@@ -255,7 +255,10 @@ def _service_type(service_id: str, service: Dict[str, Any]) -> str:
         return "runner"
     if any(token in service_id for token in ("postgres", "database", "sqlite")):
         return "database"
-    if service.get("url") and not service.get("runtime"):
+    runtime = str(service.get("runtime") or "").casefold()
+    if "docker" in runtime or "container" in runtime:
+        return "container"
+    if service.get("url") and not str(service.get("url")).startswith("http://127.0.0.1"):
         return "site"
     return "service"
 
