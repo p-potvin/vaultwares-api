@@ -1199,6 +1199,7 @@ dependencies = [
     { name = "accelerate" },
     { name = "numpy" },
     { name = "pillow" },
+    { name = "pyyaml" },
     { name = "torch" },
     { name = "transformers" },
 ]
@@ -1226,6 +1227,7 @@ requires-dist = [
     { name = "psutil", marker = "extra == 'memory'", specifier = ">=5.9.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "torch", specifier = ">=2.1.0" },
     { name = "transformers", specifier = ">=4.40.0" },
 ]

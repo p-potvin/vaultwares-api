@@ -175,3 +175,111 @@ def test_monitor_search_filters_ledgers_case_insensitively(monkeypatch, tmp_path
     assert [item["source"] for item in body["items"]] == ["agent-ledger", "health-ledger"]
     assert body["items"][0]["project"] == "Vault Monitor"
     assert body["items"][1]["service_id"] == "gateway"
+
+
+def test_monitor_search_filters_source_and_sorts_newest_first(monkeypatch, tmp_path):
+    client, health_root, _ = _client(monkeypatch, tmp_path)
+    _write_jsonl(
+        health_root / "data" / "events" / "2026" / "06" / "25.jsonl",
+        [
+            {
+                "event_type": "probe_result",
+                "timestamp": "2026-06-25T03:20:00Z",
+                "service_id": "vaultwares-api",
+                "service_name": "VaultWares API",
+                "ok": True,
+            }
+        ],
+    )
+    from app.routers.telemetry import agent_ledger_db
+
+    async def fake_search(**kwargs):
+        return {
+            "items": [
+                {
+                    "source": "agent-ledger",
+                    "timestamp": "2026-06-25T03:30:00Z",
+                    "project": "vault-monitor",
+                    "kind": "code-change",
+                    "summary": "Unified monitor shell",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(agent_ledger_db, "search_agent_ledger_events", fake_search)
+
+    all_response = client.get("/monitor/events/search?source=all&limit=10")
+    health_response = client.get("/monitor/events/search?source=health-ledger&limit=10")
+
+    assert [item["source"] for item in all_response.json()["items"]] == [
+        "agent-ledger",
+        "health-ledger",
+    ]
+    assert [item["source"] for item in health_response.json()["items"]] == [
+        "health-ledger",
+    ]
+
+
+def test_monitor_services_includes_unmonitored_inventory(monkeypatch, tmp_path):
+    client, health_root, _ = _client(monkeypatch, tmp_path)
+    health_root.mkdir(parents=True, exist_ok=True)
+    (health_root / "services.yaml").write_text(
+        """
+version: 1
+services:
+  - id: monitor
+    name: Vault Monitor
+    product: vaultwares
+    type: site
+    host: greencloud-vps
+    runtime: /var/www/monitor.vaultwares.ca
+    dependencies: [vaultwares-api]
+    paths:
+      - id: home
+        path: /
+  - id: postgres
+    name: Shared PostgreSQL
+    product: shared
+    type: database
+    host: vps-ovhcloud
+    runtime: postgresql.service
+    dependencies: []
+    paths: []
+""".strip(),
+        encoding="utf-8",
+    )
+    _write_json(
+        health_root / "data" / "rollups" / "latest.json",
+        {
+            "generated_at": "2026-06-25T03:30:00Z",
+            "services": [
+                {
+                    "service_id": "monitor",
+                    "status": "ok",
+                    "paths": [{"duration_ms": 12, "ok": True}],
+                }
+            ],
+        },
+    )
+
+    response = client.get("/monitor/services")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 2
+    assert body["items"][0] == {
+        "id": "monitor",
+        "name": "Vault Monitor",
+        "product": "vaultwares",
+        "type": "site",
+        "host": "greencloud-vps",
+        "runtime": "/var/www/monitor.vaultwares.ca",
+        "status": "healthy",
+        "checkedAt": "2026-06-25T03:30:00Z",
+        "lastSuccessAt": "2026-06-25T03:30:00Z",
+        "lastFailureAt": None,
+        "latencyMs": 12,
+        "dependencies": ["vaultwares-api"],
+    }
+    assert body["items"][1]["id"] == "postgres"
+    assert body["items"][1]["status"] == "unmonitored"
