@@ -516,3 +516,29 @@ async def get_video(
     payload["studios"] = [TermRef(**dict(r)) for r in studios]
     payload["categories"] = [TermRef(**dict(r)) for r in categories]
     return VideoDetail(**payload)
+
+
+@router.post("/{slug}/view")
+async def increment_video_view(slug: str, site: Site = Query(...)) -> dict[str, int]:
+    """Bump the view counter by 1.
+
+    Called from the tube apps' video detail SSR (one bump per page load).
+    Bot inflation is acceptable for a v1 — viewers see a monotonically
+    increasing number, which is the only thing the UI cares about.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE videos
+               SET views = views + 1,
+                   updated_at = now()
+             WHERE site = $1 AND slug = $2
+         RETURNING views
+            """,
+            site,
+            slug,
+        )
+    if row is None:
+        return {"views": 0}
+    return {"views": int(row["views"])}
