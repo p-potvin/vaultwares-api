@@ -1,5 +1,10 @@
 import json
 
+import hashlib
+import hmac
+import json
+import time
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -175,3 +180,218 @@ def test_monitor_search_filters_ledgers_case_insensitively(monkeypatch, tmp_path
     assert [item["source"] for item in body["items"]] == ["agent-ledger", "health-ledger"]
     assert body["items"][0]["project"] == "Vault Monitor"
     assert body["items"][1]["service_id"] == "gateway"
+
+
+def test_monitor_search_filters_source_and_sorts_newest_first(monkeypatch, tmp_path):
+    client, health_root, _ = _client(monkeypatch, tmp_path)
+    _write_jsonl(
+        health_root / "data" / "events" / "2026" / "06" / "25.jsonl",
+        [
+            {
+                "event_type": "probe_result",
+                "timestamp": "2026-06-25T03:20:00Z",
+                "service_id": "vaultwares-api",
+                "service_name": "VaultWares API",
+                "ok": True,
+            }
+        ],
+    )
+    from app.routers.telemetry import agent_ledger_db
+
+    async def fake_search(**kwargs):
+        return {
+            "items": [
+                {
+                    "source": "agent-ledger",
+                    "timestamp": "2026-06-25T03:30:00Z",
+                    "project": "vault-monitor",
+                    "kind": "code-change",
+                    "summary": "Unified monitor shell",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(agent_ledger_db, "search_agent_ledger_events", fake_search)
+
+    all_response = client.get("/monitor/events/search?source=all&limit=10")
+    health_response = client.get("/monitor/events/search?source=health-ledger&limit=10")
+
+    assert [item["source"] for item in all_response.json()["items"]] == [
+        "agent-ledger",
+        "health-ledger",
+    ]
+    assert [item["source"] for item in health_response.json()["items"]] == [
+        "health-ledger",
+    ]
+
+
+def test_monitor_services_includes_unmonitored_inventory(monkeypatch, tmp_path):
+    client, health_root, _ = _client(monkeypatch, tmp_path)
+    health_root.mkdir(parents=True, exist_ok=True)
+    (health_root / "services.yaml").write_text(
+        """
+version: 1
+services:
+  - id: monitor
+    name: Vault Monitor
+    product: vaultwares
+    type: site
+    host: greencloud-vps
+    runtime: /var/www/monitor.vaultwares.ca
+    dependencies: [vaultwares-api]
+    paths:
+      - id: home
+        path: /
+  - id: postgres
+    name: Shared PostgreSQL
+    product: shared
+    type: database
+    host: vps-ovhcloud
+    runtime: postgresql.service
+    dependencies: []
+    paths: []
+""".strip(),
+        encoding="utf-8",
+    )
+    _write_json(
+        health_root / "data" / "rollups" / "latest.json",
+        {
+            "generated_at": "2026-06-25T03:30:00Z",
+            "services": [
+                {
+                    "service_id": "monitor",
+                    "status": "ok",
+                    "paths": [{"duration_ms": 12, "ok": True}],
+                }
+            ],
+        },
+    )
+
+    response = client.get("/monitor/services")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 2
+    assert body["items"][0] == {
+        "id": "monitor",
+        "name": "Vault Monitor",
+        "product": "vaultwares",
+        "type": "site",
+        "host": "greencloud-vps",
+        "runtime": "/var/www/monitor.vaultwares.ca",
+        "status": "healthy",
+        "checkedAt": "2026-06-25T03:30:00Z",
+        "lastSuccessAt": "2026-06-25T03:30:00Z",
+        "lastFailureAt": None,
+        "latencyMs": 12,
+        "dependencies": ["vaultwares-api"],
+    }
+    assert body["items"][1]["id"] == "postgres"
+    assert body["items"][1]["status"] == "unmonitored"
+
+
+def test_monitor_services_reads_per_service_fleet_evidence(monkeypatch, tmp_path):
+    client, health_root, _ = _client(monkeypatch, tmp_path)
+    health_root.mkdir(parents=True, exist_ok=True)
+    (health_root / "services.yaml").write_text(
+        """
+version: 1
+services:
+  - id: api
+    name: API
+    product: vaultwares
+    type: api
+    host: vps-ovhcloud
+    dependencies: [postgres]
+    paths:
+      - id: healthz
+        path: /healthz
+  - id: postgres
+    name: PostgreSQL
+    product: shared
+    type: database
+    host: vps-ovhcloud
+    dependencies: []
+    paths:
+      - id: ready
+        path: /
+""".strip(),
+        encoding="utf-8",
+    )
+    _write_json(
+        health_root / "data" / "rollups" / "fleet-latest.json",
+        {
+            "generated_at": "2026-06-25T08:00:00Z",
+            "services": [
+                {
+                    "service_id": "api",
+                    "status": "offline",
+                    "checked_at": "2026-06-25T07:59:30Z",
+                    "last_success_at": "2026-06-25T07:55:00Z",
+                    "last_failure_at": "2026-06-25T07:59:30Z",
+                    "locations": ["greencloud-vps", "clopeux-desktop"],
+                    "confirmation_count": 2,
+                    "host_heartbeat": "healthy",
+                    "paths": [{"duration_ms": 25, "ok": False}],
+                },
+                {
+                    "service_id": "postgres",
+                    "status": "stale",
+                    "checked_at": "2026-06-25T07:00:00Z",
+                    "last_success_at": "2026-06-25T07:00:00Z",
+                    "locations": ["vps-ovhcloud"],
+                    "confirmation_count": 0,
+                    "host_heartbeat": "healthy",
+                    "paths": [],
+                },
+            ],
+        },
+    )
+
+    response = client.get("/monitor/services")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["status"] for item in body["items"]] == ["offline", "stale"]
+    assert body["items"][0]["checkedAt"] == "2026-06-25T07:59:30Z"
+    assert body["items"][0]["lastSuccessAt"] == "2026-06-25T07:55:00Z"
+    assert body["items"][0]["lastFailureAt"] == "2026-06-25T07:59:30Z"
+    assert body["items"][0]["locations"] == ["greencloud-vps", "clopeux-desktop"]
+    assert body["items"][0]["confirmationCount"] == 2
+    assert body["items"][0]["hostHeartbeat"] == "healthy"
+    assert all(item["status"] != "unmonitored" for item in body["items"])
+
+
+def test_monitor_accepts_only_signed_location_rollups(monkeypatch, tmp_path):
+    client, health_root, _ = _client(monkeypatch, tmp_path)
+    monkeypatch.setenv("HEALTH_LEDGER_INGEST_SECRET", "test-ingest-secret")
+    payload = {
+        "probe_location_id": "greencloud-vps",
+        "generated_at": "2026-06-25T08:00:00Z",
+        "services": [],
+    }
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    timestamp = str(int(time.time()))
+    signature = hmac.new(
+        b"test-ingest-secret",
+        timestamp.encode() + b"." + body,
+        hashlib.sha256,
+    ).hexdigest()
+
+    rejected = client.post("/monitor/probe-rollups/greencloud-vps", content=body)
+    accepted = client.post(
+        "/monitor/probe-rollups/greencloud-vps",
+        content=body,
+        headers={
+            "content-type": "application/json",
+            "x-health-ledger-timestamp": timestamp,
+            "x-health-ledger-signature": signature,
+        },
+    )
+
+    assert rejected.status_code == 401
+    assert accepted.status_code == 200
+    stored = json.loads(
+        (health_root / "data" / "rollups" / "locations" / "greencloud-vps.json").read_text()
+    )
+    assert stored["probe_location_id"] == "greencloud-vps"

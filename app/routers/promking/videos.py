@@ -50,6 +50,40 @@ def build_metadata_update_clause(updates: dict[str, object], first_param: int) -
     return ", ".join(assignments), values
 
 
+def build_gender_clause(
+    gender: str | None,
+    column: str,
+    next_param_index: int,
+) -> tuple[str, list[list[str]]]:
+    """Build a WHERE-fragment for filtering a `gender` enum column.
+
+    Returns (sql_fragment, extra_params). `sql_fragment` is empty when no
+    filter applies; otherwise it's a balanced expression you can join with
+    `AND`. The column is cast to text before comparing against the array so
+    Postgres can match the enum against `text[]` without a `DataError`.
+    """
+    if not gender or gender.lower() == "all":
+        return "", []
+    token = gender.lower()
+    if token == "null":
+        return f"({column} IS NULL OR {column}::text = 'unknown')", []
+    if token == "has":
+        return f"({column} IS NOT NULL AND {column}::text <> 'unknown')", []
+    values = [v.strip() for v in token.split(",") if v.strip()]
+    include_null = "null" in values
+    concrete = [v for v in values if v != "null"]
+    clauses: list[str] = []
+    extra_params: list[list[str]] = []
+    if concrete:
+        extra_params.append(concrete)
+        clauses.append(f"{column}::text = ANY(${next_param_index}::text[])")
+    if include_null:
+        clauses.append(f"({column} IS NULL OR {column}::text = 'unknown')")
+    if not clauses:
+        return "", []
+    return "(" + " OR ".join(clauses) + ")", extra_params
+
+
 def build_video_filters(
     *,
     site: Site,
@@ -59,6 +93,8 @@ def build_video_filters(
     category: str | None = None,
     related_to: str | None = None,
     exclude_slug: str | None = None,
+    disabled: bool | None = None,
+    source: str | None = None,
 ) -> tuple[str, str, list]:
     """Build taxonomy/related filters for list_videos.
 
@@ -125,6 +161,13 @@ def build_video_filters(
         )
     if exclude_slug:
         where.append(f"videos.slug <> {add_param(exclude_slug)}")
+    if disabled is not None:
+        if disabled:
+            where.append("videos.disabled_at IS NOT NULL")
+        else:
+            where.append("videos.disabled_at IS NULL")
+    if source:
+        where.append(f"videos.source = {add_param(source)}")
 
     return " AND ".join(where), "\n        ".join(joins), params
 
@@ -138,6 +181,24 @@ async def batch_disable_videos(payload: BatchVideoIdsRequest) -> BatchCountRespo
             UPDATE videos
             SET disabled_at = now(), updated_at = now()
             WHERE id = ANY($1::int[]) AND disabled_at IS NULL
+            RETURNING id
+            """,
+            payload.video_ids,
+        )
+    changed = {row["id"] for row in rows}
+    skipped = [video_id for video_id in payload.video_ids if video_id not in changed]
+    return BatchCountResponse(count=len(changed), skipped=skipped)
+
+
+@router.post("/batch/enable", response_model=BatchCountResponse)
+async def batch_enable_videos(payload: BatchVideoIdsRequest) -> BatchCountResponse:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            UPDATE videos
+            SET disabled_at = NULL, updated_at = now()
+            WHERE id = ANY($1::int[]) AND disabled_at IS NOT NULL
             RETURNING id
             """,
             payload.video_ids,
@@ -240,7 +301,7 @@ async def batch_add_taxonomy(payload: BatchAddTaxonomyRequest) -> BatchCountResp
 @router.get("", response_model=list[VideoListItem])
 async def list_videos(
     site: Site = Query(..., description="fxv or pkt — required."),
-    limit: int = Query(24, ge=1, le=200),
+    limit: int = Query(24, ge=1, le=100000),
     offset: int = Query(0, ge=0),
     q: str | None = Query(None, description="Postgres FTS query over title."),
     actor: str | None = Query(None, description="Filter by actor slug."),
@@ -248,6 +309,17 @@ async def list_videos(
     category: str | None = Query(None, description="Filter by category slug."),
     related_to: str | None = Query(None, description="Related-video seed slug."),
     exclude_slug: str | None = Query(None, description="Slug to omit from results."),
+    actor_gender: str | None = Query(
+        None,
+        description=(
+            "Filter the embedded actors_json by gender. Accepts 'female', 'male', "
+            "'unknown', a comma-separated list, or 'all' (no filter — default "
+            "for backward compat). Videos themselves are not hidden; only the "
+            "embedded pornstar pills are filtered."
+        ),
+    ),
+    disabled: bool | None = Query(None, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
+    source: str | None = Query(None, description="Filter by video source."),
 ) -> list[VideoListItem]:
     pool = await get_pool()
     where_sql, joins, params = build_video_filters(
@@ -258,7 +330,15 @@ async def list_videos(
         category=category,
         related_to=related_to,
         exclude_slug=exclude_slug,
+        disabled=disabled,
+        source=source,
     )
+    # Optional gender filter on the embedded actors_json subquery.
+    gender_fragment, gender_params = build_gender_clause(
+        actor_gender, "a.gender", len(params) + 1
+    )
+    params.extend(gender_params)
+    actor_gender_clause = f" AND {gender_fragment}" if gender_fragment else ""
     limit_param = f"${len(params) + 1}"
     offset_param = f"${len(params) + 2}"
     params.extend([limit, offset])
@@ -270,7 +350,7 @@ async def list_videos(
                  SELECT coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'name', a.name, 'slug', a.slug)), '[]'::jsonb)
                  FROM video_pornstars va
                  JOIN pornstars a ON a.id = va.pornstar_id
-                 WHERE va.video_id = videos.id
+                 WHERE va.video_id = videos.id{actor_gender_clause}
                ) as actors_json,
                (
                  SELECT coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name, 'slug', s.slug)), '[]'::jsonb)
@@ -322,20 +402,63 @@ async def list_videos(
             d["studios"] = studios_val
         else:
             d["studios"] = []
-
+ 
         results.append(VideoListItem(**d))
     return results
+ 
+ 
+@router.get("/count")
+async def count_videos(
+    site: Site = Query(..., description="Required so the admin counter scopes per-site."),
+    q: str | None = Query(None),
+    actor: str | None = Query(None),
+    studio: str | None = Query(None),
+    category: str | None = Query(None),
+    disabled: bool | None = Query(None, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
+    source: str | None = Query(None, description="Filter by video source."),
+) -> dict:
+    """Count videos for the given site + filters. Cheap path for admin pagination."""
+    where_sql, joins, params = build_video_filters(
+        site=site,
+        q=q,
+        actor=actor,
+        studio=studio,
+        category=category,
+        disabled=disabled,
+        source=source,
+    )
+    pool = await get_pool()
+    sql = f"""
+        SELECT COUNT(DISTINCT videos.id) AS total
+        FROM videos
+        {joins}
+        WHERE {where_sql}
+    """
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(sql, *params)
+    return {"total": int(total or 0)}
 
 
 @router.get("/{slug}", response_model=VideoDetail | None)
-async def get_video(slug: str, site: Site = Query(...)) -> VideoDetail | None:
+async def get_video(
+    slug: str,
+    site: Site = Query(...),
+    actor_gender: str | None = Query(
+        None,
+        description=(
+            "Filter returned pornstars by gender (default 'all'). "
+            "Same syntax as the list endpoint."
+        ),
+    ),
+) -> VideoDetail | None:
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             SELECT id, site, title, slug, thumbnail_url, preview_url,
                    duration_seconds, views, created_at, updated_at,
-                   source, source_url, embed_url, embed_type, qualities
+                   source, source_url, embed_url, embed_type, qualities,
+                   description
             FROM videos
             WHERE site = $1 AND slug = $2
             """,
@@ -346,16 +469,21 @@ async def get_video(slug: str, site: Site = Query(...)) -> VideoDetail | None:
             return None
 
         video_id = row["id"]
-        actors = await conn.fetch(
-            """
+        actor_sql = """
             SELECT pornstars.id, pornstars.name, pornstars.slug
             FROM pornstars
             JOIN video_pornstars ON video_pornstars.pornstar_id = pornstars.id
             WHERE video_pornstars.video_id = $1
-            ORDER BY pornstars.name ASC
-            """,
-            video_id,
+        """
+        actor_params: list = [video_id]
+        gender_fragment, gender_params = build_gender_clause(
+            actor_gender, "pornstars.gender", len(actor_params) + 1
         )
+        actor_params.extend(gender_params)
+        if gender_fragment:
+            actor_sql += f" AND {gender_fragment}"
+        actor_sql += " ORDER BY pornstars.name ASC"
+        actors = await conn.fetch(actor_sql, *actor_params)
         studios = await conn.fetch(
             """
             SELECT studios.id, studios.name, studios.slug
@@ -389,3 +517,29 @@ async def get_video(slug: str, site: Site = Query(...)) -> VideoDetail | None:
     payload["studios"] = [TermRef(**dict(r)) for r in studios]
     payload["categories"] = [TermRef(**dict(r)) for r in categories]
     return VideoDetail(**payload)
+
+
+@router.post("/{slug}/view")
+async def increment_video_view(slug: str, site: Site = Query(...)) -> dict[str, int]:
+    """Bump the view counter by 1.
+
+    Called from the tube apps' video detail SSR (one bump per page load).
+    Bot inflation is acceptable for a v1 — viewers see a monotonically
+    increasing number, which is the only thing the UI cares about.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE videos
+               SET views = views + 1,
+                   updated_at = now()
+             WHERE site = $1 AND slug = $2
+         RETURNING views
+            """,
+            site,
+            slug,
+        )
+    if row is None:
+        return {"views": 0}
+    return {"views": int(row["views"])}

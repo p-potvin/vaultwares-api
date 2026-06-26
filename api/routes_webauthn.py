@@ -39,6 +39,7 @@ def _get_rp_id(request: Request) -> str:
         host = host.split(":")[0]
     return host or os.environ.get("WEBAUTHN_RP_ID", "prom-king.xyz")
 
+@router.post("/auth/passkey/register")
 @router.post("/auth/register/options")
 async def webauthn_register_options(request: Request, principal=Depends(require_auth)):
     if principal.get("kind") != "user":
@@ -83,6 +84,7 @@ async def webauthn_register_options(request: Request, principal=Depends(require_
     }
     return Response(content=options_to_json(options), media_type="application/json")
 
+@router.post("/auth/passkey/register/verify")
 @router.post("/auth/register/verify")
 async def webauthn_register_verify(request: Request, payload: dict, principal=Depends(require_auth)):
     if principal.get("kind") != "user":
@@ -90,7 +92,26 @@ async def webauthn_register_verify(request: Request, payload: dict, principal=De
     user = principal["user"]
     _cleanup_webauthn_challenges()
 
+    credential_payload = payload.get("credential")
+    if credential_payload is None:
+        credential_payload = payload
+
     challenge_str = payload.get("challenge")
+    if not challenge_str:
+        try:
+            client_data_b64 = credential_payload.get("response", {}).get("clientDataJSON", "")
+            if client_data_b64:
+                pad = len(client_data_b64) % 4
+                if pad:
+                    client_data_b64 += "=" * (4 - pad)
+                import base64
+                client_data_decoded = base64.urlsafe_b64decode(client_data_b64.encode("utf-8")).decode("utf-8")
+                import json
+                client_data = json.loads(client_data_decoded)
+                challenge_str = client_data.get("challenge")
+        except Exception:
+            pass
+
     if not challenge_str or challenge_str not in WEBAUTHN_CHALLENGES:
         raise HTTPException(status_code=400, detail="Challenge missing or expired")
 
@@ -103,7 +124,7 @@ async def webauthn_register_verify(request: Request, payload: dict, principal=De
 
     try:
         verification = verify_registration_response(
-            credential=payload.get("credential"),
+            credential=credential_payload,
             expected_challenge=challenge_info["challenge"],
             expected_origin=expected_origin,
             expected_rp_id=rp_id,
@@ -112,7 +133,7 @@ async def webauthn_register_verify(request: Request, payload: dict, principal=De
     except Exception as e:
         try:
             verification = verify_registration_response(
-                credential=payload.get("credential"),
+                credential=credential_payload,
                 expected_challenge=challenge_info["challenge"],
                 expected_origin="http://localhost:4321",
                 expected_rp_id="localhost",
@@ -136,6 +157,7 @@ async def webauthn_register_verify(request: Request, payload: dict, principal=De
     )
     return {"ok": True}
 
+@router.post("/auth/passkey/login")
 @router.post("/auth/login/options")
 async def webauthn_login_options(request: Request):
     _cleanup_webauthn_challenges()
@@ -151,15 +173,35 @@ async def webauthn_login_options(request: Request):
     }
     return Response(content=options_to_json(options), media_type="application/json")
 
+@router.post("/auth/passkey/login/verify")
 @router.post("/auth/login/verify")
 async def webauthn_login_verify(request: Request, payload: dict):
     _cleanup_webauthn_challenges()
+
+    credential_payload = payload.get("credential")
+    if credential_payload is None:
+        credential_payload = payload
+
     challenge_str = payload.get("challenge")
+    if not challenge_str:
+        try:
+            client_data_b64 = credential_payload.get("response", {}).get("clientDataJSON", "")
+            if client_data_b64:
+                pad = len(client_data_b64) % 4
+                if pad:
+                    client_data_b64 += "=" * (4 - pad)
+                import base64
+                client_data_decoded = base64.urlsafe_b64decode(client_data_b64.encode("utf-8")).decode("utf-8")
+                import json
+                client_data = json.loads(client_data_decoded)
+                challenge_str = client_data.get("challenge")
+        except Exception:
+            pass
+
     if not challenge_str or challenge_str not in WEBAUTHN_CHALLENGES:
         raise HTTPException(status_code=400, detail="Challenge missing or expired")
 
     challenge_info = WEBAUTHN_CHALLENGES.pop(challenge_str)
-    credential_payload = payload.get("credential", {})
     credential_id_str = credential_payload.get("id")
     
     db_cred = await WebAuthnCredential.get_or_none(credential_id=credential_id_str).prefetch_related("user")

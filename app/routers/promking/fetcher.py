@@ -20,6 +20,7 @@ import os
 import platform
 import re
 import shutil
+import random
 import time
 import unicodedata
 import uuid
@@ -28,11 +29,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from .db import get_pool
-from ._models import FetchRunHandle, FetchRunRequest
+from ._models import FetchRunHandle, FetchRunRequest, Site
 
 router = APIRouter(prefix="/fetcher", tags=["promking:fetcher"])
 
@@ -63,6 +64,11 @@ _runs_lock = asyncio.Lock()
 
 @router.post("/run", response_model=FetchRunHandle)
 async def run_fetcher(req: FetchRunRequest, bg: BackgroundTasks) -> FetchRunHandle:
+    if False:
+        pass
+    if False:
+        pass
+
     run_id = uuid.uuid4().hex
     state = RunState(run_id=run_id, site=req.site, source=req.source, pages=req.pages)
     async with _runs_lock:
@@ -135,19 +141,33 @@ async def stream_run(run_id: str) -> StreamingResponse:
 # ─── GET /fetcher/runs ─────────────────────────────────────────────────────
 
 @router.get("/runs")
-async def recent_runs(limit: int = 25) -> list[dict]:
+async def recent_runs(limit: int = 25, site: Site | None = Query(None)) -> list[dict]:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT id, site::text AS site, source, started_at, finished_at,
-                   fetched, added, skipped, errors
-            FROM fetch_runs
-            ORDER BY started_at DESC
-            LIMIT $1
-            """,
-            min(max(limit, 1), 200),
-        )
+        if site:
+            rows = await conn.fetch(
+                """
+                SELECT id, site::text AS site, source, started_at, finished_at,
+                       fetched, added, skipped, errors
+                FROM fetch_runs
+                WHERE site = $1
+                ORDER BY started_at DESC
+                LIMIT $2
+                """,
+                site,
+                min(max(limit, 1), 200),
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT id, site::text AS site, source, started_at, finished_at,
+                       fetched, added, skipped, errors
+                FROM fetch_runs
+                ORDER BY started_at DESC
+                LIMIT $1
+                """,
+                min(max(limit, 1), 200),
+            )
     return [dict(r) for r in rows]
 
 
@@ -359,9 +379,12 @@ async def _run_subprocess_for_page(state: RunState, page_num: int) -> list[dict]
 async def _drive_subprocess(state: RunState) -> None:
     try:
         start_page = await get_manual_cursor(state.site, state.source)
-        await _broadcast(state, json.dumps({"event": "log", "line": f"▶ Back-catalog cursor: start fetching at page {start_page}"}))
+        # Introduce randomness to the starting page to avoid different sites starting on the same page
+        start_offset = random.randint(0, 4)
+        current_page = start_page + start_offset
         
-        current_page = start_page
+        await _broadcast(state, json.dumps({"event": "log", "line": f"▶ Back-catalog cursor: start fetching at page {current_page} (cursor was {start_page}, random offset +{start_offset})"}))
+        
         pages_counted = 0
         has_hit_duplicate = False
         awaiting_new_after_duplicate = False
@@ -404,7 +427,9 @@ async def _drive_subprocess(state: RunState) -> None:
                 else:
                     pages_counted += 1
                     await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} counted. ({pages_counted}/{state.pages})"}))
-                current_page += 1
+                # Random step for the next page to implement randomized fetching
+                page_step = random.randint(1, 3)
+                current_page += page_step
                 continue
 
             urls_to_check = [v["sourceUrl"] for v in unique_page_videos if v.get("sourceUrl")]
@@ -429,7 +454,9 @@ async def _drive_subprocess(state: RunState) -> None:
             else:
                 await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} skipped from count (duplicates zone)."}))
                 
-            current_page += 1
+            # Random step for the next page to implement randomized fetching
+            page_step = random.randint(1, 3)
+            current_page += page_step
             
         await update_manual_cursor(state.site, state.source, current_page)
         await _broadcast(state, json.dumps({"event": "log", "line": f"💾 Saved next cursor page P = {current_page} in DB settings."}))
@@ -548,14 +575,25 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                     qualities_json = json.dumps(v.get("qualities"))
                 except Exception:
                     pass
+            # Views from the scrape (may be None). Coerce to int; missing or
+            # non-numeric drops to 0 so the NOT NULL DEFAULT 0 column holds.
+            raw_views = v.get("views")
+            try:
+                views = int(raw_views) if raw_views is not None else 0
+            except (TypeError, ValueError):
+                views = 0
+            description = v.get("description")
+            if description is not None and not isinstance(description, str):
+                description = str(description)
             try:
                 row = await conn.fetchrow(
                     """
                     INSERT INTO videos (
                         site, source, source_url, embed_url, embed_type,
-                        title, slug, thumbnail_url, preview_url, duration_seconds, qualities
+                        title, slug, thumbnail_url, preview_url, duration_seconds,
+                        views, description, qualities
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
                     ON CONFLICT (site, source_url) DO NOTHING
                     RETURNING id
                     """,
@@ -569,6 +607,8 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                     v.get("thumbnailUrl"),
                     v.get("previewUrl"),
                     v.get("durationSeconds"),
+                    views,
+                    description,
                     qualities_json,
                 )
             except Exception as e:
