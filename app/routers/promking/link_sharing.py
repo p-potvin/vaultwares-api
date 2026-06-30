@@ -11,6 +11,64 @@ from .db import get_pool
 
 router = APIRouter(prefix="/link-sharing", tags=["promking:link-sharing"])
 
+class LinkItem(BaseModel):
+    id: str
+    slug: str
+    title: str
+    sources: list[str]
+    created_at: str
+
+class LinkListResponse(BaseModel):
+    items: list[LinkItem]
+    total_count: int
+    limit: int
+    offset: int
+
+@router.get("/links", response_model=LinkListResponse)
+async def list_links(limit: int = 50, offset: int = 0) -> LinkListResponse:
+    """Fetch paginated link-sharing rows with resolved sources."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        try:
+            total = await conn.fetchval("SELECT COUNT(*) FROM link_sharing")
+            rows = await conn.fetch(
+                """
+                SELECT id, slug, title, created_at,
+                       fileboom_url, redgifs_url, google_drive_url,
+                       linkvertise_url_fxv, linkvertise_url_pkt
+                FROM link_sharing
+                ORDER BY created_at DESC
+                LIMIT $1 OFFSET $2
+                """,
+                limit, offset,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Database error: {exc}") from exc
+
+        items = []
+        for row in rows:
+            sources = []
+            if row.get("fileboom_url"): sources.append("fileboom")
+            if row.get("redgifs_url"): sources.append("redgifs")
+            if row.get("google_drive_url"): sources.append("google_drive")
+            if row.get("linkvertise_url_fxv") or row.get("linkvertise_url_pkt"): sources.append("linkvertise")
+            
+            items.append(
+                LinkItem(
+                    id=row["id"],
+                    slug=row["slug"],
+                    title=row["title"],
+                    sources=sources,
+                    created_at=row["created_at"].isoformat() if row.get("created_at") else "",
+                )
+            )
+
+        return LinkListResponse(
+            items=items,
+            total_count=total or 0,
+            limit=limit,
+            offset=offset,
+        )
 
 class LinkvertiseSyncRequest(BaseModel):
     dry_run: bool = True
