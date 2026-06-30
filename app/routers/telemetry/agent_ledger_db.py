@@ -271,20 +271,33 @@ async def get_agent_work_impact() -> Dict[str, Any]:
     max_created: Optional[datetime] = None
 
     for row in rows:
-        created = row["created_at"]
-        if not created:
+        created_utc = row["created_at"]
+        if not created_utc:
             continue
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-        min_created = created if min_created is None or created < min_created else min_created
-        max_created = created if max_created is None or created > max_created else max_created
-        day = created.date().isoformat()
+        if created_utc.tzinfo is None:
+            created_utc = created_utc.replace(tzinfo=timezone.utc)
+            
+        min_created = created_utc if min_created is None or created_utc < min_created else min_created
+        max_created = created_utc if max_created is None or created_utc > max_created else max_created
+        
+        raw = _as_dict(row["raw"])
+        
+        # Determine local time for bucketing (day, hour, dow)
+        created_local = created_utc
+        local_str = raw.get("createdAtLocal") or raw.get("created_at_local")
+        if local_str:
+            try:
+                # "2026-06-21 21:25" or similar ISO-ish format
+                created_local = datetime.fromisoformat(str(local_str).strip())
+            except Exception:
+                pass
+                
+        day = created_local.date().isoformat()
         month = day[:7]
         project = row["project"] or "General Tasks"
         kind = row["kind"] or "general"
         actor = row["actor"] or "AI Agent"
         runtime = _as_dict(row["runtime"])
-        raw = _as_dict(row["raw"])
 
         day_row = days.setdefault(day, {"day": day, "entries": 0, "projects": set(), "kinds": {}})
         day_row["entries"] += 1
@@ -294,8 +307,8 @@ async def get_agent_work_impact() -> Dict[str, Any]:
             kinds[part] = kinds.get(part, 0) + 1
 
         months[month] = months.get(month, 0) + 1
-        hours[created.hour] += 1
-        dows[created.strftime("%a")] += 1
+        hours[created_local.hour] += 1
+        dows[created_local.strftime("%a")] += 1
         actors[actor] = actors.get(actor, 0) + 1
         agent_day_series[day] = agent_day_series.get(day, 0) + 1
 
