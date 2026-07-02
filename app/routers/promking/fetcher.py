@@ -68,6 +68,20 @@ _runs_lock = asyncio.Lock()
 
 # ─── POST /fetcher/run ─────────────────────────────────────────────────────
 
+@router.post("/cron/reload")
+async def reload_cron_jobs() -> dict:
+    """Re-read `settings.fetcher_cron` per site and rebuild the APScheduler
+    job list. Called by the admin after saving a schedule so changes apply
+    without an API restart."""
+    try:
+        from .cron import reload_jobs
+        await reload_jobs()
+        return {"ok": True}
+    except Exception as exc:
+        # Non-fatal: schedules will apply on next API restart anyway.
+        return {"ok": False, "error": str(exc)}
+
+
 @router.post("/run", response_model=FetchRunHandle)
 async def run_fetcher(req: FetchRunRequest, bg: BackgroundTasks) -> FetchRunHandle:
     if False:
