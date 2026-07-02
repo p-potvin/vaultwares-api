@@ -32,6 +32,7 @@ DEFAULT_UPLOADS_DB = "/srv/vw-media/uploads/links.db"
 DEFAULT_UPLOADS_LOG = "/srv/vw-media/uploads/upload.log"
 SECRET_KEY_PARTS = ("secret", "token", "password", "credential", "apikey", "api_key", "private_key")
 PROBE_LOCATIONS = {"greencloud-vps", "vps-ovhcloud", "clopeux-desktop"}
+INPUT_TRACKER_MAX_HOURS = 24 * 365 * 20
 
 _UPLOAD_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 _UPLOAD_FAIL_RE = re.compile(
@@ -741,7 +742,7 @@ def logging_kiwi(check: bool = Query(True)) -> Dict[str, Any]:
 
 
 @router.get("/input-tracker")
-async def input_tracker(hours: int = Query(24, ge=1, le=24 * 14)) -> Dict[str, Any]:
+async def input_tracker(hours: int = Query(24, ge=1, le=INPUT_TRACKER_MAX_HOURS)) -> Dict[str, Any]:
     return await get_input_tracker(hours=hours)
 
 
@@ -756,7 +757,7 @@ def uploads(
 @router.get("/overview")
 async def overview(
     kiwi_check: bool = Query(False),
-    hours: int = Query(24, ge=1, le=24 * 14),
+    hours: int = Query(24, ge=1, le=INPUT_TRACKER_MAX_HOURS),
 ) -> Dict[str, Any]:
     health = get_health_ledger()
     agents = await get_agent_ledger()

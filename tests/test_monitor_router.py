@@ -140,6 +140,21 @@ def test_monitor_exposes_agent_db_data_through_api(monkeypatch, tmp_path):
     assert changes.json()["events"][0]["project"] == "agent-ledger"
 
 
+def test_monitor_input_tracker_accepts_month_window(monkeypatch, tmp_path):
+    client, _, _ = _client(monkeypatch, tmp_path)
+    from app.routers import monitor
+
+    async def fake_input_tracker(hours=24):
+        return {"source": "vaultwares-api", "status": "online", "window_hours": hours}
+
+    monkeypatch.setattr(monitor, "get_input_tracker", fake_input_tracker)
+
+    response = client.get("/monitor/input-tracker?hours=720")
+
+    assert response.status_code == 200
+    assert response.json()["window_hours"] == 720
+
+
 def test_monitor_search_filters_ledgers_case_insensitively(monkeypatch, tmp_path):
     client, health_root, agent_root = _client(monkeypatch, tmp_path)
     _write_jsonl(
