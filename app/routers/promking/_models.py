@@ -141,10 +141,20 @@ class VideoDetail(VideoListItem):
     updated_at: datetime
 
 
+TermType = Literal["pornstar", "studio", "category"]
+
+
 class FetchRunRequest(BaseModel):
     site: Site
     source: str
     pages: int = Field(ge=1, le=100, default=3)
+    # Term-scoped fetch (studio / pornstar / category archive). When term_type
+    # is set the run ignores the manual cursor and walks the archive from
+    # page 1 sequentially. fetch_all keeps paging until an empty page.
+    term_type: Optional[TermType] = None
+    term_name: Optional[str] = None
+    term_slug: Optional[str] = None
+    fetch_all: bool = False
 
 
 class FetchRunHandle(BaseModel):

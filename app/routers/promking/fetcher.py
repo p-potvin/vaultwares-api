@@ -46,6 +46,12 @@ class RunState:
     site: str
     source: str
     pages: int
+    # Term-scoped runs (studio/pornstar/category archive). These ignore the
+    # manual cursor and walk the archive sequentially from page 1.
+    term_type: Optional[str] = None
+    term_name: Optional[str] = None
+    term_slug: Optional[str] = None
+    fetch_all: bool = False
     db_run_id: Optional[int] = None
     process: Optional[asyncio.subprocess.Process] = None
     # Subscribers receive each NDJSON line as it arrives.
@@ -70,7 +76,16 @@ async def run_fetcher(req: FetchRunRequest, bg: BackgroundTasks) -> FetchRunHand
         pass
 
     run_id = uuid.uuid4().hex
-    state = RunState(run_id=run_id, site=req.site, source=req.source, pages=req.pages)
+    state = RunState(
+        run_id=run_id,
+        site=req.site,
+        source=req.source,
+        pages=req.pages,
+        term_type=req.term_type,
+        term_name=req.term_name,
+        term_slug=req.term_slug,
+        fetch_all=req.fetch_all,
+    )
     async with _runs_lock:
         _runs[run_id] = state
 
@@ -295,6 +310,12 @@ async def _run_subprocess_for_page(state: RunState, page_num: int) -> list[dict]
         "--pages=1",
         f"--startPage={page_num}",
     ]
+    if state.term_type:
+        args.append(f"--termType={state.term_type}")
+        if state.term_name:
+            args.append(f"--termName={state.term_name}")
+        if state.term_slug:
+            args.append(f"--termSlug={state.term_slug}")
 
     is_windows = platform.system() == "Windows"
     PIPE_LIMIT = 10 * 1024 * 1024  # 10 MiB
@@ -376,7 +397,90 @@ async def _run_subprocess_for_page(state: RunState, page_num: int) -> list[dict]
     return videos
 
 
+async def _drive_term_run(state: RunState) -> None:
+    """
+    Term-scoped run: walk the archive (studio/pornstar/category) sequentially
+    from page 1. Ignores the manual cursor entirely — archives are small and
+    ordered, so random offsets and duplicate-zone heuristics don't apply.
+    Stops on the first empty page, after `pages` pages (unless fetch_all),
+    or at the safety cap.
+    """
+    try:
+        label = f"{state.term_type}:{state.term_name or state.term_slug}"
+        target = "ALL pages" if state.fetch_all else f"{state.pages} page(s)"
+        await _broadcast(state, json.dumps({"event": "log", "line": f"▶ Term fetch {label} on {state.source} — {target}, cursor ignored."}))
+
+        MAX_SAFETY_PAGES = 500
+        candidates: list[dict] = []
+        fetched_urls: set[str] = set()
+        current_page = 1
+
+        while current_page <= MAX_SAFETY_PAGES and (state.fetch_all or current_page <= state.pages):
+            await _broadcast(state, json.dumps({"event": "log", "line": f"--- Fetching Page {current_page} ---"}))
+            try:
+                page_videos = await _run_subprocess_for_page(state, current_page)
+            except Exception as e:
+                state.error = f"Subprocess failed on page {current_page}: {e}"
+                await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
+                break
+
+            if not page_videos:
+                await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} returned 0 videos — end of archive."}))
+                break
+
+            new_on_page = 0
+            for v in page_videos:
+                url = v.get("sourceUrl")
+                if url and url not in fetched_urls:
+                    fetched_urls.add(url)
+                    candidates.append(v)
+                    new_on_page += 1
+            if new_on_page == 0:
+                await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} repeated earlier items — end of archive."}))
+                break
+            current_page += 1
+
+        urls_to_check = [v["sourceUrl"] for v in candidates if v.get("sourceUrl")]
+        existing_urls = await check_existing_links(state.site, urls_to_check)
+        candidates = [v for v in candidates if v.get("sourceUrl") not in existing_urls]
+
+        await _broadcast(state, json.dumps({"event": "log", "line": f"🔍 Comparing {len(candidates)} candidates by title and duration..."}))
+        existing_meta = await get_existing_videos_meta(state.site)
+        filtered_candidates = filter_duplicate_candidates(candidates, existing_meta)
+
+        await _broadcast(state, json.dumps({"event": "log", "line": f"💾 Persisting {len(filtered_candidates)} videos to database..."}))
+        added = 0
+        if filtered_candidates:
+            try:
+                added = await _persist_videos(state.site, filtered_candidates)
+            except Exception as e:
+                state.error = f"persist failed: {e}"
+
+        state.summary = {
+            "fetched": len(fetched_urls),
+            "added": added,
+            "skipped": len(fetched_urls) - added,
+            "errors": 1 if state.error else 0,
+        }
+        await _broadcast(
+            state,
+            json.dumps({
+                "event": "persisted",
+                "summary": dict(state.summary),
+                "candidates": len(filtered_candidates),
+            }),
+        )
+    except Exception as e:
+        state.error = f"Term run driver error: {e}"
+        await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
+    finally:
+        await _finalize_run(state)
+
+
 async def _drive_subprocess(state: RunState) -> None:
+    if state.term_type:
+        await _drive_term_run(state)
+        return
     try:
         start_page = await get_manual_cursor(state.site, state.source)
         # Introduce randomness to the starting page to avoid different sites starting on the same page
