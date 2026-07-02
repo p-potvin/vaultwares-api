@@ -55,6 +55,28 @@ CREATE TABLE IF NOT EXISTS input_pointer_hotspots (
   scroll_ticks INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS natural_paths (
+  path_id TEXT PRIMARY KEY,
+  event_id TEXT UNIQUE NOT NULL REFERENCES input_events(event_id) ON DELETE CASCADE,
+  batch_id TEXT NOT NULL REFERENCES input_batch_receipts(batch_id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  trigger TEXT NOT NULL DEFAULT 'unknown',
+  started_at TIMESTAMPTZ,
+  ended_at TIMESTAMPTZ,
+  duration_ms BIGINT NOT NULL DEFAULT 0,
+  start_context JSONB NOT NULL DEFAULT '{}'::jsonb,
+  end_context JSONB NOT NULL DEFAULT '{}'::jsonb,
+  mouse_path JSONB NOT NULL DEFAULT '[]'::jsonb,
+  key_presses JSONB NOT NULL DEFAULT '[]'::jsonb,
+  click_target JSONB NOT NULL DEFAULT '{}'::jsonb,
+  stats JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_natural_paths_started_at ON natural_paths(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_natural_paths_trigger ON natural_paths(trigger);
+
 CREATE TABLE IF NOT EXISTS input_ingest_errors (
   id BIGSERIAL PRIMARY KEY,
   batch_id TEXT,

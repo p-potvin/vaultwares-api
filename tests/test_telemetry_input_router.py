@@ -193,3 +193,41 @@ def test_kpi_signals_derive_focus_typing_pointer_rhythm_and_reliability():
     assert kpis["reliability"]["data_coverage_percent"] == 1.67
     assert kpis["reliability"]["batch_lag_minutes"] == 5.0
     assert kpis["reliability"]["spool_backlog_batches"] == 3
+
+
+def test_natural_path_record_normalizes_owner_opt_in_payload():
+    from app.routers.telemetry import db
+
+    batch = {
+        "batch_id": "batch-natural-1",
+        "session_id": "session-1",
+        "source": "agent-ledger-input-tracker",
+    }
+    event = {
+        "event_id": "session-1:natural:1",
+        "timestamp": "2026-07-02T13:01:00Z",
+        "metrics": {
+            "path_id": "path-1",
+            "trigger": "idle_resume",
+            "started_at": "2026-07-02T13:00:30Z",
+            "ended_at": "2026-07-02T13:00:42Z",
+            "duration_ms": 12000,
+            "mouse_path": [{"t_ms": 0, "x": 10, "y": 10}],
+            "key_presses": [{"t_ms": 500, "value": "x", "kind": "char"}],
+            "click_target": {"x": 20, "y": 30, "button": "left"},
+            "stats": {"point_count": 1, "key_count": 1, "distance_m": 0.01},
+        },
+        "dimensions": {
+            "start_context": {"focus_category": "development", "window_name": "PowerShell"},
+            "end_context": {"focus_category": "development", "window_name": "PowerShell"},
+            "privacy_level": "raw_keys_owner_opt_in",
+        },
+    }
+
+    record = db._natural_path_record(batch, event)
+
+    assert record["path_id"] == "path-1"
+    assert record["trigger"] == "idle_resume"
+    assert record["key_presses"][0]["value"] == "x"
+    assert record["stats"]["key_count"] == 1
+    assert record["start_context"]["window_name"] == "PowerShell"

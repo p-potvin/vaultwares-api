@@ -66,10 +66,56 @@ def _as_dict(value: Any) -> Dict[str, Any]:
     return {}
 
 
+def _as_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def _coerce_dt(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    return None
+
+
 def _checksum(event: Dict[str, Any]) -> str:
     payload = {key: value for key, value in event.items() if key != "checksum"}
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _natural_path_record(batch: Dict[str, Any], event: Dict[str, Any]) -> Dict[str, Any]:
+    metrics = _as_dict(event.get("metrics"))
+    dimensions = _as_dict(event.get("dimensions"))
+    stats = _as_dict(metrics.get("stats"))
+    return {
+        "path_id": str(metrics.get("path_id") or event["event_id"]),
+        "event_id": event["event_id"],
+        "batch_id": batch["batch_id"],
+        "session_id": batch["session_id"],
+        "source": batch["source"],
+        "trigger": str(metrics.get("trigger") or dimensions.get("trigger") or "unknown"),
+        "started_at": _coerce_dt(metrics.get("started_at")) or _coerce_dt(event.get("bucket_start")) or _coerce_dt(event.get("timestamp")),
+        "ended_at": _coerce_dt(metrics.get("ended_at")) or _coerce_dt(event.get("timestamp")),
+        "duration_ms": int(float(metrics.get("duration_ms") or stats.get("duration_ms") or 0)),
+        "start_context": _as_dict(dimensions.get("start_context")),
+        "end_context": _as_dict(dimensions.get("end_context")),
+        "mouse_path": _as_list(metrics.get("mouse_path")),
+        "key_presses": _as_list(metrics.get("key_presses")),
+        "click_target": _as_dict(metrics.get("click_target")),
+        "stats": stats,
+    }
 
 
 async def store_input_batch(batch: Dict[str, Any]) -> Dict[str, Any]:
@@ -132,6 +178,32 @@ async def store_input_batch(batch: Dict[str, Any]) -> Dict[str, Any]:
                             event.get("bucket_start") or event.get("timestamp"),
                             _json(event.get("metrics")),
                             _json(event.get("dimensions")),
+                        )
+                    elif event["event_type"] == "natural_path":
+                        path = _natural_path_record(batch, event)
+                        await conn.execute(
+                            """
+                            INSERT INTO natural_paths
+                              (path_id, event_id, batch_id, session_id, source, trigger, started_at, ended_at,
+                               duration_ms, start_context, end_context, mouse_path, key_presses, click_target, stats)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb)
+                            ON CONFLICT (path_id) DO NOTHING
+                            """,
+                            path["path_id"],
+                            path["event_id"],
+                            path["batch_id"],
+                            path["session_id"],
+                            path["source"],
+                            path["trigger"],
+                            path["started_at"],
+                            path["ended_at"],
+                            path["duration_ms"],
+                            _json(path["start_context"]),
+                            _json(path["end_context"]),
+                            _json(path["mouse_path"]),
+                            _json(path["key_presses"]),
+                            _json(path["click_target"]),
+                            _json(path["stats"]),
                         )
                 else:
                     duplicates += 1
@@ -213,6 +285,36 @@ def _hotspot_top_share(rows: Iterable[Any], clicks: float) -> float:
     if not hotspots or clicks <= 0:
         return 0.0
     return max(hotspots.values()) / clicks
+
+
+def _natural_path_summary(rows: Iterable[Any]) -> Dict[str, Any]:
+    rows_list = list(rows)
+    triggers: Dict[str, int] = {}
+    total_duration_ms = 0.0
+    total_points = 0.0
+    total_keys = 0.0
+    total_distance_m = 0.0
+    latest = None
+    for row in rows_list:
+        trigger = str(row["trigger"] or "unknown")
+        triggers[trigger] = triggers.get(trigger, 0) + 1
+        total_duration_ms += float(row["duration_ms"] or 0)
+        stats = _as_dict(row["stats"])
+        total_points += float(stats.get("point_count") or 0)
+        total_keys += float(stats.get("key_count") or 0)
+        total_distance_m += float(stats.get("distance_m") or 0)
+        if latest is None and row["started_at"]:
+            latest = row["started_at"].isoformat()
+    count = len(rows_list)
+    return {
+        "count": count,
+        "latest_started_at": latest,
+        "triggers": [{"name": name, "count": count} for name, count in sorted(triggers.items(), key=lambda item: item[1], reverse=True)],
+        "avg_duration_seconds": round((total_duration_ms / max(1, count)) / 1000.0, 2),
+        "avg_points": round(total_points / max(1, count), 2),
+        "avg_keys": round(total_keys / max(1, count), 2),
+        "total_distance_m": round(total_distance_m, 4),
+    }
 
 
 def _kpi_signals(
@@ -312,6 +414,16 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
             """,
             since,
         )
+        natural_rows = await conn.fetch(
+            """
+            SELECT path_id, trigger, started_at, ended_at, duration_ms, stats
+            FROM natural_paths
+            WHERE COALESCE(started_at, created_at) >= $1
+            ORDER BY COALESCE(started_at, created_at) DESC
+            LIMIT 500
+            """,
+            since,
+        )
     rows_list = list(rows)
     totals = _sum_numeric_metrics(rows_list)
     latency: Dict[str, float] = {}
@@ -353,6 +465,7 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
         },
         "key_latency_buckets": [{"name": key, "count": count} for key, count in sorted(latency.items())],
         "click_hotspots": [{"name": key, "count": count} for key, count in sorted(hotspots.items(), key=lambda item: item[1], reverse=True)[:20]],
+        "natural_paths": _natural_path_summary(natural_rows),
         "focus_categories": _bucket_counts(rows_list, "focus_category"),
         "focus_windows": _window_counts(rows_list),
         "kpis": _kpi_signals(rows_list, totals, hours=hours, latest_received_at=latest_dt, generated_at=generated_at),
@@ -367,7 +480,7 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
             for row in rows_list[:100]
         ],
         "privacy": {
-            "raw_text": False,
+            "raw_text": "natural_paths_raw_keys_owner_opt_in",
             "clipboard_contents": False,
             "window_titles": "hashed_or_redacted",
         },
