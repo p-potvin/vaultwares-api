@@ -36,6 +36,7 @@ from .stats import router as stats_router
 from .query import router as query_router
 from .link_sharing import router as link_sharing_router
 from .auth import router as auth_router
+from .rebuild import router as rebuild_router
 
 router = APIRouter(prefix="/api/promking", tags=["promking"])
 router.include_router(videos_router)
@@ -46,5 +47,6 @@ router.include_router(stats_router)
 router.include_router(query_router)
 router.include_router(link_sharing_router)
 router.include_router(auth_router)
+router.include_router(rebuild_router)
 
 __all__ = ["router"]

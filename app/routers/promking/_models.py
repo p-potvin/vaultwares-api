@@ -182,10 +182,61 @@ class SettingsPayload(BaseModel):
     values: dict
 
 
+class TopVideoRef(BaseModel):
+    id: int
+    slug: str
+    title: str
+    views: int
+    duration_seconds: Optional[int] = None
+    thumbnail_url: Optional[str] = None
+
+
+class TopTermRef(BaseModel):
+    id: int
+    name: str
+    slug: str
+    video_count: int
+    view_sum: int
+
+
+class ViewsSummary(BaseModel):
+    total: int
+    avg_per_video: float
+    max_single: int
+    videos_with_views: int  # count of videos where views > 0
+
+
+class CatalogHealth(BaseModel):
+    total: int
+    disabled: int
+    missing_thumbnail: int
+    missing_duration: int
+    missing_description: int
+
+
+class FetchActivity(BaseModel):
+    """Last-N-day fetcher aggregate. N is 7 by default; the client displays it."""
+    window_days: int
+    runs: int
+    fetched: int
+    added: int
+    skipped: int
+    errors: int
+
+
 class StatsResponse(BaseModel):
     videos_total: dict[str, int] = Field(default_factory=dict)  # site -> count
     videos_per_source: list[dict] = Field(default_factory=list)
     fetch_runs_recent: list[FetchRunSummary] = Field(default_factory=list)
+    # New in v0.2.24 — richer per-site breakdown for the Stats tab.
+    views: Optional[ViewsSummary] = None
+    catalog_health: Optional[CatalogHealth] = None
+    fetch_activity_7d: Optional[FetchActivity] = None
+    top_videos: list[TopVideoRef] = Field(default_factory=list)
+    top_studios: list[TopTermRef] = Field(default_factory=list)
+    top_pornstars: list[TopTermRef] = Field(default_factory=list)
+    top_categories: list[TopTermRef] = Field(default_factory=list)
+    favourites_total: int = 0
 
 
 class QueryRequest(BaseModel):
