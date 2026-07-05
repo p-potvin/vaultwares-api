@@ -30,6 +30,8 @@ DEFAULT_REPOS_ROOT = Path(os.environ.get("VW_REPOS_ROOT", r"C:\Users\Administrat
 DEFAULT_KIWI_URL = "https://localhost:5959/home"
 DEFAULT_UPLOADS_DB = "/srv/vw-media/uploads/links.db"
 DEFAULT_UPLOADS_LOG = "/srv/vw-media/uploads/upload.log"
+DEFAULT_DEPLOY_STATUS_ROOT = "/var/lib/vw-deploy/status"
+DEFAULT_DEPLOY_LOCK_ROOT = "/var/lib/vw-deploy"
 SECRET_KEY_PARTS = ("secret", "token", "password", "credential", "apikey", "api_key", "private_key")
 PROBE_LOCATIONS = {"greencloud-vps", "vps-ovhcloud", "clopeux-desktop"}
 INPUT_TRACKER_MAX_HOURS = 24 * 365 * 20
@@ -542,6 +544,100 @@ def _uploads_log_path() -> Path:
     return Path(os.environ.get("VW_UPLOADS_LOG") or DEFAULT_UPLOADS_LOG)
 
 
+def _deploy_status_root() -> Path:
+    return Path(os.environ.get("VW_DEPLOY_STATUS_ROOT") or DEFAULT_DEPLOY_STATUS_ROOT)
+
+
+def _deploy_lock_root() -> Path:
+    return Path(os.environ.get("VW_DEPLOY_LOCK_ROOT") or DEFAULT_DEPLOY_LOCK_ROOT)
+
+
+def _iso_ts_from_epoch(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def get_deploys_summary(
+    project: Optional[str] = None,
+    site: Optional[str] = None,
+    include_logs: bool = False,
+) -> Dict[str, Any]:
+    """
+    Read every /var/lib/vw-deploy/status/*.json and return a normalised
+    per-project view. See the /monitor/deploys route docstring for shape.
+    """
+    root = _deploy_status_root()
+    lock_root = _deploy_lock_root()
+    projects: Dict[str, Any] = {}
+
+    if root.exists():
+        for path in sorted(root.glob("*.json")):
+            key = path.stem  # e.g. "shared-tube"
+            if project and key != project:
+                continue
+            data = _read_json(path, default=None)
+            if not isinstance(data, dict):
+                continue
+
+            # In-flight detection: if the lock file exists and is younger than
+            # the last recorded finished_at, treat the current state as
+            # "building". The deploy script writes phase=building on start so
+            # this is a belt-and-braces check for the case where a crash left
+            # the status file stale but the lock still held.
+            lock_path = lock_root / f"{key}.lock"
+            last_build = data.get("last_build") or {}
+            finished_at = last_build.get("finished_at")
+            phase = last_build.get("phase") or ("ok" if last_build.get("ok") else "unknown")
+            if lock_path.exists():
+                try:
+                    lock_mtime = lock_path.stat().st_mtime
+                    finished_epoch = None
+                    if finished_at:
+                        try:
+                            finished_epoch = datetime.fromisoformat(
+                                str(finished_at).replace("Z", "+00:00")
+                            ).timestamp()
+                        except Exception:
+                            finished_epoch = None
+                    if finished_epoch is None or lock_mtime > finished_epoch:
+                        phase = "building"
+                        last_build = {
+                            **last_build,
+                            "phase": "building",
+                            "started_at": last_build.get("started_at") or _iso_ts_from_epoch(lock_mtime),
+                            "finished_at": None,
+                            "ok": None,
+                        }
+                except Exception:
+                    pass
+
+            targets = data.get("targets") or []
+            if site:
+                targets = [t for t in targets if t.get("site") == site]
+
+            entry: Dict[str, Any] = {
+                "project": data.get("project", key),
+                "repo_sha": data.get("repo_sha"),
+                "shared_version": data.get("shared_version"),
+                "api_version": data.get("api_version"),
+                "targets": targets,
+                "last_build": {**last_build, "phase": phase},
+                "log_path": data.get("log_path"),
+            }
+            if include_logs:
+                # Prefer the log tail written into status.json (matches the
+                # exact build we're reporting); fall back to live-tailing the
+                # log_path if the file exposes one.
+                cached_tail = data.get("log_tail")
+                if isinstance(cached_tail, list) and cached_tail:
+                    entry["log_tail"] = cached_tail[-40:]
+                else:
+                    log_path = data.get("log_path")
+                    entry["log_tail"] = _tail_text(Path(log_path))[-40:] if log_path else []
+            projects[key] = entry
+
+    return {"as_of": _utc_now(), "projects": projects}
+
+
 def _tail_text(path: Path, max_bytes: int = 256 * 1024) -> List[str]:
     if not path.exists():
         return []
@@ -705,6 +801,30 @@ def get_uploads_summary(limit_recent: int = 30, limit_failures: int = 25) -> Dic
         "other_errors": log_data["other_errors"],
         "recent_uploads": recent_uploads,
     }
+
+
+@router.get("/deploys")
+def deploys(
+    project: Optional[str] = Query(None, description="Filter to one project (shared-tube, vaultwares-api, ...)."),
+    site: Optional[str] = Query(None, description="For multi-site projects, filter to one site (fxv|oneporn|sexyprn)."),
+    logs: bool = Query(False, description="Include the last ~40 lines of the deploy log per project."),
+) -> Dict[str, Any]:
+    """
+    Aggregate deploy / build / version state across every registered project.
+
+    Each project's deploy script writes /var/lib/vw-deploy/status/<project>.json
+    on completion (schema documented in operations/deploy-status-api.mdx). This
+    endpoint just reads those files — no SSH, no shell-outs at request time.
+
+    In-flight builds: if /var/lib/vw-deploy/<project>.lock exists AND has a
+    younger mtime than the status file's finished_at, the response marks that
+    project's last_build.phase = "building". This is what powers the Marketing
+    tab's "Rebuild is running" spinner.
+
+    Reused by the vault-monitor dashboard so the fleet has one canonical
+    source of deploy truth.
+    """
+    return get_deploys_summary(project=project, site=site, include_logs=logs)
 
 
 @router.get("/health-ledger")

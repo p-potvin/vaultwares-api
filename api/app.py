@@ -26,6 +26,7 @@ from api.routes_proxy import router as proxy_router
 from api.routes_media import router as media_router
 from api.routes_llm import router as llm_router
 from api.routes_linksharing import router as linksharing_router
+from api.routes_projects import router as projects_router
 
 from api.routes_media import ZIPPER_DEST_DIR
 
@@ -119,7 +120,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="VaultWares API",
     description="Central API for VaultWares auth, DB-backed telemetry, monitor reads, logging, workflows, and media services.",
-    version="0.2.8",
+    version="0.2.9",
     lifespan=lifespan,
 )
 
@@ -161,6 +162,7 @@ app.include_router(proxy_router)
 app.include_router(media_router)
 app.include_router(llm_router)
 app.include_router(linksharing_router)
+app.include_router(projects_router)
 
 # Resiliency router imports
 _PROMKING_LOADED = False
