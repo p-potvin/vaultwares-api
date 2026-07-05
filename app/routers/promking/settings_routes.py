@@ -149,7 +149,7 @@ async def put_settings(payload: SettingsPayload, site: Site = Path(...)) -> dict
             row = await conn.fetchrow(
                 """
                 INSERT INTO settings (site, key, value, updated_at)
-                VALUES ($1, $2, $3::jsonb, NOW())
+                VALUES ($1, $2, $3, NOW())
                 ON CONFLICT (site, key) DO UPDATE
                   SET value = EXCLUDED.value,
                       updated_at = NOW()
@@ -157,17 +157,11 @@ async def put_settings(payload: SettingsPayload, site: Site = Path(...)) -> dict
                 """,
                 site,
                 key,
-                json.dumps(value),
+                value,
             )
-            # asyncpg gives back the jsonb column as its stored string form.
-            raw = row["value"]
-            if isinstance(raw, str):
-                try:
-                    updated[key] = json.loads(raw)
-                except json.JSONDecodeError:
-                    updated[key] = raw
-            else:
-                updated[key] = raw
+            # asyncpg's jsonb codec (see db.py) decodes on read too, so this
+            # is already a native dict/list.
+            updated[key] = row["value"]
             updated_at[key] = row["updated_at"].isoformat()
 
     return {

@@ -249,21 +249,23 @@ async def update_manual_cursor(site: str, source: str, page: int) -> None:
         )
         val = {}
         if row and row["value"]:
+            # asyncpg's jsonb codec (db.py) decodes to native. Keep the
+            # legacy string branch for defense against any un-migrated codec.
             val = json.loads(row["value"]) if isinstance(row["value"], str) else row["value"]
             if not isinstance(val, dict):
                 val = {}
         val[source] = page
-        
+
         await conn.execute(
             """
             INSERT INTO settings (site, key, value, updated_at)
-            VALUES ($1, 'fetcher_manual_cursor', $2::jsonb, NOW())
+            VALUES ($1, 'fetcher_manual_cursor', $2, NOW())
             ON CONFLICT (site, key) DO UPDATE
               SET value = EXCLUDED.value,
                   updated_at = NOW()
             """,
             site,
-            json.dumps(val),
+            val,
         )
 
 
@@ -705,7 +707,7 @@ async def _finalize_run(state: RunState) -> None:
                     added = $3,
                     skipped = $4,
                     errors = $5,
-                    log = $6::jsonb
+                    log = $6
                 WHERE id = $1
                 """,
                 state.db_run_id,
@@ -713,7 +715,7 @@ async def _finalize_run(state: RunState) -> None:
                 state.summary.get("added", 0),
                 state.summary.get("skipped", 0),
                 state.summary.get("errors", 0) + (1 if state.error else 0),
-                json.dumps(log_blob),
+                log_blob,
             )
     await _broadcast(state, json.dumps({"event": "closed"}))
 
@@ -749,12 +751,10 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
             if any(not v.get(k) for k in required):
                 skipped_bad += 1
                 continue
-            qualities_json = None
-            if v.get("qualities"):
-                try:
-                    qualities_json = json.dumps(v.get("qualities"))
-                except Exception:
-                    pass
+            # asyncpg's jsonb codec (db.py) encodes the dict/list directly;
+            # no more json.dumps here. Kept the guard against non-serialisable
+            # scrape values.
+            qualities = v.get("qualities") if v.get("qualities") else None
             # Views from the scrape (may be None). Coerce to int; missing or
             # non-numeric drops to 0 so the NOT NULL DEFAULT 0 column holds.
             raw_views = v.get("views")
@@ -773,7 +773,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                         title, slug, thumbnail_url, preview_url, duration_seconds,
                         views, description, qualities
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                     ON CONFLICT (site, source_url) DO NOTHING
                     RETURNING id
                     """,
@@ -789,7 +789,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                     v.get("durationSeconds"),
                     views,
                     description,
-                    qualities_json,
+                    qualities,
                 )
             except Exception as e:
                 # Bad row — log it via skipped_bad, keep the run alive.
