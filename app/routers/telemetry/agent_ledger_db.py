@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from db import ProjectCommit
+
 import json
 import os
 from datetime import datetime, timezone
@@ -352,6 +354,26 @@ async def get_agent_work_impact() -> Dict[str, Any]:
     dow_series = [{"label": label, "count": dows[label]} for label in dows]
     total_events = len(rows)
 
+    commit_samples = []
+    try:
+        commits = await ProjectCommit.all().order_by("-committed_at").limit(500)
+        for c in commits:
+            commit_samples.append({
+                "project": c.project_name,
+                "commit": c.commit_hash,
+                "day": c.committed_at.strftime("%Y-%m-%d"),
+                "message": c.message,
+                "author": c.author_name,
+                "insertions": c.insertions,
+                "deletions": c.deletions,
+                "filesTouched": c.files_touched,
+                "cleanChurnLines": c.clean_churn,
+                "filesClean": c.files_clean
+            })
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to fetch commit samples: {e}")
+
     data = {
         "_minCreatedAtUtc": min_created.isoformat().replace("+00:00", "Z") if min_created else None,
         "generatedAtLocal": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -361,7 +383,7 @@ async def get_agent_work_impact() -> Dict[str, Any]:
         },
         "totals": {"events": total_events, "activeDays": len(days), "projects": len(projects)},
         "series": {"days": day_series, "months": month_series, "kinds": kind_series, "projects": project_series},
-        "commitSamples": [],
+        "commitSamples": commit_samples,
         "hourSeries": hour_series,
         "dowSeries": dow_series,
         "agentData": {
