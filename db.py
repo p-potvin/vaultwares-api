@@ -45,6 +45,24 @@ class WebAuthnCredential(models.Model):
     class Meta:
         table = "webauthn_credentials"
 
+class ProjectAlias(models.Model):
+    canonical = fields.CharField(pk=True, max_length=255)
+    repoId = fields.CharField(max_length=255, null=True)
+    owner = fields.CharField(max_length=255, null=True)
+    isPrivate = fields.BooleanField(default=False)
+    aliases = fields.JSONField(default=list)
+    previousRemote = fields.CharField(max_length=255, null=True)
+    newRemote = fields.CharField(max_length=255, null=True)
+    notes = fields.TextField(null=True)
+    isDeleted = fields.BooleanField(default=False)
+    isFork = fields.BooleanField(default=False)
+    createdAt = fields.DatetimeField(auto_now_add=True)
+    renamedAt = fields.DatetimeField(null=True)
+    deletedAt = fields.DatetimeField(null=True)
+
+    class Meta:
+        table = "project_aliases"
+
 
 async def init_db(db_url: str):
     # Register both db and api_server modules for Tortoise ORM

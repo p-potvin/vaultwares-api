@@ -27,3 +27,21 @@ model AiModel {
 
   @@map("ai_models")
 }
+
+model ProjectAlias {
+  canonical      String    @id @db.VarChar(255)
+  repoId         String?   @db.VarChar(255)
+  owner          String?   @db.VarChar(255)
+  isPrivate      Boolean   @default(false)
+  aliases        String[]
+  previousRemote String?   @db.VarChar(255)
+  newRemote      String?   @db.VarChar(255)
+  notes          String?   @db.Text
+  isDeleted      Boolean   @default(false)
+  isFork         Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  renamedAt      DateTime?
+  deletedAt      DateTime?
+  
+  @@map("project_aliases")
+}
