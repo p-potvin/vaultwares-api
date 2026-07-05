@@ -110,3 +110,71 @@ async def _scheduled_run(site: str, source: str, pages: int) -> None:
 async def reload_jobs() -> None:
     """Re-read settings and rebuild the job set. Call after a PUT /settings."""
     await _reload_jobs()
+
+
+async def get_scheduled_jobs() -> list[dict]:
+    """
+    Snapshot of the current APScheduler job list, joined with the last-run
+    row from `fetch_runs` for the same (site, source) so the admin can render
+    a full schedule status without a second round-trip.
+    """
+    jobs_info: list[dict] = []
+    if _scheduler is not None:
+        for job in _scheduler.get_jobs():
+            # Job id format: promking:{site}:{source}
+            parts = job.id.split(":", 2)
+            if len(parts) != 3 or parts[0] != "promking":
+                continue
+            _, site, source = parts
+            next_run = job.next_run_time.isoformat() if job.next_run_time else None
+            # Extract cron hour/minute from the trigger for display.
+            hour_field = None
+            minute_field = None
+            try:
+                for field in job.trigger.fields:  # type: ignore[attr-defined]
+                    if field.name == "hour":
+                        hour_field = str(field)
+                    elif field.name == "minute":
+                        minute_field = str(field)
+            except Exception:
+                pass
+            pages = None
+            try:
+                pages = int(job.args[2]) if len(job.args) >= 3 else None
+            except Exception:
+                pass
+            jobs_info.append({
+                "site": site,
+                "source": source,
+                "hour": hour_field,
+                "minute": minute_field,
+                "pages": pages,
+                "next_run_at": next_run,
+            })
+    # Attach the most-recent fetch_runs row per (site, source) for last-run
+    # status. One query covers every job.
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (site, source)
+                   site::text AS site, source, started_at, finished_at,
+                   fetched, added, skipped, errors
+              FROM fetch_runs
+             ORDER BY site, source, started_at DESC
+            """
+        )
+    last_by_key: dict[tuple[str, str], dict] = {
+        (r["site"], r["source"]): {
+            "started_at": r["started_at"].isoformat() if r["started_at"] else None,
+            "finished_at": r["finished_at"].isoformat() if r["finished_at"] else None,
+            "fetched": r["fetched"],
+            "added": r["added"],
+            "skipped": r["skipped"],
+            "errors": r["errors"],
+        }
+        for r in rows
+    }
+    for info in jobs_info:
+        info["last_run"] = last_by_key.get((info["site"], info["source"]))
+    return jobs_info

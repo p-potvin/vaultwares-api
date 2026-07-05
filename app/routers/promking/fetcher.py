@@ -82,6 +82,17 @@ async def reload_cron_jobs() -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+@router.get("/cron/jobs")
+async def list_cron_jobs() -> list[dict]:
+    """
+    List every scheduled fetcher job across all sites, with next-fire time
+    (from APScheduler) and last-run status (from fetch_runs). The admin uses
+    this to render a schedule dashboard without having to reload the tab.
+    """
+    from .cron import get_scheduled_jobs
+    return await get_scheduled_jobs()
+
+
 @router.post("/run", response_model=FetchRunHandle)
 async def run_fetcher(req: FetchRunRequest, bg: BackgroundTasks) -> FetchRunHandle:
     if False:
@@ -308,7 +319,9 @@ def filter_duplicate_candidates(candidates: list[dict], existing_meta: list[dict
     return unique_candidates
 
 
-async def _run_subprocess_for_page(state: RunState, page_num: int) -> list[dict]:
+async def _run_subprocess_for_page(
+    state: RunState, page_num: int
+) -> tuple[list[dict], dict | None]:
     cli = _shared_tube_path() / "shared" / "src" / "fetcher" / "cli.ts"
     if not cli.exists():
         raise FileNotFoundError(f"fetcher CLI not found at {cli}")
@@ -358,6 +371,7 @@ async def _run_subprocess_for_page(state: RunState, page_num: int) -> list[dict]
     assert proc.stderr is not None
 
     videos = []
+    listing_meta: dict | None = None
     stderr_buf = []
 
     async def _drain_stderr() -> None:
@@ -397,6 +411,17 @@ async def _run_subprocess_for_page(state: RunState, page_num: int) -> list[dict]
             chunk = payload.get("videos")
             if isinstance(chunk, list):
                 videos.extend(chunk)
+        elif event == "listing_meta":
+            # First-page-only signal from the CLI: how many items the source
+            # says the archive contains. Used by _drive_term_run to cap
+            # pagination on sources (pornxp) that keep serving unrelated
+            # content past the real end.
+            total = payload.get("totalItems")
+            page_size = payload.get("pageSize")
+            listing_meta = {
+                "total_items": int(total) if isinstance(total, (int, float)) else None,
+                "page_size": int(page_size) if isinstance(page_size, (int, float)) else None,
+            }
 
     return_code = await proc.wait()
     try:
@@ -408,7 +433,7 @@ async def _run_subprocess_for_page(state: RunState, page_num: int) -> list[dict]
         tail = "\n".join(stderr_buf[-10:]) or "(no stderr)"
         raise RuntimeError(f"fetcher exited with code {return_code}. stderr tail: {tail}")
 
-    return videos
+    return videos, listing_meta
 
 
 async def _drive_term_run(state: RunState) -> None:
@@ -417,41 +442,78 @@ async def _drive_term_run(state: RunState) -> None:
     from page 1. Ignores the manual cursor entirely — archives are small and
     ordered, so random offsets and duplicate-zone heuristics don't apply.
     Stops on the first empty page, after `pages` pages (unless fetch_all),
-    or at the safety cap.
+    when two consecutive pages return only rows already in the DB, or at the
+    safety cap. Progress is broadcast per page so the admin can see it.
     """
     try:
         label = f"{state.term_type}:{state.term_name or state.term_slug}"
-        target = "ALL pages" if state.fetch_all else f"{state.pages} page(s)"
+        # fetch_all no longer means "no upper bound" — it means "walk until the
+        # archive tells us to stop". The safety cap here is what actually holds:
+        # pornxp/1porn tag pages happily hand out unrelated content past the
+        # real end, so an unbounded walk is a runaway (see id 57 taking 30+ min
+        # on a single pornstar tag). 30 pages ≈ 720 videos, more than any real
+        # single term.
+        MAX_SAFETY_PAGES = 30
+        page_budget = MAX_SAFETY_PAGES if state.fetch_all else min(state.pages, MAX_SAFETY_PAGES)
+        target = f"up to {page_budget} page(s)"
         await _broadcast(state, json.dumps({"event": "log", "line": f"▶ Term fetch {label} on {state.source} — {target}, cursor ignored."}))
 
-        MAX_SAFETY_PAGES = 500
         candidates: list[dict] = []
         fetched_urls: set[str] = set()
         current_page = 1
+        consecutive_all_known_pages = 0
+        source_declared_pages: Optional[int] = None
 
-        while current_page <= MAX_SAFETY_PAGES and (state.fetch_all or current_page <= state.pages):
-            await _broadcast(state, json.dumps({"event": "log", "line": f"--- Fetching Page {current_page} ---"}))
+        while current_page <= page_budget:
+            await _broadcast(state, json.dumps({"event": "log", "line": f"--- Fetching Page {current_page}/{page_budget} ---"}))
             try:
-                page_videos = await _run_subprocess_for_page(state, current_page)
+                page_videos, listing_meta = await _run_subprocess_for_page(state, current_page)
             except Exception as e:
                 state.error = f"Subprocess failed on page {current_page}: {e}"
                 await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
                 break
 
+            # The source may have just told us the real total. This is the only
+            # trustworthy stop signal for pornxp, whose tag pagination keeps
+            # returning unrelated content past the real end of the archive.
+            if listing_meta and source_declared_pages is None:
+                total = listing_meta.get("total_items")
+                page_size = listing_meta.get("page_size") or len(page_videos) or 36
+                if total and page_size:
+                    source_declared_pages = max(1, (total + page_size - 1) // page_size)
+                    new_budget = min(page_budget, source_declared_pages)
+                    if new_budget < page_budget:
+                        await _broadcast(state, json.dumps({"event": "log", "line": f"📐 Source declares {total} videos / {page_size} per page → capping at {source_declared_pages} page(s)."}))
+                        page_budget = new_budget
+
             if not page_videos:
                 await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} returned 0 videos — end of archive."}))
                 break
 
-            new_on_page = 0
+            page_new_urls: list[str] = []
             for v in page_videos:
                 url = v.get("sourceUrl")
                 if url and url not in fetched_urls:
                     fetched_urls.add(url)
                     candidates.append(v)
-                    new_on_page += 1
-            if new_on_page == 0:
+                    page_new_urls.append(url)
+            if not page_new_urls:
                 await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} repeated earlier items — end of archive."}))
                 break
+
+            # Per-page DB dedup: if every URL on this page is already in the
+            # DB, the "unknown zone" ended pages ago. Two in a row → stop, the
+            # source is likely serving unrelated overflow content.
+            existing_on_page = await check_existing_links(state.site, page_new_urls)
+            unknown_on_page = len(page_new_urls) - len(existing_on_page)
+            await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page}: {unknown_on_page} new / {len(existing_on_page)} already in DB (of {len(page_new_urls)})"}))
+            if unknown_on_page == 0:
+                consecutive_all_known_pages += 1
+                if consecutive_all_known_pages >= 2:
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ 2 consecutive all-known pages — stopping."}))
+                    break
+            else:
+                consecutive_all_known_pages = 0
             current_page += 1
 
         urls_to_check = [v["sourceUrl"] for v in candidates if v.get("sourceUrl")]
@@ -515,7 +577,7 @@ async def _drive_subprocess(state: RunState) -> None:
         while pages_counted < state.pages and total_pages_fetched < MAX_SAFETY_PAGES:
             await _broadcast(state, json.dumps({"event": "log", "line": f"--- Fetching Page {current_page} ---"}))
             try:
-                page_videos = await _run_subprocess_for_page(state, current_page)
+                page_videos, _meta = await _run_subprocess_for_page(state, current_page)
             except Exception as e:
                 state.error = f"Subprocess failed on page {current_page}: {e}"
                 await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
