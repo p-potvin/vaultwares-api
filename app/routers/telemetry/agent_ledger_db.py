@@ -356,19 +356,19 @@ async def get_agent_work_impact() -> Dict[str, Any]:
 
     commit_samples = []
     try:
-        commits = await ProjectCommit.all().order_by("-committed_at").limit(500)
+        commits = await ProjectCommit.all().prefetch_related("project").order_by("-date").limit(500)
         for c in commits:
             commit_samples.append({
-                "project": c.project_name,
-                "commit": c.commit_hash,
-                "day": c.committed_at.strftime("%Y-%m-%d"),
+                "project": c.project_id,
+                "commit": c.hash,
+                "day": c.date.strftime("%Y-%m-%d"),
                 "message": c.message,
-                "author": c.author_name,
-                "insertions": c.insertions,
-                "deletions": c.deletions,
-                "filesTouched": c.files_touched,
-                "cleanChurnLines": c.clean_churn,
-                "filesClean": c.files_clean
+                "author": c.author,
+                "insertions": c.raw_insertions,
+                "deletions": c.raw_deletions,
+                "filesTouched": c.files_changed,
+                "cleanChurnLines": c.clean_insertions + c.clean_deletions,
+                "filesClean": c.files_changed
             })
     except Exception as e:
         import logging
