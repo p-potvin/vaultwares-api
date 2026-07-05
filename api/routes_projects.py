@@ -3,10 +3,14 @@ import httpx
 import os
 import subprocess
 from datetime import datetime
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Optional
-from db import ProjectAlias
+from db import ProjectAlias, ProjectCommit
+import asyncio
+import re
+
+EXCLUDE_PATH_REGEX = re.compile(r'(^|/|\\)(node_modules|\.venv|venv|vendor|dist|build|target|obj|bin|__pycache__|\.next|\.nuxt|\.turbo|\.cache|coverage)(/|\\|$)|\.(pyc|pyo|class|dll|exe|obj|cache|map)$', re.IGNORECASE)
 
 logger = logging.getLogger("vaultwares.projects")
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -46,8 +50,105 @@ async def get_project_aliases():
         for a in aliases
     ]
 
+async def sync_commits_task(token: str):
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    
+    projects = await ProjectAlias.filter(isDeleted=False, isFork=False, owner__not_isnull=True, newRemote__not_isnull=True)
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for p in projects:
+            owner_repo = p.newRemote
+            logger.info(f"Syncing commits for {owner_repo}")
+            
+            url = f"https://api.github.com/repos/{owner_repo}/commits?since=2026-03-11T00:00:00Z&per_page=100"
+            commits_to_process = []
+            page = 1
+            while True:
+                resp = await client.get(f"{url}&page={page}", headers=headers)
+                if resp.status_code != 200:
+                    break
+                data = resp.json()
+                if not data:
+                    break
+                for c in data:
+                    commits_to_process.append(c["sha"])
+                page += 1
+            
+            if not commits_to_process:
+                continue
+                
+            existing_commits = await ProjectCommit.filter(hash__in=commits_to_process).values_list("hash", flat=True)
+            existing_set = set(existing_commits)
+            new_commits = [sha for sha in commits_to_process if sha not in existing_set]
+            
+            for sha in new_commits:
+                detail_resp = await client.get(f"https://api.github.com/repos/{owner_repo}/commits/{sha}", headers=headers)
+                if detail_resp.status_code != 200:
+                    continue
+                detail = detail_resp.json()
+                
+                raw_ins = detail.get("stats", {}).get("additions", 0)
+                raw_del = detail.get("stats", {}).get("deletions", 0)
+                
+                clean_ins = 0
+                clean_del = 0
+                files_changed = 0
+                
+                for f in detail.get("files", []):
+                    filename = f.get("filename", "")
+                    files_changed += 1
+                    if not EXCLUDE_PATH_REGEX.search(filename):
+                        clean_ins += f.get("additions", 0)
+                        clean_del += f.get("deletions", 0)
+                        
+                date_str = detail["commit"]["author"]["date"]
+                author_name = detail["commit"]["author"]["name"]
+                message = detail["commit"]["message"]
+                
+                try:
+                    dt = datetime.strptime(date_str, "%Y-%m-%dT%H:%M:%SZ")
+                except:
+                    dt = datetime.now()
+                    
+                await ProjectCommit.create(
+                    hash=sha,
+                    project=p,
+                    date=dt,
+                    author=author_name,
+                    message=message,
+                    raw_insertions=raw_ins,
+                    raw_deletions=raw_del,
+                    clean_insertions=clean_ins,
+                    clean_deletions=clean_del,
+                    files_changed=files_changed
+                )
+
+
+@router.get("/commits/stats")
+async def get_commits_stats():
+    """
+    Returns commit stats required by the frontend data generator.
+    """
+    commits = await ProjectCommit.all().prefetch_related("project")
+    samples = []
+    for c in commits:
+        samples.append({
+            "day": c.date.strftime("%Y-%m-%d"),
+            "project": c.project.canonical,
+            "commit": c.hash[:7],
+            "cleanChurnLines": c.clean_insertions + c.clean_deletions,
+            "rawChurnLines": c.raw_insertions + c.raw_deletions,
+            "files": c.files_changed
+        })
+    return {"data": {"commitSamples": samples}}
+
+
 @router.post("/sync-github")
-async def sync_github_projects():
+async def sync_github_projects(background_tasks: BackgroundTasks):
     """
     Polls GitHub using httpx to discover new repositories, detect renames,
     and update project statuses in the database.
@@ -174,4 +275,5 @@ async def sync_github_projects():
                 await p.save()
                 updates_made += 1
 
+    background_tasks.add_task(sync_commits_task, token)
     return {"status": "success", "new": new_added, "updated": updates_made, "total_fetched": len(fetched_repos)}

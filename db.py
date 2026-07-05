@@ -64,6 +64,23 @@ class ProjectAlias(models.Model):
         table = "project_aliases"
 
 
+class ProjectCommit(models.Model):
+    hash = fields.CharField(pk=True, max_length=64)
+    project = fields.ForeignKeyField("models.ProjectAlias", related_name="commits", on_delete=fields.CASCADE)
+    date = fields.DatetimeField(index=True)
+    author = fields.CharField(max_length=255)
+    message = fields.TextField()
+    raw_insertions = fields.IntField(default=0)
+    raw_deletions = fields.IntField(default=0)
+    clean_insertions = fields.IntField(default=0)
+    clean_deletions = fields.IntField(default=0)
+    files_changed = fields.IntField(default=0)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+
+    class Meta:
+        table = "project_commits"
+
 async def init_db(db_url: str):
     # Register both db and api_server modules for Tortoise ORM
     await Tortoise.init(
