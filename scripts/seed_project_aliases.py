@@ -11,7 +11,9 @@ from api.config import DB_URL
 async def main():
     await init_db(DB_URL)
 
-    with open(r"C:\Users\Administrator\Desktop\Github Repos\agent-ledger\project-aliases.json", "r", encoding="utf-8") as f:
+    import sys
+    path = sys.argv[1] if len(sys.argv) > 1 else r"C:\Users\Administrator\Desktop\Github Repos\agent-ledger\project-aliases.json"
+    with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     # Note: We won't fetch repoIds here to save time, the POST /projects/sync-github will merge and assign repoIds on its first run if the canonical names or remotes match!
