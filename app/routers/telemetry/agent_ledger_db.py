@@ -356,7 +356,7 @@ async def get_agent_work_impact() -> Dict[str, Any]:
 
     commit_samples = []
     try:
-        commits = await ProjectCommit.all().prefetch_related("project").order_by("-date").limit(500)
+        commits = await ProjectCommit.all().prefetch_related("project").order_by("-date").limit(10000)
         for c in commits:
             commit_samples.append({
                 "project": c.project_id,
