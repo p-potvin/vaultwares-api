@@ -256,6 +256,72 @@ async def count_terms(
     return {"total": int(total or 0)}
 
 
+@router.post("/{kind}", response_model=TermRef, status_code=201)
+async def create_term(
+    kind: WriteTaxonomyKind = Path(...),
+    payload: dict = None,  # noqa: RUF013 — dict allows the tiny shape below without a new pydantic model
+) -> TermRef:
+    """
+    Create-or-return a single term. Idempotent on (kind, slug) — repeated
+    calls with the same name yield the existing row. Powers the "create on
+    demand" affordance in the admin video-detail overlay: when the operator
+    types a pornstar name that isn't in the DB yet, the panel offers to
+    create it and attach in one shot instead of bouncing them to the batch
+    UI.
+
+    Payload shape: `{"name": "Juniper Ren", "gender": "female"?}` (gender
+    only respected on pornstars). Fields beyond name/gender are ignored.
+    """
+    config = get_table_config(kind)
+    payload = payload or {}
+    name = str(payload.get("name") or "").strip()
+    if not name or len(name) > 200:
+        raise HTTPException(status_code=422, detail="name is required (≤200 chars)")
+    slug = slugify(name)
+    gender_col = ""
+    gender_val = None
+    if config.has_gender:
+        raw = payload.get("gender")
+        if raw in ("female", "male", "unknown", None):
+            gender_val = raw
+            gender_col = ", gender"
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Idempotent upsert on slug. If someone typed a slightly different
+        # capitalisation of an existing term, return the existing row rather
+        # than duplicating.
+        existing = await conn.fetchrow(
+            f"SELECT id, name, slug{', gender' if config.has_gender else ''} "
+            f"FROM {config.table} WHERE slug = $1 AND deleted_at IS NULL",
+            slug,
+        )
+        if existing:
+            return TermRef(
+                id=existing["id"],
+                name=existing["name"],
+                slug=existing["slug"],
+                gender=existing["gender"] if config.has_gender else None,
+            )
+        if config.has_gender:
+            row = await conn.fetchrow(
+                f"INSERT INTO {config.table} (name, slug{gender_col}) "
+                f"VALUES ($1, $2, $3) RETURNING id, name, slug, gender",
+                name, slug, gender_val,
+            )
+        else:
+            row = await conn.fetchrow(
+                f"INSERT INTO {config.table} (name, slug) VALUES ($1, $2) RETURNING id, name, slug",
+                name, slug,
+            )
+    return TermRef(
+        id=row["id"],
+        name=row["name"],
+        slug=row["slug"],
+        gender=row["gender"] if config.has_gender else None,
+    )
+
+
 @router.post("/{kind}/batch/rename", response_model=BatchTaxonomyUpdateResponse)
 async def batch_rename_terms(
     payload: BatchTaxonomyRenameRequest,
