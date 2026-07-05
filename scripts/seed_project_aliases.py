@@ -43,17 +43,22 @@ async def main():
         )
     
     for p in forks:
-        canonical = p.get("canonical")
+        canonical = p if isinstance(p, str) else p.get("canonical")
         if not canonical:
             continue
         
+        aliases = [] if isinstance(p, str) else p.get("aliases", [])
+        previousRemote = None if isinstance(p, str) else p.get("previousRemote")
+        newRemote = None if isinstance(p, str) else p.get("newRemote")
+        notes = None if isinstance(p, str) else p.get("notes")
+
         await ProjectAlias.update_or_create(
             canonical=canonical,
             defaults={
-                "aliases": p.get("aliases", []),
-                "previousRemote": p.get("previousRemote"),
-                "newRemote": p.get("newRemote"),
-                "notes": p.get("notes"),
+                "aliases": aliases,
+                "previousRemote": previousRemote,
+                "newRemote": newRemote,
+                "notes": notes,
                 "isFork": True
             }
         )
