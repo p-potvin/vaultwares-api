@@ -34,6 +34,7 @@ from fastapi.responses import StreamingResponse
 
 from .db import get_pool
 from ._models import FetchRunHandle, FetchRunRequest, Site
+from .tpdb import fetch_tpdb_tags
 
 router = APIRouter(prefix="/fetcher", tags=["promking:fetcher"])
 
@@ -799,6 +800,18 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                 # Duplicate (ON CONFLICT DO NOTHING). Not an error.
                 continue
             added += 1
+            
+            # --- TPDB Enrichment ---
+            title = v.get("title")
+            if title:
+                tpdb_data = await fetch_tpdb_tags(title)
+                if tpdb_data:
+                    # Replace source's tags with TPDB curated tags
+                    v["categories"] = tpdb_data["categories"]
+                    v["actors"] = tpdb_data["performers"]
+                    v["studios"] = tpdb_data["studios"]
+            # -----------------------
+            
             try:
                 await _attach_terms(conn, int(row["id"]), v)
             except Exception:
