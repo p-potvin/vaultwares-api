@@ -47,6 +47,7 @@ class RunState:
     site: str
     source: str
     pages: int
+    start_page: Optional[int] = None
     # Term-scoped runs (studio/pornstar/category archive). These ignore the
     # manual cursor and walk the archive sequentially from page 1.
     term_type: Optional[str] = None
@@ -107,6 +108,7 @@ async def run_fetcher(req: FetchRunRequest, bg: BackgroundTasks) -> FetchRunHand
         site=req.site,
         source=req.source,
         pages=req.pages,
+        start_page=getattr(req, "start_page", None),
         term_type=req.term_type,
         term_name=req.term_name,
         term_slug=req.term_slug,
@@ -561,9 +563,9 @@ async def _drive_subprocess(state: RunState) -> None:
         await _drive_term_run(state)
         return
     try:
-        start_page = await get_manual_cursor(state.site, state.source)
+        start_page = state.start_page if hasattr(state, "start_page") and state.start_page is not None else await get_manual_cursor(state.site, state.source)
         # Introduce randomness to the starting page to avoid different sites starting on the same page
-        start_offset = random.randint(0, 4)
+        start_offset = 0 if hasattr(state, "start_page") and state.start_page is not None else random.randint(0, 4)
         current_page = start_page + start_offset
         
         await _broadcast(state, json.dumps({"event": "log", "line": f"▶ Back-catalog cursor: start fetching at page {current_page} (cursor was {start_page}, random offset +{start_offset})"}))

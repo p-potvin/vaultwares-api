@@ -159,7 +159,7 @@ async def admin_list_users(
     q: Optional[str] = Query(None, description="email ILIKE match"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    include_disabled: bool = Query(True),
+    include_disabled: bool = Query(False),
     _admin: dict = Depends(require_admin),
 ) -> UserListResponse:
     """Paginated list of every viewer account, with a per-user favourite count."""

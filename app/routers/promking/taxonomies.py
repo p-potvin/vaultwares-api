@@ -63,7 +63,7 @@ async def list_terms(
     offset: int = Query(0, ge=0),
     q: str | None = Query(None, description="Fuzzy name search (ILIKE)."),
     gender: str | None = Query(
-        None,
+        "female",
         description=(
             "Filter pornstars by gender. Accepts a single value (e.g. 'female') "
             "or a comma-separated list (e.g. 'female,male'). Special tokens: "

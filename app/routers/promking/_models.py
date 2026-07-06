@@ -116,7 +116,7 @@ class BatchTaxonomyGenderUpdateResponse(BaseModel):
 
 class VideoListItem(BaseModel):
     id: int
-    site: Site
+    site: Optional[Site] = None
     source: Optional[str] = None
     title: str
     slug: str
@@ -148,6 +148,7 @@ class FetchRunRequest(BaseModel):
     site: Site
     source: str
     pages: int = Field(ge=1, le=100, default=3)
+    start_page: int = Field(ge=1, default=1)
     # Term-scoped fetch (studio / pornstar / category archive). When term_type
     # is set the run ignores the manual cursor and walks the archive from
     # page 1 sequentially. fetch_all keeps paging until an empty page.

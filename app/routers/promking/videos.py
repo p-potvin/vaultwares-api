@@ -304,7 +304,7 @@ async def batch_add_taxonomy(payload: BatchAddTaxonomyRequest) -> BatchCountResp
 @router.get("", response_model=list[VideoListItem])
 async def list_videos(
     site: Site | None = Query(None, description="Deprecated, ignored. Video catalog is now global."),
-    limit: int = Query(24, ge=1, le=100000),
+    limit: int = Query(50, ge=1, le=100000),
     offset: int = Query(0, ge=0),
     q: str | None = Query(None, description="Postgres FTS query over title."),
     actor: str | None = Query(None, description="Filter by actor slug."),
@@ -313,7 +313,7 @@ async def list_videos(
     related_to: str | None = Query(None, description="Related-video seed slug."),
     exclude_slug: str | None = Query(None, description="Slug to omit from results."),
     actor_gender: str | None = Query(
-        None,
+        "female",
         description=(
             "Filter the embedded actors_json by gender. Accepts 'female', 'male', "
             "'unknown', a comma-separated list, or 'all' (no filter — default "
@@ -321,7 +321,7 @@ async def list_videos(
             "embedded pornstar pills are filtered."
         ),
     ),
-    disabled: bool | None = Query(None, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
+    disabled: bool | None = Query(False, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
     source: str | None = Query(None, description="Filter by video source."),
 ) -> list[VideoListItem]:
     pool = await get_pool()
@@ -346,7 +346,7 @@ async def list_videos(
     offset_param = f"${len(params) + 2}"
     params.extend([limit, offset])
     sql_base = f"""
-        SELECT videos.id, videos.site, videos.source, videos.title, videos.slug,
+        SELECT videos.id, videos.source, videos.title, videos.slug,
                videos.thumbnail_url, videos.preview_url, videos.duration_seconds,
                videos.views, videos.created_at, videos.disabled_at, videos.qualities,
                (
@@ -417,7 +417,7 @@ async def count_videos(
     actor: str | None = Query(None),
     studio: str | None = Query(None),
     category: str | None = Query(None),
-    disabled: bool | None = Query(None, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
+    disabled: bool | None = Query(False, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
     source: str | None = Query(None, description="Filter by video source."),
 ) -> dict:
     """Count videos for the given site + filters. Cheap path for admin pagination."""
@@ -542,7 +542,7 @@ async def increment_video_view(slug: str, site: Site = Query(...)) -> dict[str, 
             UPDATE videos
                SET views = views + 1,
                    updated_at = now()
-             WHERE site = $1 AND slug = $2
+             WHERE slug = $2
          RETURNING views
             """,
             site,
