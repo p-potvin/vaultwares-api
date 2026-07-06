@@ -111,7 +111,7 @@ def build_video_filters(
 
     if site:
         joins.append("JOIN video_sites ON video_sites.video_id = videos.id")
-        where.append(f"video_sites.site = {add_param(site.value)}")
+        where.append(f"video_sites.site = {add_param(site)}")
     if q:
         where.append(
             "to_tsvector('english', videos.title) @@ plainto_tsquery('english', "
@@ -460,7 +460,7 @@ async def get_video(
         params = [slug]
         if site:
             where_clause += " AND EXISTS (SELECT 1 FROM video_sites WHERE video_id = videos.id AND site = $2)"
-            params.append(site.value)
+            params.append(site)
 
         row = await conn.fetchrow(
             f"""
