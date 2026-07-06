@@ -120,6 +120,19 @@ pip install -r requirements.txt
 python run_pipeline.py --config examples/video_enhance.yaml
 ```
 
+## Prom-King TPDB Enrichment
+
+To enrich existing videos in the Prom-King database with tags from TPDB (Categories, Performers, Studios), run the backlog script on the server with direct database access:
+
+```bash
+# Enrich up to 1000 videos
+uv run python scripts/enrich_backlog.py --limit 1000
+
+# Specify site and starting ID
+uv run python scripts/enrich_backlog.py --site sexyprn --start-id 500
+```
+New videos are automatically enriched during the fetch pipeline.
+
 ## Architecture & Agent Integration
 Fully synchronized with the VaultWares Agent Knowledge Dissemination System.
 - Agents automatically pull latest branding and guidelines from: → https://raw.githubusercontent.com/p-potvin/vaultwares-docs/main/agents/knowledge-dissemination.mdx
