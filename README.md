@@ -94,9 +94,6 @@ VW_REQUEST_LOG_SLOW_MS=2000
 VW_CORRELATION_APP_CODE=API
 ```
 
-Kiwi/syslog records include `source`, `clientIp`, `peerIp`, and `origin` so
-logs can be traced past the VPS proxy address.
-
 ## Workflow Job Queue
 
 Vault-flows ComfyUI workflow jobs are queued and executed one at a time by
@@ -126,7 +123,10 @@ To enrich existing videos in the Prom-King database with tags from TPDB (Categor
 
 ```bash
 # Enrich up to 1000 videos
-uv run python scripts/enrich_backlog.py --limit 1000
+cd /srv/repos/p-potvin/vaultwares-api
+python3 scripts/enrich_backlog.py --limit 1000
+
+# uv run python scripts/enrich_backlog.py --limit 1000
 
 # Specify site and starting ID
 uv run python scripts/enrich_backlog.py --site sexyprn --start-id 500

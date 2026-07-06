@@ -770,15 +770,14 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                 row = await conn.fetchrow(
                     """
                     INSERT INTO videos (
-                        site, source, source_url, embed_url, embed_type,
+                        source, source_url, embed_url, embed_type,
                         title, slug, thumbnail_url, preview_url, duration_seconds,
                         views, description, qualities
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-                    ON CONFLICT (site, source_url) DO NOTHING
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    ON CONFLICT (source_url) DO NOTHING
                     RETURNING id
                     """,
-                    site,
                     v.get("source"),
                     v.get("sourceUrl"),
                     v.get("embedUrl"),

@@ -58,7 +58,7 @@ def slugify(value: str) -> str:
 @router.get("/{kind}", response_model=list[TermRef])
 async def list_terms(
     kind: TaxonomyKind = Path(...),
-    site: Site | None = Query(None),
+    site: Site | None = Query(None, description="Deprecated, ignored. Taxonomies are global."),
     limit: int = Query(100, ge=1, le=100000),
     offset: int = Query(0, ge=0),
     q: str | None = Query(None, description="Fuzzy name search (ILIKE)."),
@@ -114,26 +114,18 @@ async def list_terms(
                 extra_where.append("(" + " OR ".join(clauses) + ")")
 
     pool = await get_pool()
+    pool = await get_pool()
     # Determine sorting order
     if sort == "default":
-        if site:
-            sort_order = f"COUNT(videos.id) DESC, {table}.name ASC"
-        else:
-            sort_order = f"{table}.name ASC"
+        sort_order = f"{table}.name ASC"
     elif sort == "name_asc":
         sort_order = f"{table}.name ASC"
     elif sort == "name_desc":
         sort_order = f"{table}.name DESC"
     elif sort == "videos_desc":
-        if site:
-            sort_order = f"COUNT(videos.id) DESC, {table}.name ASC"
-        else:
-            sort_order = f"COUNT({join_table}.video_id) DESC, {table}.name ASC"
+        sort_order = f"COUNT({join_table}.video_id) DESC, {table}.name ASC"
     elif sort == "videos_asc":
-        if site:
-            sort_order = f"COUNT(videos.id) ASC, {table}.name ASC"
-        else:
-            sort_order = f"COUNT({join_table}.video_id) ASC, {table}.name ASC"
+        sort_order = f"COUNT({join_table}.video_id) ASC, {table}.name ASC"
     elif sort == "id_asc":
         sort_order = f"{table}.id ASC"
     elif sort == "id_desc":
@@ -143,41 +135,27 @@ async def list_terms(
 
     pool = await get_pool()
     async with pool.acquire() as conn:
-        if site:
+        if sort in ("videos_desc", "videos_asc"):
             sql = f"""
                 SELECT {select_cols}
                 FROM {table}
-                JOIN {join_table} ON {join_table}.{term_column} = {table}.id
-                JOIN videos ON videos.id = {join_table}.video_id
-                WHERE videos.site = $1 AND {table}.deleted_at IS NULL
+                LEFT JOIN {join_table} ON {join_table}.{term_column} = {table}.id
+                WHERE {table}.deleted_at IS NULL
                 {''.join(f' AND {clause}' for clause in extra_where)}
                 GROUP BY {group_cols}
                 ORDER BY {sort_order}
-                LIMIT $2 OFFSET $3
+                LIMIT $1 OFFSET $2
             """
-            base_params = [site, limit, offset]
         else:
-            if sort in ("videos_desc", "videos_asc"):
-                sql = f"""
-                    SELECT {select_cols}
-                    FROM {table}
-                    LEFT JOIN {join_table} ON {join_table}.{term_column} = {table}.id
-                    WHERE {table}.deleted_at IS NULL
-                    {''.join(f' AND {clause}' for clause in extra_where)}
-                    GROUP BY {group_cols}
-                    ORDER BY {sort_order}
-                    LIMIT $1 OFFSET $2
-                """
-            else:
-                sql = f"""
-                    SELECT {select_cols}
-                    FROM {table}
-                    WHERE {table}.deleted_at IS NULL
-                    {''.join(f' AND {clause}' for clause in extra_where)}
-                    ORDER BY {sort_order}
-                    LIMIT $1 OFFSET $2
-                """
-            base_params = [limit, offset]
+            sql = f"""
+                SELECT {select_cols}
+                FROM {table}
+                WHERE {table}.deleted_at IS NULL
+                {''.join(f' AND {clause}' for clause in extra_where)}
+                ORDER BY {sort_order}
+                LIMIT $1 OFFSET $2
+            """
+        base_params = [limit, offset]
 
         # Renumber extra placeholders sequentially after the base ones.
         for index, _ in enumerate(extra_params, start=len(base_params) + 1):

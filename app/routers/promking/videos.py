@@ -86,7 +86,7 @@ def build_gender_clause(
 
 def build_video_filters(
     *,
-    site: Site,
+    site: Site | None = None,
     q: str | None = None,
     actor: str | None = None,
     studio: str | None = None,
@@ -102,8 +102,8 @@ def build_video_filters(
     unit-tested without requiring Postgres.
     """
     joins: list[str] = []
-    where = ["videos.site = $1"]
-    params: list = [site]
+    where = ["1=1"]
+    params: list = []
 
     def add_param(value: str) -> str:
         params.append(value)
@@ -141,7 +141,7 @@ def build_video_filters(
     if related_to:
         joins.extend(
             [
-                "JOIN videos related_video ON related_video.site = videos.site",
+                "JOIN videos related_video ON 1=1",
                 "LEFT JOIN video_pornstars related_actors ON related_actors.video_id = related_video.id",
                 "LEFT JOIN video_pornstars current_actors ON current_actors.video_id = videos.id AND current_actors.pornstar_id = related_actors.pornstar_id",
                 "LEFT JOIN video_studios related_studios ON related_studios.video_id = related_video.id",
@@ -300,7 +300,7 @@ async def batch_add_taxonomy(payload: BatchAddTaxonomyRequest) -> BatchCountResp
 
 @router.get("", response_model=list[VideoListItem])
 async def list_videos(
-    site: Site = Query(..., description="fxv or pkt — required."),
+    site: Site | None = Query(None, description="Deprecated, ignored. Video catalog is now global."),
     limit: int = Query(24, ge=1, le=100000),
     offset: int = Query(0, ge=0),
     q: str | None = Query(None, description="Postgres FTS query over title."),
@@ -409,7 +409,7 @@ async def list_videos(
  
 @router.get("/count")
 async def count_videos(
-    site: Site = Query(..., description="Required so the admin counter scopes per-site."),
+    site: Site | None = Query(None, description="Deprecated, ignored. Video catalog is now global."),
     q: str | None = Query(None),
     actor: str | None = Query(None),
     studio: str | None = Query(None),
@@ -442,7 +442,7 @@ async def count_videos(
 @router.get("/{slug}", response_model=VideoDetail | None)
 async def get_video(
     slug: str,
-    site: Site = Query(...),
+    site: Site | None = Query(None, description="Deprecated, ignored. Video catalog is now global."),
     actor_gender: str | None = Query(
         None,
         description=(
@@ -455,14 +455,13 @@ async def get_video(
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT id, site, title, slug, thumbnail_url, preview_url,
+            SELECT id, title, slug, thumbnail_url, preview_url,
                    duration_seconds, views, created_at, updated_at,
                    source, source_url, embed_url, embed_type, qualities,
                    description
             FROM videos
-            WHERE site = $1 AND slug = $2
+            WHERE slug = $1
             """,
-            site,
             slug,
         )
         if row is None:
