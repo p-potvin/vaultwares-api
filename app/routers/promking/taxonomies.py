@@ -215,8 +215,8 @@ async def count_terms(
                 SELECT COUNT(DISTINCT {table}.id) AS total
                 FROM {table}
                 JOIN {join_table} ON {join_table}.{term_column} = {table}.id
-                JOIN videos ON videos.id = {join_table}.video_id
-                WHERE videos.site = $1 AND {table}.deleted_at IS NULL
+                JOIN video_sites ON video_sites.video_id = {join_table}.video_id
+                WHERE video_sites.site = $1 AND {table}.deleted_at IS NULL
                 {''.join(f' AND {clause}' for clause in extra_where)}
             """
             base_params = [site]
