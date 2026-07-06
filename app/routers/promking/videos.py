@@ -109,6 +109,9 @@ def build_video_filters(
         params.append(value)
         return f"${len(params)}"
 
+    if site:
+        joins.append("JOIN video_sites ON video_sites.video_id = videos.id")
+        where.append(f"video_sites.site = {add_param(site.value)}")
     if q:
         where.append(
             "to_tsvector('english', videos.title) @@ plainto_tsquery('english', "
@@ -409,7 +412,7 @@ async def list_videos(
  
 @router.get("/count")
 async def count_videos(
-    site: Site | None = Query(None, description="Deprecated, ignored. Video catalog is now global."),
+    site: Site | None = Query(None, description="Filter to videos belonging to the site."),
     q: str | None = Query(None),
     actor: str | None = Query(None),
     studio: str | None = Query(None),
@@ -442,7 +445,7 @@ async def count_videos(
 @router.get("/{slug}", response_model=VideoDetail | None)
 async def get_video(
     slug: str,
-    site: Site | None = Query(None, description="Deprecated, ignored. Video catalog is now global."),
+    site: Site | None = Query(None, description="Filter to ensure the video belongs to the site."),
     actor_gender: str | None = Query(
         None,
         description=(
@@ -453,16 +456,22 @@ async def get_video(
 ) -> VideoDetail | None:
     pool = await get_pool()
     async with pool.acquire() as conn:
+        where_clause = "WHERE slug = $1"
+        params = [slug]
+        if site:
+            where_clause += " AND EXISTS (SELECT 1 FROM video_sites WHERE video_id = videos.id AND site = $2)"
+            params.append(site.value)
+
         row = await conn.fetchrow(
-            """
+            f"""
             SELECT id, title, slug, thumbnail_url, preview_url,
                    duration_seconds, views, created_at, updated_at,
                    source, source_url, embed_url, embed_type, qualities,
                    description
             FROM videos
-            WHERE slug = $1
+            {where_clause}
             """,
-            slug,
+            *params,
         )
         if row is None:
             return None

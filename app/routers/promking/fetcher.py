@@ -775,8 +775,8 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                         views, description, qualities
                     )
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                    ON CONFLICT (source_url) DO NOTHING
-                    RETURNING id
+                    ON CONFLICT (source_url) DO UPDATE SET updated_at = now()
+                    RETURNING id, (xmax = 0) AS inserted
                     """,
                     v.get("source"),
                     v.get("sourceUrl"),
@@ -795,10 +795,25 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                 # Bad row — log it via skipped_bad, keep the run alive.
                 skipped_bad += 1
                 continue
-            if row is None:
-                # Duplicate (ON CONFLICT DO NOTHING). Not an error.
+                
+            if not row:
+                skipped_bad += 1
                 continue
-            added += 1
+                
+            video_id = int(row["id"])
+            if row["inserted"]:
+                added += 1
+
+            # Insert into video_sites to track many-to-many relationship
+            await conn.execute(
+                """
+                INSERT INTO video_sites (video_id, site)
+                VALUES ($1, $2)
+                ON CONFLICT (video_id, site) DO NOTHING
+                """,
+                video_id,
+                site,
+            )
             
             # --- TPDB Enrichment ---
             title = v.get("title")
