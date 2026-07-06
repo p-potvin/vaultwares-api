@@ -157,3 +157,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and the central [Brand Guidelines](https:
 GPL-3.0 (see [LICENSE](LICENSE))
 
 Built with ❤️ for privacy
+
+## Prom-King
+
+To enrich the Prom-King backlog with metadata, run the following script:
+
+```bash
+uv run scripts/enrich_backlog.py --limit 1000
+```
