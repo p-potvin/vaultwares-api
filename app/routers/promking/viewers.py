@@ -83,13 +83,16 @@ async def list_my_favourites(
     """Video favourites for the current viewer, newest-first."""
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # Post-migration schema (2026-07-04): videos.site was replaced with
+        # a video_sites(video_id, site) join table.
         rows = await conn.fetch(
             """
-            SELECT v.id, v.site::text AS site, v.slug, v.title, v.thumbnail_url,
+            SELECT v.id, vs.site::text AS site, v.slug, v.title, v.thumbnail_url,
                    v.duration_seconds, f.created_at AS added_at
               FROM favourites f
-              JOIN videos v ON v.id = f.video_id
-             WHERE f.user_id = $1 AND v.site = $2 AND v.disabled_at IS NULL
+              JOIN videos v       ON v.id = f.video_id
+              JOIN video_sites vs ON vs.video_id = v.id
+             WHERE f.user_id = $1 AND vs.site = $2 AND v.disabled_at IS NULL
              ORDER BY f.created_at DESC
              LIMIT $3 OFFSET $4
             """,
@@ -101,8 +104,10 @@ async def list_my_favourites(
         total = await conn.fetchval(
             """
             SELECT COUNT(*)::bigint
-              FROM favourites f JOIN videos v ON v.id = f.video_id
-             WHERE f.user_id = $1 AND v.site = $2 AND v.disabled_at IS NULL
+              FROM favourites f
+              JOIN videos v       ON v.id = f.video_id
+              JOIN video_sites vs ON vs.video_id = v.id
+             WHERE f.user_id = $1 AND vs.site = $2 AND v.disabled_at IS NULL
             """,
             user["id"],
             site,
@@ -124,7 +129,12 @@ async def toggle_video_favourite(
     pool = await get_pool()
     async with pool.acquire() as conn:
         video = await conn.fetchrow(
-            "SELECT id FROM videos WHERE site = $1 AND slug = $2 AND disabled_at IS NULL",
+            """
+            SELECT v.id
+              FROM videos v
+              JOIN video_sites vs ON vs.video_id = v.id
+             WHERE vs.site = $1 AND v.slug = $2 AND v.disabled_at IS NULL
+            """,
             site,
             slug,
         )

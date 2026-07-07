@@ -273,12 +273,23 @@ async def update_manual_cursor(site: str, source: str, page: int) -> None:
 
 
 async def check_existing_links(site: str, links: list[str]) -> set[str]:
+    """
+    Which of `links` are already known to us on this site? Since the schema
+    migration on 2026-07-04 videos are catalogued once and joined onto sites
+    via `video_sites`, so we JOIN through that instead of filtering on a
+    (now-removed) `videos.site` column.
+    """
     if not links:
         return set()
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT source_url FROM videos WHERE site = $1 AND source_url = ANY($2)",
+            """
+            SELECT v.source_url
+              FROM videos v
+              JOIN video_sites vs ON vs.video_id = v.id
+             WHERE vs.site = $1 AND v.source_url = ANY($2)
+            """,
             site,
             links,
         )
@@ -286,10 +297,19 @@ async def check_existing_links(site: str, links: list[str]) -> set[str]:
 
 
 async def get_existing_videos_meta(site: str) -> list[dict]:
+    """
+    Slug + duration for every video already surfaced on this site. Used by
+    the term-scoped fetcher's dedupe step. Same JOIN pattern as above.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT slug, duration_seconds FROM videos WHERE site = $1",
+            """
+            SELECT v.slug, v.duration_seconds
+              FROM videos v
+              JOIN video_sites vs ON vs.video_id = v.id
+             WHERE vs.site = $1
+            """,
             site,
         )
     return [{"slug": r["slug"], "duration_seconds": r["duration_seconds"]} for r in rows]

@@ -6,6 +6,13 @@ catalog-health signals, top-N tables, and a 7-day fetcher activity summary.
 Everything the DB tracks is exposed here; anything we don't track (likes,
 watch time, ad impressions) is intentionally absent so the client can flag
 it as "not tracked yet" rather than showing a zero that looks wrong.
+
+Schema note (2026-07-04 migration): `videos.site` was removed and replaced
+with a `video_sites(video_id, site)` join table so a video can be surfaced
+on multiple brands. Every "site" filter here now goes through
+`JOIN video_sites vs ON vs.video_id = v.id AND vs.site = $x`. When the
+caller passes `site=None` (global dashboard) we skip the join so counts
+aren't multiplied per site.
 """
 from __future__ import annotations
 
@@ -29,14 +36,30 @@ router = APIRouter(prefix="/stats", tags=["promking:stats"])
 TOP_N_LIMIT = 10  # Enough for a scannable table without dwarfing the page.
 
 
-def _scope_clause(site: Site | None, prefix: str = "") -> tuple[str, list]:
-    """Return (fragment, params) that scopes rows to a given site, or a
-    no-op fragment when site is None. `prefix` should be the table alias if
-    the query joins."""
+def _scope_videos(site: Site | None) -> tuple[str, str, list]:
+    """
+    Return `(join_sql, where_sql, params)` that scopes a `videos v ...`
+    query to `site`. When `site is None` returns a no-op no-join.
+
+    Callers must alias `videos` as `v` and put the JOIN fragment right
+    after `FROM videos v`. The WHERE fragment is combined with any other
+    conditions the query already has.
+    """
+    if site is None:
+        return "", "TRUE", []
+    return (
+        "JOIN video_sites vs ON vs.video_id = v.id",
+        "vs.site = $1",
+        [site],
+    )
+
+
+def _scope_runs(site: Site | None) -> tuple[str, list]:
+    """`fetch_runs.site` is still a real column (the migration only touched
+    videos), so this stays as a simple WHERE."""
     if site is None:
         return "TRUE", []
-    col = f"{prefix}site" if prefix else "site"
-    return f"{col} = $1", [site]
+    return "site = $1", [site]
 
 
 @router.get("", response_model=StatsResponse)
@@ -50,23 +73,33 @@ async def stats(
     ),
 ) -> StatsResponse:
     pool = await get_pool()
-    where_videos, videos_params = _scope_clause(site)
-    where_runs, runs_params = _scope_clause(site)
+    join_videos, where_videos, videos_params = _scope_videos(site)
+    where_runs, runs_params = _scope_runs(site)
 
     async with pool.acquire() as conn:
-        # ── Totals per site (pkt/oneporn/sexyprn always visible so the admin
-        # can spot data-import drift even when scoped). Not filtered by site. ─
+        # ── Totals per site (always cross-site so the admin can spot
+        # data-import drift even when scoped). Joined through video_sites so
+        # a single video that spans two brands is counted on each. ────────
         videos_total_rows = await conn.fetch(
-            "SELECT site::text AS site, COUNT(*) AS n FROM videos GROUP BY site"
+            """
+            SELECT vs.site::text AS site, COUNT(DISTINCT v.id) AS n
+              FROM videos v
+              JOIN video_sites vs ON vs.video_id = v.id
+             GROUP BY vs.site
+            """
         )
 
+        # ── Per-source × site breakdown. Same join model — a video on two
+        # brands with source=pornxp contributes to each brand's pornxp row.
         per_source_rows = await conn.fetch(
             f"""
-            SELECT site::text AS site, source, COUNT(*) AS n
-            FROM videos
-            WHERE {where_videos}
-            GROUP BY site, source
-            ORDER BY {'source' if site else 'site, source'}
+            SELECT vs2.site::text AS site, v.source, COUNT(DISTINCT v.id) AS n
+              FROM videos v
+              JOIN video_sites vs2 ON vs2.video_id = v.id
+              {join_videos}
+             WHERE {where_videos}
+             GROUP BY vs2.site, v.source
+             ORDER BY {'v.source' if site else 'vs2.site, v.source'}
             """,
             *videos_params,
         )
@@ -75,23 +108,24 @@ async def stats(
             f"""
             SELECT id, site::text AS site, source, started_at, finished_at,
                    fetched, added, skipped, errors
-            FROM fetch_runs
-            WHERE {where_runs}
-            ORDER BY started_at DESC
-            LIMIT 25
+              FROM fetch_runs
+             WHERE {where_runs}
+             ORDER BY started_at DESC
+             LIMIT 25
             """,
             *runs_params,
         )
 
-        # ── Views summary (only meaningful when scoped or aggregated globally) ─
+        # ── Views summary ────────────────────────────────────────────────
         views_row = await conn.fetchrow(
             f"""
             SELECT
-              COALESCE(SUM(views), 0)::bigint AS total,
-              COALESCE(AVG(views), 0)::float  AS avg_per_video,
-              COALESCE(MAX(views), 0)::bigint AS max_single,
-              COUNT(*) FILTER (WHERE views > 0)::bigint AS videos_with_views
-            FROM videos
+              COALESCE(SUM(v.views), 0)::bigint AS total,
+              COALESCE(AVG(v.views), 0)::float  AS avg_per_video,
+              COALESCE(MAX(v.views), 0)::bigint AS max_single,
+              COUNT(*) FILTER (WHERE v.views > 0)::bigint AS videos_with_views
+            FROM videos v
+            {join_videos}
             WHERE {where_videos}
             """,
             *videos_params,
@@ -102,11 +136,12 @@ async def stats(
             f"""
             SELECT
               COUNT(*)::bigint AS total,
-              COUNT(*) FILTER (WHERE disabled_at IS NOT NULL)::bigint AS disabled,
-              COUNT(*) FILTER (WHERE thumbnail_url IS NULL OR thumbnail_url = '')::bigint AS missing_thumbnail,
-              COUNT(*) FILTER (WHERE duration_seconds IS NULL OR duration_seconds = 0)::bigint AS missing_duration,
-              COUNT(*) FILTER (WHERE description IS NULL OR description = '')::bigint AS missing_description
-            FROM videos
+              COUNT(*) FILTER (WHERE v.disabled_at IS NOT NULL)::bigint AS disabled,
+              COUNT(*) FILTER (WHERE v.thumbnail_url IS NULL OR v.thumbnail_url = '')::bigint AS missing_thumbnail,
+              COUNT(*) FILTER (WHERE v.duration_seconds IS NULL OR v.duration_seconds = 0)::bigint AS missing_duration,
+              COUNT(*) FILTER (WHERE v.description IS NULL OR v.description = '')::bigint AS missing_description
+            FROM videos v
+            {join_videos}
             WHERE {where_videos}
             """,
             *videos_params,
@@ -121,9 +156,9 @@ async def stats(
               COALESCE(SUM(added), 0)::bigint   AS added,
               COALESCE(SUM(skipped), 0)::bigint AS skipped,
               COALESCE(SUM(errors), 0)::bigint  AS errors
-            FROM fetch_runs
-            WHERE {where_runs}
-              AND started_at >= NOW() - INTERVAL '7 days'
+              FROM fetch_runs
+             WHERE {where_runs}
+               AND started_at >= NOW() - INTERVAL '7 days'
             """,
             *runs_params,
         )
@@ -131,34 +166,31 @@ async def stats(
         # ── Top viewed videos ─────────────────────────────────────────────
         top_videos_rows = await conn.fetch(
             f"""
-            SELECT id, slug, title, views, duration_seconds, thumbnail_url
-            FROM videos
-            WHERE {where_videos}
-              AND views > 0
-            ORDER BY views DESC
-            LIMIT {TOP_N_LIMIT}
+            SELECT v.id, v.slug, v.title, v.views, v.duration_seconds, v.thumbnail_url
+              FROM videos v
+              {join_videos}
+             WHERE {where_videos}
+               AND v.views > 0
+             ORDER BY v.views DESC
+             LIMIT {TOP_N_LIMIT}
             """,
             *videos_params,
         )
 
         # ── Top taxonomies (by video count + view sum) ────────────────────
-        # Joining video-view sums lets us rank talent by attention, not just
-        # by "who has the most videos indexed". If a studio has 100 videos
-        # with 5 views each vs. one with 1 video and 500 views, the second
-        # tells the operator more about revenue.
         top_studios_rows = await _top_taxonomy(conn, "studios", "video_studios", "studio_id", site)
         top_pornstars_rows = await _top_taxonomy(conn, "pornstars", "video_pornstars", "pornstar_id", site)
         top_categories_rows = await _top_taxonomy(conn, "categories", "video_categories", "category_id", site)
 
-        # Favourites — user + anon rows combined. Not site-scoped (fav rows
-        # don't carry a site) — but the JOIN to videos means we still scope
-        # by the videos' site column.
+        # Favourites — user + anon rows combined. Scoped via video_sites
+        # when a site is set.
         favs_row = await conn.fetchrow(
             f"""
             SELECT COUNT(*)::bigint AS n
-            FROM favourites f
-            JOIN videos v ON v.id = f.video_id
-            WHERE {where_videos.replace('site', 'v.site')}
+              FROM favourites f
+              JOIN videos v ON v.id = f.video_id
+              {join_videos}
+             WHERE {where_videos}
             """,
             *videos_params,
         )
@@ -211,19 +243,20 @@ async def stats(
 
 async def _top_taxonomy(conn, term_table: str, join_table: str, term_fk: str, site: Site | None):
     """Return the top-N taxonomy rows by video count with a matching view sum.
-    Site-scoped via the videos join so per-site pages show only that site's
-    contribution — a studio may look big globally but small on one brand."""
-    where, params = _scope_clause(site, prefix="v.")
+    Site-scoped via the video_sites join so per-site pages show only that
+    brand's contribution."""
+    join_videos, where_videos, params = _scope_videos(site)
     sql = f"""
         SELECT t.id, t.name, t.slug,
                COUNT(DISTINCT v.id)::bigint AS video_count,
                COALESCE(SUM(v.views), 0)::bigint AS view_sum
-        FROM {term_table} t
-        JOIN {join_table} j ON j.{term_fk} = t.id
-        JOIN videos v ON v.id = j.video_id
-        WHERE {where}
-        GROUP BY t.id, t.name, t.slug
-        ORDER BY view_sum DESC, video_count DESC
-        LIMIT {TOP_N_LIMIT}
+          FROM {term_table} t
+          JOIN {join_table} j ON j.{term_fk} = t.id
+          JOIN videos v ON v.id = j.video_id
+          {join_videos}
+         WHERE {where_videos}
+         GROUP BY t.id, t.name, t.slug
+         ORDER BY view_sum DESC, video_count DESC
+         LIMIT {TOP_N_LIMIT}
     """
     return await conn.fetch(sql, *params)
