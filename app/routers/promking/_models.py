@@ -37,6 +37,10 @@ class BatchAddTaxonomyRequest(BatchVideoIdsRequest):
     term_ids: list[int] = Field(min_length=1)
 
 
+class BatchRemoveTaxonomyRequest(BatchAddTaxonomyRequest):
+    pass
+
+
 class BatchCountResponse(BaseModel):
     count: int
     skipped: list[int] = Field(default_factory=list)

@@ -7,6 +7,7 @@ import json
 from .db import get_pool
 from ._models import (
     BatchAddTaxonomyRequest,
+    BatchRemoveTaxonomyRequest,
     BatchChangeSourceRequest,
     BatchCountResponse,
     BatchError,
@@ -299,6 +300,29 @@ async def batch_add_taxonomy(payload: BatchAddTaxonomyRequest) -> BatchCountResp
         and not any((video_id, term_id) in inserted_pairs for term_id in payload.term_ids)
     ]
     return BatchCountResponse(count=len(inserted_pairs), skipped=skipped)
+
+
+@router.post("/batch/remove-taxonomy", response_model=BatchCountResponse)
+async def batch_remove_taxonomy(payload: BatchRemoveTaxonomyRequest) -> BatchCountResponse:
+    config = get_table_config(payload.kind)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            DELETE FROM {config.join_table}
+            WHERE video_id = ANY($1::int[]) AND {config.term_column} = ANY($2::int[])
+            RETURNING video_id, {config.term_column} AS term_id
+            """,
+            payload.video_ids,
+            payload.term_ids,
+        )
+    deleted_pairs = {(row["video_id"], row["term_id"]) for row in rows}
+    skipped = [
+        video_id
+        for video_id in payload.video_ids
+        if not any((video_id, term_id) in deleted_pairs for term_id in payload.term_ids)
+    ]
+    return BatchCountResponse(count=len(deleted_pairs), skipped=skipped)
 
 
 @router.get("", response_model=list[VideoListItem])

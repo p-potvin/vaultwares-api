@@ -53,7 +53,7 @@ async def fetch_tpdb_tags(title: str) -> dict | None:
             studios.append(network["name"])
             
     # Optional delay to respect rate limit (can be handled by the caller, but adding a small sleep here is safe)
-    await asyncio.sleep(0.3)
+    # await asyncio.sleep(0.3)
     
     return {
         "categories": categories,

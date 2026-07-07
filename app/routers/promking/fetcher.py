@@ -760,6 +760,22 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
     """
     if not videos:
         return 0
+        
+    sem = asyncio.Semaphore(20)
+
+    async def _enrich(v: dict) -> None:
+        title = v.get("title")
+        if not title:
+            return
+        async with sem:
+            tpdb_data = await fetch_tpdb_tags(title)
+            if tpdb_data:
+                v["categories"] = tpdb_data["categories"]
+                v["actors"] = tpdb_data["performers"]
+                v["studios"] = tpdb_data["studios"]
+
+    await asyncio.gather(*(_enrich(v) for v in videos))
+
     pool = await get_pool()
     added = 0
     skipped_bad = 0
@@ -837,16 +853,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                 site,
             )
             
-            # --- TPDB Enrichment ---
-            title = v.get("title")
-            if title:
-                tpdb_data = await fetch_tpdb_tags(title)
-                if tpdb_data:
-                    # Replace source's tags with TPDB curated tags
-                    v["categories"] = tpdb_data["categories"]
-                    v["actors"] = tpdb_data["performers"]
-                    v["studios"] = tpdb_data["studios"]
-            # -----------------------
+            # TPDB enrichment is now done concurrently before this loop
             
             try:
                 await _attach_terms(conn, int(row["id"]), v)
