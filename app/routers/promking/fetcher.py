@@ -117,17 +117,19 @@ async def run_fetcher(req: FetchRunRequest, bg: BackgroundTasks) -> FetchRunHand
     async with _runs_lock:
         _runs[run_id] = state
 
+    import json
     # Open the fetch_runs row first so the run is queryable while it streams.
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO fetch_runs (site, source, started_at)
-            VALUES ($1, $2, NOW())
+            INSERT INTO fetch_runs (site, source, started_at, log)
+            VALUES ($1, $2, NOW(), $3::jsonb)
             RETURNING id, started_at
             """,
             req.site,
             req.source,
+            json.dumps({"query": req.term_name or req.term_slug or ""})
         )
     state.db_run_id = int(row["id"])
 
@@ -191,7 +193,7 @@ async def recent_runs(limit: int = 25, site: Site | None = Query(None)) -> list[
             rows = await conn.fetch(
                 """
                 SELECT id, site::text AS site, source, started_at, finished_at,
-                       fetched, added, skipped, errors
+                       fetched, added, skipped, errors, log->>'query' AS query
                 FROM fetch_runs
                 WHERE site = $1
                 ORDER BY started_at DESC
@@ -204,7 +206,7 @@ async def recent_runs(limit: int = 25, site: Site | None = Query(None)) -> list[
             rows = await conn.fetch(
                 """
                 SELECT id, site::text AS site, source, started_at, finished_at,
-                       fetched, added, skipped, errors
+                       fetched, added, skipped, errors, log->>'query' AS query
                 FROM fetch_runs
                 ORDER BY started_at DESC
                 LIMIT $1
@@ -720,6 +722,7 @@ async def _finalize_run(state: RunState) -> None:
         log_blob = {
             "error": state.error,
             "stderr_tail": state.stderr_log,
+            "query": state.req.term_name or state.req.term_slug or "",
         }
         async with pool.acquire() as conn:
             await conn.execute(

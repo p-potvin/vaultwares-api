@@ -180,6 +180,7 @@ class FetchRunSummary(BaseModel):
     added: int
     skipped: int
     errors: int
+    query: Optional[str] = None
 
 
 class SettingsPayload(BaseModel):
