@@ -12,6 +12,26 @@ router = APIRouter(prefix="/tpdb", tags=["promking:tpdb"])
 
 TPDB_API_KEY = "LzLhKwMbmOnTIV6S576t5PUpELMot0yyRriatrgo517768e5"
 
+_tpdb_lock = asyncio.Lock()
+_current_delay = 0.1
+
+async def _make_tpdb_request(client: httpx.AsyncClient, url: str, params: dict, headers: dict) -> dict:
+    global _current_delay
+    async with _tpdb_lock:
+        await asyncio.sleep(_current_delay)
+        
+        resp = await client.get(url, params=params, headers=headers, timeout=10.0)
+        if resp.status_code == 429:
+            logger.warning("TPDB rate limit hit, waiting 3s...")
+            await asyncio.sleep(3.0)
+            resp = await client.get(url, params=params, headers=headers, timeout=10.0)
+            _current_delay = 0.1
+        else:
+            _current_delay = 0.1
+            
+        resp.raise_for_status()
+        return resp.json()
+
 async def fetch_tpdb_tags(title: str) -> dict | None:
     """
     Query the TPDB API to match a scene by title and extract its tags.
@@ -35,9 +55,7 @@ async def fetch_tpdb_tags(title: str) -> dict | None:
     
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(url, params=params, headers=headers, timeout=10.0)
-            resp.raise_for_status()
-            data = resp.json()
+            data = await _make_tpdb_request(client, url, params, headers)
     except Exception as e:
         logger.warning(f"TPDB query failed for '{title}': {e}")
         return None
@@ -109,9 +127,7 @@ async def resolve_tpdb_image(
 
     try:
         async with httpx.AsyncClient() as client:
-            resp = await client.get(url, params=params, headers=headers, timeout=10.0)
-            resp.raise_for_status()
-            data = resp.json()
+            data = await _make_tpdb_request(client, url, params, headers)
     except Exception as e:
         logger.warning(f"TPDB resolve failed for {type} '{q}': {e}")
         return {"imageUrl": None}
