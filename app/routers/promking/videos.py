@@ -347,6 +347,7 @@ async def list_videos(
     ),
     disabled: bool | None = Query(False, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
     source: str | None = Query(None, description="Filter by video source."),
+    sort: str = Query("default", description="Sort order: 'default', 'title_asc', 'title_desc', 'views_desc', 'views_asc', 'duration_desc', 'duration_asc', 'date_desc', 'date_asc'"),
 ) -> list[VideoListItem]:
     pool = await get_pool()
     where_sql, joins, params = build_video_filters(
@@ -366,6 +367,27 @@ async def list_videos(
     )
     params.extend(gender_params)
     actor_gender_clause = f" AND {gender_fragment}" if gender_fragment else ""
+    
+    # Determine sorting order
+    if sort == "title_asc":
+        sort_order = "videos.title ASC"
+    elif sort == "title_desc":
+        sort_order = "videos.title DESC"
+    elif sort == "views_desc":
+        sort_order = "videos.views DESC NULLS LAST"
+    elif sort == "views_asc":
+        sort_order = "videos.views ASC NULLS FIRST"
+    elif sort == "duration_desc":
+        sort_order = "videos.duration_seconds DESC NULLS LAST"
+    elif sort == "duration_asc":
+        sort_order = "videos.duration_seconds ASC NULLS FIRST"
+    elif sort == "date_desc":
+        sort_order = "videos.created_at DESC"
+    elif sort == "date_asc":
+        sort_order = "videos.created_at ASC"
+    else:  # default
+        sort_order = "videos.created_at DESC"
+        
     limit_param = f"${len(params) + 1}"
     offset_param = f"${len(params) + 2}"
     params.extend([limit, offset])
@@ -389,7 +411,7 @@ async def list_videos(
         {joins}
         WHERE {where_sql}
         GROUP BY videos.id
-        ORDER BY videos.created_at DESC
+        ORDER BY {sort_order}
         LIMIT {limit_param} OFFSET {offset_param}
     """
     async with pool.acquire() as conn:
