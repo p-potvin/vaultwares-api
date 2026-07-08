@@ -21,7 +21,7 @@ class PromKingLoginRequest(BaseModel):
 class PromKingLoginResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    expires_in: int = 86400
+    expires_in: int = 3600
 
 class PromKingRegisterRequest(BaseModel):
     email: str
@@ -31,7 +31,7 @@ class PromKingRegisterResponse(BaseModel):
     email: str
     access_token: str
     token_type: str = "bearer"
-    expires_in: int = 86400
+    expires_in: int = 3600
 
 class PromKingMeResponse(BaseModel):
     id: int
@@ -96,7 +96,7 @@ async def register(payload: PromKingRegisterRequest):
         )
         
     # Standard vaultwares JWT creation
-    token = _create_access_token(user_id, email, False)
+    token = _create_access_token(user_id, email, False, ttl_override=3600)
     return PromKingRegisterResponse(email=email, access_token=token)
 
 @router.post("/login", response_model=PromKingLoginResponse)
@@ -115,7 +115,7 @@ async def login(payload: PromKingLoginRequest):
             raise HTTPException(status_code=401, detail="Invalid email or password")
             
     is_admin = user["role"] == "admin"
-    token = _create_access_token(user["id"], user["email"], is_admin)
+    token = _create_access_token(user["id"], user["email"], is_admin, ttl_override=3600)
     return PromKingLoginResponse(access_token=token)
 
 @router.get("/me", response_model=PromKingMeResponse)

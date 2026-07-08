@@ -110,16 +110,17 @@ def _verify_api_key(raw_key: str, hashed_key: str) -> bool:
         return pwd_context.verify(API_KEY_PEPPER + raw_key, hashed_key)
     return secrets.compare_digest(_hash_api_key(raw_key), hashed_key)
 
-def _create_access_token(user_id: int, username: str, is_admin: bool) -> str:
+def _create_access_token(user_id: int, username: str, is_admin: bool, ttl_override: int = None) -> str:
     if not JWT_SECRET:
         raise HTTPException(status_code=500, detail="JWT secret is not configured")
     now = int(time.time())
+    ttl = ttl_override if ttl_override is not None else JWT_TTL_SECONDS
     payload = {
         "iss": JWT_ISSUER,
         "aud": JWT_AUDIENCE,
         "iat": now,
         "nbf": now,
-        "exp": now + max(60, JWT_TTL_SECONDS),
+        "exp": now + max(60, ttl),
         "sub": f"user:{user_id}",
         "uid": user_id,
         "usr": username,
