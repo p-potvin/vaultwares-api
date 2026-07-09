@@ -1,8 +1,10 @@
 import httpx
 import asyncio
+import json
 import logging
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Query, HTTPException
 from pydantic import BaseModel
+from typing import Literal
 from .db import get_pool
 from .taxonomies import slugify
 
@@ -75,19 +77,88 @@ async def fetch_tpdb_tags(title: str) -> dict | None:
         network = site.get("network")
         if network and network.get("name") and network["name"] != site["name"]:
             studios.append(network["name"])
-            
-    # Optional delay to respect rate limit (can be handled by the caller, but adding a small sleep here is safe)
-    # await asyncio.sleep(0.3)
+
+    # Persist the raw scene object to tpdb_scenes for future use
+    try:
+        pool = await get_pool()
+        tpdb_id = str(scene.get("id") or "")
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO tpdb_scenes (title, tpdb_id, data)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (tpdb_id) DO UPDATE SET data = EXCLUDED.data, title = EXCLUDED.title
+                """,
+                title, tpdb_id, json.dumps(scene)
+            )
+    except Exception as e:
+        logger.warning(f"Failed to persist TPDB scene for '{title}': {e}")
     
     return {
         "categories": categories,
         "performers": performers,
         "studios": studios,
+        "_scene": scene,
     }
 
 
 class TpdbResolveResponse(BaseModel):
     imageUrl: str | None
+
+
+class BatchItem(BaseModel):
+    type: Literal["performer", "studio"]
+    name: str
+
+
+class BatchRequest(BaseModel):
+    items: list[BatchItem]
+
+
+async def _backfill_single(type_: str, name: str, slug: str, row_id: int) -> None:
+    """Background task: fetch from TPDB and update the local DB for one missing image."""
+    endpoint = "performers" if type_ == "performer" else "sites"
+    url = f"https://api.theporndb.net/{endpoint}"
+    params = {"q": name, "limit": 1}
+    headers = {
+        "Authorization": f"Bearer {TPDB_API_KEY}",
+        "Accept": "application/json"
+    }
+    table = "pornstars" if type_ == "performer" else "studios"
+    try:
+        async with httpx.AsyncClient() as client:
+            data = await _make_tpdb_request(client, url, params, headers)
+        if not data or not data.get("data"):
+            return
+        items = data["data"]
+        match = next(
+            (i for i in items if i.get("image") or i.get("thumbnail") or i.get("face") or i.get("logo") or i.get("poster")),
+            items[0]
+        )
+        if type_ == "performer":
+            image_url = match.get("face") or match.get("thumbnail") or match.get("image")
+            gender = match.get("gender", "").lower()
+            if gender not in ("female", "male", "trans", "other"):
+                gender = "unknown"
+        else:
+            image_url = match.get("logo") or match.get("poster") or match.get("image") or match.get("thumbnail")
+            gender = None
+        if not image_url:
+            return
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if type_ == "performer" and gender and gender != "unknown":
+                await conn.execute(
+                    f"UPDATE {table} SET image_url = $1, gender = COALESCE(gender, $2::gender) WHERE id = $3",
+                    image_url, gender, row_id
+                )
+            else:
+                await conn.execute(
+                    f"UPDATE {table} SET image_url = $1 WHERE id = $2",
+                    image_url, row_id
+                )
+    except Exception as e:
+        logger.warning(f"Background backfill failed for {type_} '{name}': {e}")
 
 
 @router.get("/resolve", response_model=TpdbResolveResponse)
@@ -166,3 +237,60 @@ async def resolve_tpdb_image(
                 )
 
     return {"imageUrl": image_url}
+
+
+@router.post("/resolve-batch")
+async def resolve_tpdb_batch(
+    req: BatchRequest,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """
+    Batch resolver: look up image_url for a list of performers/studios from the
+    local DB and return whatever we already have. For any row that is missing an
+    image, enqueue a background TPDB fetch so the next request will hit the DB.
+
+    Response shape: { "results": { "performer:Name": url | null, ... } }
+    """
+    if not req.items:
+        return {"results": {}}
+
+    pool = await get_pool()
+
+    # Split by type so we can do two bulk lookups instead of N individual queries
+    performer_names = [i.name for i in req.items if i.type == "performer"]
+    studio_names    = [i.name for i in req.items if i.type == "studio"]
+    performer_slugs = [slugify(n) for n in performer_names]
+    studio_slugs    = [slugify(n) for n in studio_names]
+
+    async with pool.acquire() as conn:
+        ps_rows = await conn.fetch(
+            "SELECT id, slug, name, image_url FROM pornstars WHERE slug = ANY($1) AND deleted_at IS NULL",
+            performer_slugs
+        ) if performer_slugs else []
+        st_rows = await conn.fetch(
+            "SELECT id, slug, name, image_url FROM studios WHERE slug = ANY($1) AND deleted_at IS NULL",
+            studio_slugs
+        ) if studio_slugs else []
+
+    # Index by slug for O(1) lookup
+    ps_by_slug = {r["slug"]: r for r in ps_rows}
+    st_by_slug = {r["slug"]: r for r in st_rows}
+
+    results: dict[str, str | None] = {}
+    for item in req.items:
+        key = f"{item.type}:{item.name}"
+        slug = slugify(item.name)
+        row = ps_by_slug.get(slug) if item.type == "performer" else st_by_slug.get(slug)
+
+        if row and row["image_url"]:
+            results[key] = row["image_url"]
+        else:
+            # Return None immediately; trigger background fetch if we have a DB row
+            results[key] = None
+            if row:
+                background_tasks.add_task(
+                    _backfill_single,
+                    item.type, item.name, slug, row["id"]
+                )
+
+    return {"results": results}

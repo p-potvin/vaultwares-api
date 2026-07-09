@@ -862,7 +862,32 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                 await _attach_terms(conn, int(row["id"]), v)
             except Exception:
                 # Term attachment failure shouldn't roll back the video.
-                continue
+                pass
+
+            # Persist raw TPDB scene linked to this video
+            scene = v.get("_scene")
+            if scene:
+                try:
+                    import json as _json
+                    tpdb_id = str(scene.get("id") or "")
+                    if tpdb_id:
+                        await conn.execute(
+                            """
+                            INSERT INTO tpdb_scenes (tpdb_id, title, video_id, data)
+                            VALUES ($1, $2, $3, $4)
+                            ON CONFLICT (tpdb_id) DO UPDATE
+                              SET data = EXCLUDED.data,
+                                  title = EXCLUDED.title,
+                                  video_id = COALESCE(tpdb_scenes.video_id, EXCLUDED.video_id)
+                            """,
+                            tpdb_id,
+                            v.get("title", ""),
+                            video_id,
+                            _json.dumps(scene),
+                        )
+                except Exception as e:
+                    import logging as _log
+                    _log.getLogger(__name__).warning("Failed to persist TPDB scene for video %d: %s", video_id, e)
     if skipped_bad:
         # Surface to logs so the operator can audit dropped rows.
         import logging

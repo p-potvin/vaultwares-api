@@ -27,6 +27,7 @@ from api.routes_media import router as media_router
 from api.routes_llm import router as llm_router
 from api.routes_linksharing import router as linksharing_router
 from api.routes_projects import router as projects_router
+from api.routes_vault import router as vault_router
 
 from api.routes_media import ZIPPER_DEST_DIR
 
@@ -163,6 +164,7 @@ app.include_router(media_router)
 app.include_router(llm_router)
 app.include_router(linksharing_router)
 app.include_router(projects_router)
+app.include_router(vault_router)
 
 # Resiliency router imports
 _PROMKING_LOADED = False

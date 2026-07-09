@@ -81,6 +81,56 @@ class ProjectCommit(models.Model):
     class Meta:
         table = "project_commits"
 
+
+
+class VaultItem(models.Model):
+    id = fields.CharField(pk=True, max_length=64)
+    user = fields.ForeignKeyField("models.UserAccount", related_name="vault_items", on_delete=fields.CASCADE)
+    item_type = fields.CharField(max_length=32)
+    envelope_version = fields.IntField(default=1)
+    ciphertext = fields.TextField()
+    nonce = fields.TextField()
+    encapsulated_key = fields.TextField()
+    metadata = fields.JSONField(default=dict)
+    signature = fields.TextField()
+    author_device_id = fields.CharField(max_length=64, null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+    updated_at = fields.DatetimeField(auto_now=True)
+    deleted_at = fields.DatetimeField(null=True)
+
+    class Meta:
+        table = "vault_items"
+
+
+class DeviceRegistration(models.Model):
+    id = fields.CharField(pk=True, max_length=64)
+    user = fields.ForeignKeyField("models.UserAccount", related_name="devices", on_delete=fields.CASCADE)
+    device_name = fields.CharField(max_length=128)
+    device_class = fields.CharField(max_length=32)
+    platform = fields.CharField(max_length=128)
+    device_role = fields.CharField(max_length=16, default="trusted")
+    pqc_public_key = fields.TextField()
+    pqc_sig_public_key = fields.TextField()
+    approval_state = fields.CharField(max_length=16, default="pending")
+    approved_by = fields.CharField(max_length=64, null=True)
+    approval_sig = fields.TextField(null=True)
+    last_seen_at = fields.DatetimeField(null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "device_registrations"
+
+
+class SyncCursor(models.Model):
+    id = fields.CharField(pk=True, max_length=64)
+    user = fields.ForeignKeyField("models.UserAccount", related_name="sync_cursors", on_delete=fields.CASCADE)
+    device_id = fields.CharField(max_length=64)
+    last_sync_at = fields.DatetimeField(auto_now=True)
+    cursor = fields.TextField()
+
+    class Meta:
+        table = "sync_cursors"
+
 async def init_db(db_url: str):
     # Register both db and api_server modules for Tortoise ORM
     await Tortoise.init(

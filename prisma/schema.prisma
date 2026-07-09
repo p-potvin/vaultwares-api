@@ -45,3 +45,50 @@ model ProjectAlias {
   
   @@map("project_aliases")
 }
+
+
+model VaultItem {
+  id              String    @id @db.VarChar(64)
+  userId          Int       @map("user_id")
+  itemType        String    @map("item_type") @db.VarChar(32)
+  envelopeVersion Int       @default(1) @map("envelope_version")
+  ciphertext      String    @db.Text
+  nonce           String    @db.Text
+  encapsulatedKey String    @db.Text @map("encapsulated_key")
+  metadata        Json?     @db.JsonB
+  signature       String    @db.Text
+  authorDeviceId  String?   @db.VarChar(64) @map("author_device_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  deletedAt       DateTime? @map("deleted_at")
+
+  @@map("vault_items")
+}
+
+model DeviceRegistration {
+  id             String   @id @db.VarChar(64)
+  userId         Int      @map("user_id")
+  deviceName     String   @map("device_name") @db.VarChar(128)
+  deviceClass    String   @map("device_class") @db.VarChar(32)
+  platform       String   @db.VarChar(128)
+  deviceRole     String   @map("device_role") @db.VarChar(16)
+  pqcPublicKey   String   @db.Text @map("pqc_public_key")
+  pqcSigPublicKey String  @db.Text @map("pqc_sig_public_key")
+  approvalState  String   @map("approval_state") @db.VarChar(16)
+  approvedBy     String?  @db.VarChar(64) @map("approved_by")
+  approvalSig    String?  @db.Text @map("approval_sig")
+  lastSeenAt     DateTime? @map("last_seen_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@map("device_registrations")
+}
+
+model SyncCursor {
+  id         String   @id @db.VarChar(64)
+  userId     Int      @map("user_id")
+  deviceId   String   @db.VarChar(64)
+  lastSyncAt DateTime @default(now()) @map("last_sync_at")
+  cursor     String   @db.Text
+
+  @@map("sync_cursors")
+}
