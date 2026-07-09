@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+import time
 
 from fastapi import APIRouter, HTTPException, Path, Query
 
@@ -25,6 +26,16 @@ from ._models import (
 )
 
 router = APIRouter(prefix="/taxonomies", tags=["promking:taxonomies"])
+
+# --- "Hot" ranking tunables -------------------------------------------------
+# sort=hot (alias: trending) ranks terms by the recency-weighted popularity of
+# their videos, then applies a deterministic per-(term, time-bucket) jitter so a
+# low-traffic, mostly-static catalog still rotates instead of parking the same
+# handful of terms in the sidebar forever. It is intentionally NOT the default
+# sort — admin lists and A→Z directories still want name ASC.
+HOT_DECAY_SECONDS = 21 * 86400   # a video's weight decays ~1/e once it is 21 days old
+HOT_ROTATE_SECONDS = 6 * 3600    # the jitter reshuffles membership every 6 hours
+HOT_JITTER = 0.5                 # ±25% multiplicative wobble (0.75‥1.25) on the score
 
 
 @dataclass(frozen=True)
@@ -70,7 +81,7 @@ async def list_terms(
             "'null' (NULL only), 'has' (any non-null), 'all' (no filter, default)."
         ),
     ),
-    sort: str = Query("default", description="Sort order: 'default', 'name_asc', 'name_desc', 'videos_asc', 'videos_desc', 'id_asc', 'id_desc'"),
+    sort: str = Query("default", description="Sort order: 'default', 'name_asc', 'name_desc', 'videos_asc', 'videos_desc', 'id_asc', 'id_desc', 'hot' (alias 'trending')"),
 ) -> list[TermRef]:
     table_config = get_table_config(kind)
     table, join_table, term_column = (
@@ -130,12 +141,45 @@ async def list_terms(
         sort_order = f"{table}.id ASC"
     elif sort == "id_desc":
         sort_order = f"{table}.id DESC"
+    elif sort in ("hot", "trending"):
+        # Recency-weighted popularity: SUM over the term's live videos of
+        # (views+1) * exp(-age / decay). Multiplied by a stable per-(term, bucket)
+        # jitter so near-tied terms rotate every HOT_ROTATE_SECONDS instead of
+        # freezing. The md5→bit(32)→bigint idiom yields a deterministic
+        # 0‥4294967295 hash we normalise to [0,1].
+        bucket = int(time.time() // HOT_ROTATE_SECONDS)
+        bucket_ph = add_param(bucket)
+        jitter_lo = 1.0 - HOT_JITTER / 2.0
+        sort_order = (
+            "COALESCE(SUM("
+            "(videos.views + 1) * exp("
+            f"-GREATEST(EXTRACT(EPOCH FROM (now() - videos.created_at)), 0) / {HOT_DECAY_SECONDS}.0"
+            ")), 0) * ("
+            f"{jitter_lo} + {HOT_JITTER} * ("
+            f"('x' || substr(md5({table}.id::text || '-' || {bucket_ph}::text), 1, 8))::bit(32)::bigint::double precision"
+            " / 4294967295.0)"
+            f") DESC, {table}.name ASC"
+        )
     else:
         sort_order = f"{table}.name ASC"
 
     pool = await get_pool()
     async with pool.acquire() as conn:
-        if sort in ("videos_desc", "videos_asc"):
+        if sort in ("hot", "trending"):
+            # Join through to the videos so the score can read views + created_at.
+            # disabled videos are dropped in the JOIN so they don't inflate a term.
+            sql = f"""
+                SELECT {select_cols}
+                FROM {table}
+                LEFT JOIN {join_table} ON {join_table}.{term_column} = {table}.id
+                LEFT JOIN videos ON videos.id = {join_table}.video_id AND videos.disabled_at IS NULL
+                WHERE {table}.deleted_at IS NULL
+                {''.join(f' AND {clause}' for clause in extra_where)}
+                GROUP BY {group_cols}
+                ORDER BY {sort_order}
+                LIMIT $1 OFFSET $2
+            """
+        elif sort in ("videos_desc", "videos_asc"):
             sql = f"""
                 SELECT {select_cols}
                 FROM {table}
