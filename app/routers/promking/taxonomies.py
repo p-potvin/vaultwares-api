@@ -148,7 +148,9 @@ async def list_terms(
         # freezing. The md5→bit(32)→bigint idiom yields a deterministic
         # 0‥4294967295 hash we normalise to [0,1].
         bucket = int(time.time() // HOT_ROTATE_SECONDS)
-        bucket_ph = add_param(bucket)
+        # Bind as str: the seed is used as `$N::text` inside md5(), so Postgres
+        # infers the param type as text and asyncpg rejects a bare int (500).
+        bucket_ph = add_param(str(bucket))
         jitter_lo = 1.0 - HOT_JITTER / 2.0
         sort_order = (
             "COALESCE(SUM("
