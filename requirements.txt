@@ -10,6 +10,7 @@ accelerate>=0.26.0
 # ---- image processing ----
 Pillow>=10.0.0
 numpy>=1.24.0
+spandrel>=0.4.1
 
 # ---- 3D processing ----
 open3d>=0.18.0

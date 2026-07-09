@@ -64,3 +64,13 @@ def test_rclone_handoff_tries_google_then_proton(monkeypatch, tmp_path):
     assert calls[0][3] == "gdrive:python-zipper/"
     assert calls[1][3] == "proton:python-zipper/"
     assert not archive.exists()
+
+
+def test_default_rclone_handoff_includes_ovh_proton_remote():
+    routes_media = importlib.import_module("api.routes_media")
+
+    assert routes_media._configured_rclone_remotes() == [
+        "gdrive:python-zipper",
+        "proton_pc:python-zipper",
+        "proton:python-zipper",
+    ]

@@ -33,7 +33,7 @@ except ImportError:
 
 zipper_cancel_event = threading.Event()
 THROTTLE_SPEED_BPS = 5 * 1024 * 1024
-DEFAULT_RCLONE_REMOTES = "gdrive:python-zipper,proton:python-zipper"
+DEFAULT_RCLONE_REMOTES = "gdrive:python-zipper,proton_pc:python-zipper,proton:python-zipper"
 active_zipper_jobs = {}
 zipper_jobs_lock = threading.Lock()
 active_download_jobs = 0
