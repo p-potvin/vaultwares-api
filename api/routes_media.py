@@ -10,6 +10,7 @@ import zipfile
 import random
 import re
 import hashlib
+import subprocess
 from urllib.parse import urlparse, urljoin
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -32,6 +33,7 @@ except ImportError:
 
 zipper_cancel_event = threading.Event()
 THROTTLE_SPEED_BPS = 5 * 1024 * 1024
+DEFAULT_RCLONE_REMOTES = "gdrive:python-zipper,proton:python-zipper"
 active_zipper_jobs = {}
 zipper_jobs_lock = threading.Lock()
 active_download_jobs = 0
@@ -61,6 +63,29 @@ def throttle_chunk(chunk_size, start_time):
         min_time = chunk_size / THROTTLE_SPEED_BPS
         elapsed = time.time() - start_time
         if elapsed < min_time: time.sleep(min_time - elapsed)
+
+def _configured_rclone_remotes():
+    raw = os.environ.get("VAULTWARES_RCLONE_REMOTES") or os.environ.get("PYTHON_ZIPPER_RCLONE_REMOTES") or DEFAULT_RCLONE_REMOTES
+    return [remote.strip().rstrip("/") for remote in raw.split(",") if remote.strip()]
+
+def handoff_to_rclone(file_path):
+    if not file_path or not os.path.exists(file_path):
+        return {"status": "missing", "path": file_path}
+    for remote in _configured_rclone_remotes():
+        target = f"{remote}/"
+        try:
+            logger.info("[Media Pipeline] Moving completed download to rclone remote: %s", remote)
+            subprocess.run(
+                ["rclone", "move", file_path, target, "--create-empty-src-dirs"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=3600,
+            )
+            return {"status": "moved", "remote": remote}
+        except Exception as exc:
+            logger.error("[Media Pipeline] rclone handoff failed for %s: %s", remote, exc)
+    return {"status": "local", "path": file_path}
 
 def get_rd_token():
     try:
@@ -192,15 +217,12 @@ def _download_direct_file_worker(url, headers, file_corr_id):
                     f.write(chunk)
                     throttle_chunk(len(chunk), start)
         parent_id = file_corr_id.split("-")[0]
+        handoff_result = handoff_to_rclone(file_path)
         with zipper_jobs_lock:
             if parent_id in active_zipper_jobs:
                 active_zipper_jobs[parent_id].setdefault("archives", []).append(filename)
+                active_zipper_jobs[parent_id]["rclone"] = handoff_result
         update_job_progress(file_corr_id, increment_processed=True, increment_other=True)
-        try:
-            from app.services.zipper.post_download import trigger_post_download_pipeline
-            threading.Thread(target=trigger_post_download_pipeline, args=(file_path, url), daemon=True).start()
-        except Exception as e:
-            logger.error(f"Post-download trigger error: {e}")
     except Exception as e:
         logger.error(f"Download error: {e}")
         update_job_progress(file_corr_id, increment_processed=True)
@@ -254,19 +276,19 @@ def _download_and_zip_images_worker(url_slug, page_url, img_info_list, batch_siz
 
         if count > 0 and count % batch_size == 0:
             zip_writer.close()
-            try:
-                from app.services.zipper.post_download import trigger_post_download_pipeline
-                threading.Thread(target=trigger_post_download_pipeline, args=(zip_path, page_url), daemon=True).start()
-            except: pass
+            handoff_result = handoff_to_rclone(zip_path)
+            with zipper_jobs_lock:
+                if corr_id in active_zipper_jobs:
+                    active_zipper_jobs[corr_id]["rclone"] = handoff_result
             zip_writer = None
             count = 0
 
     if zip_writer:
         zip_writer.close()
-        try:
-            from app.services.zipper.post_download import trigger_post_download_pipeline
-            threading.Thread(target=trigger_post_download_pipeline, args=(zip_path, page_url), daemon=True).start()
-        except: pass
+        handoff_result = handoff_to_rclone(zip_path)
+        with zipper_jobs_lock:
+            if corr_id in active_zipper_jobs:
+                active_zipper_jobs[corr_id]["rclone"] = handoff_result
 
 @router.get("/health")
 def api_health():
@@ -285,7 +307,7 @@ async def api_healthz():
 
 @router.get("/api/jobs")
 def api_get_jobs():
-    with zipper_jobs_lock: return {"jobs": active_zipper_jobs}
+    with zipper_jobs_lock: return {"jobs": active_zipper_jobs, "source": "vaultwares-api"}
 
 @router.get("/api/upscaler/status")
 def api_upscaler_status():

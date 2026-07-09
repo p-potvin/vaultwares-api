@@ -121,7 +121,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="VaultWares API",
     description="Central API for VaultWares auth, DB-backed telemetry, monitor reads, logging, workflows, and media services.",
-    version="0.2.13",
+    version="0.2.14",
     lifespan=lifespan,
 )
 
@@ -190,5 +190,4 @@ try:
     _TELEMETRY_LOADED = True
 except Exception as err:
     logger.warning("Telemetry router not loaded: %s", err)
-
 

@@ -19,8 +19,11 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
+NOMOS_MODEL_NAME = '4xNomos8k_atd'
+PILLOW_MODEL_NAME = 'pillow-lanczos'
+
 # Model path: navigate from app/services/ -> vaultwares-api -> parent -> python-zipper/models/
-MODELS_DIR = os.path.abspath(os.path.join(
+MODELS_DIR = os.environ.get('PYTHON_ZIPPER_MODELS_DIR') or os.path.abspath(os.path.join(
     os.path.dirname(__file__),
     '..', '..', '..',
     'python-zipper', 'models'
@@ -50,23 +53,33 @@ class ImageUpscaler:
 
     def _scan_available_models(self):
         """Discover all .safetensors and .pth files in the models dir."""
-        self.available_models = []
+        discovered = []
         if not os.path.exists(MODELS_DIR):
+            self.available_models = [PILLOW_MODEL_NAME]
             return
         try:
             for f in os.listdir(MODELS_DIR):
                 if f.endswith('.safetensors') or f.endswith('.pth'):
                     model_name = f.rsplit('.', 1)[0]
-                    self.available_models.append(model_name)
+                    discovered.append(model_name)
                     logger.info(f'[Upscaler] Found model: {model_name}')
         except Exception as e:
             logger.error(f'[Upscaler] Failed to scan models directory: {e}')
+
+        ordered = []
+        if NOMOS_MODEL_NAME in discovered:
+            ordered.append(NOMOS_MODEL_NAME)
+        ordered.extend(sorted(name for name in discovered if name != NOMOS_MODEL_NAME))
+        ordered.append(PILLOW_MODEL_NAME)
+        self.available_models = ordered
 
     def get_available_models(self):
         return self.available_models
 
     def load_model(self, model_name: str):
         """Load a model via spandrel's universal ModelLoader."""
+        if model_name == PILLOW_MODEL_NAME:
+            return None
         if model_name in self.loaded_models:
             return self.loaded_models[model_name]
 
@@ -187,6 +200,15 @@ class ImageUpscaler:
         start_time = time.time()
 
         try:
+            if model_name == PILLOW_MODEL_NAME or model_name not in self.available_models:
+                img = Image.open(io.BytesIO(image_data))
+                if img.mode not in ('RGB', 'RGBA'):
+                    img = img.convert('RGB')
+                upscaled_img = img.resize((img.width * 4, img.height * 4), Image.Resampling.LANCZOS)
+                output = io.BytesIO()
+                upscaled_img.save(output, format='PNG', optimize=True)
+                return output.getvalue()
+
             model_info = self.load_model(model_name)
             model = model_info['model']
             scale = model_info['scale']
@@ -234,8 +256,8 @@ class ImageUpscaler:
             raise
 
     def is_available(self) -> bool:
-        """Check if upscaling is possible (CUDA + at least one model)."""
-        return self.device == 'cuda' and len(self.available_models) > 0
+        """Check if upscaling is possible with neural model or Pillow fallback."""
+        return len(self.available_models) > 0
 
     def get_stats(self):
         return {
