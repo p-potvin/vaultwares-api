@@ -121,7 +121,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="VaultWares API",
     description="Central API for VaultWares auth, DB-backed telemetry, monitor reads, logging, workflows, and media services.",
-    version="0.2.15",
+    version="0.2.16",
     lifespan=lifespan,
 )
 

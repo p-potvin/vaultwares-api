@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tpdb", tags=["promking:tpdb"])
 
 TPDB_API_KEY = "LzLhKwMbmOnTIV6S576t5PUpELMot0yyRriatrgo517768e5"
+TPDB_BATCH_BACKFILL_LIMIT = 25
 
 _tpdb_lock = asyncio.Lock()
 _current_delay = 0.1
@@ -277,6 +278,8 @@ async def resolve_tpdb_batch(
     st_by_slug = {r["slug"]: r for r in st_rows}
 
     results: dict[str, str | None] = {}
+    backfill_count = 0
+    enqueued: set[tuple[str, str]] = set()
     for item in req.items:
         key = f"{item.type}:{item.name}"
         slug = slugify(item.name)
@@ -287,10 +290,13 @@ async def resolve_tpdb_batch(
         else:
             # Return None immediately; trigger background fetch if we have a DB row
             results[key] = None
-            if row:
+            backfill_key = (item.type, slug)
+            if row and backfill_count < TPDB_BATCH_BACKFILL_LIMIT and backfill_key not in enqueued:
                 background_tasks.add_task(
                     _backfill_single,
                     item.type, item.name, slug, row["id"]
                 )
+                enqueued.add(backfill_key)
+                backfill_count += 1
 
     return {"results": results}

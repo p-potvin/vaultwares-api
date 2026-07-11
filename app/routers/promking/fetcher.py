@@ -68,6 +68,47 @@ _runs: dict[str, RunState] = {}
 _runs_lock = asyncio.Lock()
 
 
+async def _create_fetch_run_state(
+    *,
+    site: str,
+    source: str,
+    pages: int,
+    start_page: Optional[int] = None,
+    term_type: Optional[str] = None,
+    term_name: Optional[str] = None,
+    term_slug: Optional[str] = None,
+    fetch_all: bool = False,
+) -> tuple[RunState, datetime]:
+    run_id = uuid.uuid4().hex
+    state = RunState(
+        run_id=run_id,
+        site=site,
+        source=source,
+        pages=pages,
+        start_page=start_page,
+        term_type=term_type,
+        term_name=term_name,
+        term_slug=term_slug,
+        fetch_all=fetch_all,
+    )
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO fetch_runs (site, source, started_at, log)
+            VALUES ($1, $2, NOW(), $3::jsonb)
+            RETURNING id, started_at
+            """,
+            site,
+            source,
+            json.dumps({"query": term_name or term_slug or ""}),
+        )
+    state.db_run_id = int(row["id"])
+    async with _runs_lock:
+        _runs[run_id] = state
+    return state, row["started_at"]
+
+
 # ─── POST /fetcher/run ─────────────────────────────────────────────────────
 
 @router.post("/cron/reload")
@@ -97,14 +138,7 @@ async def list_cron_jobs() -> list[dict]:
 
 @router.post("/run", response_model=FetchRunHandle)
 async def run_fetcher(req: FetchRunRequest, bg: BackgroundTasks) -> FetchRunHandle:
-    if False:
-        pass
-    if False:
-        pass
-
-    run_id = uuid.uuid4().hex
-    state = RunState(
-        run_id=run_id,
+    state, started_at = await _create_fetch_run_state(
         site=req.site,
         source=req.source,
         pages=req.pages,
@@ -114,33 +148,15 @@ async def run_fetcher(req: FetchRunRequest, bg: BackgroundTasks) -> FetchRunHand
         term_slug=req.term_slug,
         fetch_all=req.fetch_all,
     )
-    async with _runs_lock:
-        _runs[run_id] = state
-
-    import json
-    # Open the fetch_runs row first so the run is queryable while it streams.
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO fetch_runs (site, source, started_at, log)
-            VALUES ($1, $2, NOW(), $3::jsonb)
-            RETURNING id, started_at
-            """,
-            req.site,
-            req.source,
-            json.dumps({"query": req.term_name or req.term_slug or ""})
-        )
-    state.db_run_id = int(row["id"])
 
     # Spawn the subprocess in the background.
     bg.add_task(_drive_subprocess, state)
     return FetchRunHandle(
-        run_id=run_id,
+        run_id=state.run_id,
         site=req.site,
         source=req.source,
         pages=req.pages,
-        started_at=row["started_at"],
+        started_at=started_at,
     )
 
 
@@ -344,6 +360,98 @@ def filter_duplicate_candidates(candidates: list[dict], existing_meta: list[dict
             seen_slugs.add(slug)
             
     return unique_candidates
+
+
+def _name_key(name: str) -> str:
+    return " ".join(str(name).strip().lower().split())
+
+
+def _unique_names(names: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for name in names:
+        clean = str(name).strip()
+        if not clean:
+            continue
+        key = _name_key(clean)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(clean)
+    return out
+
+
+def _merge_validated_term_names(
+    source_names: list[str],
+    local_matches: dict[str, str],
+    tpdb_names: list[str],
+) -> list[str]:
+    """
+    Keep exact local DB matches first, including old names that now point at a
+    merged primary. Unmatched scraped names are not trusted unless TPDB returns
+    them or a TPDB canonical replacement.
+    """
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    for name in _unique_names(source_names):
+        canonical = local_matches.get(_name_key(name))
+        if not canonical:
+            continue
+        key = _name_key(canonical)
+        if key not in seen:
+            ordered.append(canonical)
+            seen.add(key)
+
+    for name in _unique_names(tpdb_names):
+        key = _name_key(name)
+        if key not in seen:
+            ordered.append(name)
+            seen.add(key)
+
+    return ordered
+
+
+async def _fetch_local_term_matches(conn, table: str, names: list[str]) -> dict[str, str]:
+    keys = [_name_key(name) for name in names if str(name).strip()]
+    if not keys:
+        return {}
+    rows = await conn.fetch(
+        f"""
+        SELECT lower(match.name) AS source_key,
+               COALESCE(primary_term.name, match.name) AS canonical_name
+          FROM {table} AS match
+          LEFT JOIN {table} AS primary_term
+            ON primary_term.id = match.merged_into_id
+         WHERE lower(match.name) = ANY($1::text[])
+           AND (match.deleted_at IS NULL OR match.merged_into_id IS NOT NULL)
+        """,
+        keys,
+    )
+    return {str(r["source_key"]): str(r["canonical_name"]) for r in rows}
+
+
+async def _validate_video_terms(v: dict, actor_matches: dict[str, str], studio_matches: dict[str, str]) -> None:
+    source_actors = [str(n).strip() for n in (v.get("actors") or []) if str(n).strip()]
+    source_studios = [str(n).strip() for n in (v.get("studios") or []) if str(n).strip()]
+
+    exact_actors = _merge_validated_term_names(source_actors, actor_matches, [])
+    exact_studios = _merge_validated_term_names(source_studios, studio_matches, [])
+    needs_tpdb = (
+        len(exact_actors) < len(_unique_names(source_actors))
+        or len(exact_studios) < len(_unique_names(source_studios))
+        or (not source_actors and not source_studios)
+    )
+
+    tpdb_data = await fetch_tpdb_tags(v.get("title")) if needs_tpdb else None
+    tpdb_actors = tpdb_data["performers"] if tpdb_data else []
+    tpdb_studios = tpdb_data["studios"] if tpdb_data else []
+
+    v["actors"] = _merge_validated_term_names(source_actors, actor_matches, tpdb_actors)
+    v["studios"] = _merge_validated_term_names(source_studios, studio_matches, tpdb_studios)
+    if tpdb_data:
+        v["categories"] = _unique_names(tpdb_data["categories"])
+        v["_scene"] = tpdb_data.get("_scene")
 
 
 async def _run_subprocess_for_page(
@@ -722,7 +830,7 @@ async def _finalize_run(state: RunState) -> None:
         log_blob = {
             "error": state.error,
             "stderr_tail": state.stderr_log,
-            "query": state.req.term_name or state.req.term_slug or "",
+            "query": state.term_name or state.term_slug or "",
         }
         async with pool.acquire() as conn:
             await conn.execute(
@@ -764,24 +872,29 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
     if not videos:
         return 0
         
-    sem = asyncio.Semaphore(20)
-
-    async def _enrich(v: dict) -> None:
-        title = v.get("title")
-        if not title:
-            return
-        async with sem:
-            tpdb_data = await fetch_tpdb_tags(title)
-            if tpdb_data:
-                v["categories"] = tpdb_data["categories"]
-                v["actors"] = tpdb_data["performers"]
-                v["studios"] = tpdb_data["studios"]
-
-    await asyncio.gather(*(_enrich(v) for v in videos))
-
     pool = await get_pool()
     added = 0
     skipped_bad = 0
+    async with pool.acquire() as conn:
+        validation_inputs: list[tuple[dict[str, str], dict[str, str]]] = []
+        for v in videos:
+            actor_matches = await _fetch_local_term_matches(conn, "pornstars", v.get("actors") or [])
+            studio_matches = await _fetch_local_term_matches(conn, "studios", v.get("studios") or [])
+            validation_inputs.append((actor_matches, studio_matches))
+
+    tpdb_sem = asyncio.Semaphore(8)
+
+    async def _validate_with_limit(v: dict, actor_matches: dict[str, str], studio_matches: dict[str, str]) -> None:
+        async with tpdb_sem:
+            await _validate_video_terms(v, actor_matches, studio_matches)
+
+    await asyncio.gather(
+        *(
+            _validate_with_limit(v, actor_matches, studio_matches)
+            for v, (actor_matches, studio_matches) in zip(videos, validation_inputs)
+        )
+    )
+
     async with pool.acquire() as conn:
         for v in videos:
             slug = _slugify(v.get("title") or "")
@@ -911,14 +1024,33 @@ async def _attach_terms(conn, video_id: int, v: dict) -> None:
                 continue
             term = await conn.fetchrow(
                 f"""
-                INSERT INTO {table} (name, slug)
-                VALUES ($1, $2)
-                ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
-                RETURNING id
+                SELECT COALESCE(primary_term.id, {table}.id) AS id
+                  FROM {table}
+                  LEFT JOIN {table} AS primary_term
+                    ON primary_term.id = {table}.merged_into_id
+                 WHERE ({table}.slug = $1 OR lower({table}.name) = lower($2))
+                   AND ({table}.deleted_at IS NULL OR {table}.merged_into_id IS NOT NULL)
+                 ORDER BY ({table}.deleted_at IS NULL) DESC
+                 LIMIT 1
                 """,
-                name,
                 slug,
+                name,
             )
+            if not term:
+                term = await conn.fetchrow(
+                    f"""
+                    INSERT INTO {table} (name, slug)
+                    VALUES ($1, $2)
+                    ON CONFLICT (slug) DO UPDATE
+                       SET name = EXCLUDED.name
+                     WHERE {table}.deleted_at IS NULL
+                    RETURNING id
+                    """,
+                    name,
+                    slug,
+                )
+            if not term:
+                continue
             await conn.execute(
                 f"INSERT INTO {join} (video_id, {term_column})"
                 " VALUES ($1, $2) ON CONFLICT DO NOTHING",

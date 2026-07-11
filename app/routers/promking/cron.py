@@ -21,8 +21,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .db import get_pool
-from .fetcher import RunState, _drive_subprocess, _runs, _runs_lock
-import uuid
+from .fetcher import _create_fetch_run_state, _drive_subprocess
 
 log = logging.getLogger(__name__)
 
@@ -91,19 +90,11 @@ async def _reload_jobs() -> None:
 
 async def _scheduled_run(site: str, source: str, pages: int) -> None:
     """Kick off a fetch run with no SSE subscriber — pure background."""
-    run_id = uuid.uuid4().hex
-    state = RunState(run_id=run_id, site=site, source=source, pages=pages)
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "INSERT INTO fetch_runs (site, source, started_at) "
-            "VALUES ($1, $2, NOW()) RETURNING id",
-            site,
-            source,
-        )
-    state.db_run_id = int(row["id"])
-    async with _runs_lock:
-        _runs[run_id] = state
+    state, _started_at = await _create_fetch_run_state(
+        site=site,
+        source=source,
+        pages=pages,
+    )
     await _drive_subprocess(state)
 
 

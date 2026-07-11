@@ -1,13 +1,15 @@
 import pytest
 from pydantic import ValidationError
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.routers.promking._models import (
     BatchAddTaxonomyRequest,
     BatchMetadataUpdateRequest,
+    BatchTaxonomyMergeRequest,
     BatchTaxonomyGenderUpdateRequest,
     TermRef,
 )
-from app.routers.promking.taxonomies import get_table_config
+from app.routers.promking.taxonomies import batch_merge_terms, get_table_config
 from app.routers.promking.videos import build_metadata_update_clause
 
 
@@ -60,3 +62,21 @@ def test_metadata_update_clause_rejects_unknown_fields():
 def test_pornstar_gender_request_rejects_invalid_gender():
     with pytest.raises(ValidationError):
         BatchTaxonomyGenderUpdateRequest(updates=[{"pornstar_id": 1, "gender": "robot"}])
+
+
+@pytest.mark.anyio
+async def test_batch_merge_keeps_merged_term_names_as_aliases():
+    payload = BatchTaxonomyMergeRequest(primary_id=10, merge_from=[20, 30])
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow.return_value = {"id": 10}
+    mock_conn.fetchval.return_value = 7
+    mock_conn.fetch.return_value = [{"id": 20}, {"id": 30}]
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+    with patch("app.routers.promking.taxonomies.get_pool", return_value=mock_pool):
+        response = await batch_merge_terms(payload, "pornstars")
+
+    assert response.merged_count == 2
+    update_sql = mock_conn.fetch.call_args.args[0]
+    assert "merged_into_id = $2" in update_sql

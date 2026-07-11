@@ -70,7 +70,7 @@ def slugify(value: str) -> str:
 async def list_terms(
     kind: TaxonomyKind = Path(...),
     site: Site | None = Query(None, description="Deprecated, ignored. Taxonomies are global."),
-    limit: int = Query(100, ge=1, le=100000),
+    limit: int = Query(100, ge=1, le=50000),
     offset: int = Query(0, ge=0),
     q: str | None = Query(None, description="Fuzzy name search (ILIKE)."),
     gender: str | None = Query(
@@ -124,8 +124,6 @@ async def list_terms(
             if clauses:
                 extra_where.append("(" + " OR ".join(clauses) + ")")
 
-    pool = await get_pool()
-    pool = await get_pool()
     # Determine sorting order
     if sort == "default":
         sort_order = f"{table}.name ASC"
@@ -445,8 +443,16 @@ async def batch_merge_terms(
             merge_from,
         )
         deleted_rows = await conn.fetch(
-            f"UPDATE {config.table} SET deleted_at = now() WHERE id = ANY($1::int[]) AND deleted_at IS NULL RETURNING id",
+            f"""
+            UPDATE {config.table}
+               SET deleted_at = now(),
+                   merged_into_id = $2
+             WHERE id = ANY($1::int[])
+               AND deleted_at IS NULL
+             RETURNING id
+            """,
             merge_from,
+            payload.primary_id,
         )
     return BatchTaxonomyMergeResponse(
         merged_count=len(deleted_rows),
