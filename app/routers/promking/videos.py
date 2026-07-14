@@ -132,6 +132,10 @@ def build_video_filters(
         # non-correlated form is computed once and hashed — same rows (verified
         # identical via EXCEPT both ways), 130-240ms. Don't "tidy" these into
         # EXISTS.
+        #
+        # `deleted_at IS NULL` on each term: taxonomy deletion is a soft delete,
+        # so without it a search matches videos through a term the operator has
+        # already deleted.
         q_ts = add_param(q)
         q_like = add_param(f"%{q}%")
         where.append(
@@ -139,13 +143,13 @@ def build_video_filters(
             f"to_tsvector('english', videos.title) @@ plainto_tsquery('english', {q_ts})"
             " OR videos.id IN (SELECT q_vp.video_id FROM video_pornstars q_vp"
             "                    JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id"
-            f"                  WHERE q_p.name ILIKE {q_like})"
+            f"                  WHERE q_p.name ILIKE {q_like} AND q_p.deleted_at IS NULL)"
             " OR videos.id IN (SELECT q_vs.video_id FROM video_studios q_vs"
             "                    JOIN studios q_s ON q_s.id = q_vs.studio_id"
-            f"                  WHERE q_s.name ILIKE {q_like})"
+            f"                  WHERE q_s.name ILIKE {q_like} AND q_s.deleted_at IS NULL)"
             " OR videos.id IN (SELECT q_vc.video_id FROM video_categories q_vc"
             "                    JOIN categories q_c ON q_c.id = q_vc.category_id"
-            f"                  WHERE q_c.name ILIKE {q_like})"
+            f"                  WHERE q_c.name ILIKE {q_like} AND q_c.deleted_at IS NULL)"
             ")"
         )
     if actor:

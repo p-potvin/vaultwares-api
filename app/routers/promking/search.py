@@ -56,6 +56,11 @@ class SuggestResponse(BaseModel):
 
 # Only the table/column names vary between the three taxonomies, and they are
 # module constants rather than caller input — never interpolate user data here.
+#
+# `t.deleted_at IS NULL` is required, not decorative: taxonomy deletion is a soft
+# delete, and 206 pornstars / 45 studios are currently flagged. Without it the
+# typeahead offers terms the operator has already deleted (verified: it suggested
+# "Angel Youngs", deleted 2026-07-07), which /taxonomies correctly hides.
 _TAXONOMY_SQL = """
     SELECT t.name, t.slug, COUNT(DISTINCT lt.video_id)::int AS video_count
       FROM {term_table} t
@@ -63,6 +68,7 @@ _TAXONOMY_SQL = """
       JOIN videos v        ON v.id = lt.video_id AND v.disabled_at IS NULL
       JOIN video_sites vs  ON vs.video_id = v.id AND vs.site = $1
      WHERE t.name ILIKE $2
+       AND t.deleted_at IS NULL
      GROUP BY t.id, t.name, t.slug
      ORDER BY (t.name ILIKE $3) DESC, video_count DESC, t.name ASC
      LIMIT $4
