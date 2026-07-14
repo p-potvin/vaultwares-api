@@ -209,6 +209,46 @@ async def list_terms(
     return [TermRef(**dict(r)) for r in rows]
 
 
+@router.get("/{kind}/by-slug/{slug}", response_model=TermRef)
+async def get_term_by_slug(
+    kind: TaxonomyKind = Path(...),
+    slug: str = Path(...),
+) -> TermRef:
+    """
+    Resolve exactly one term by slug. 404 when it doesn't exist or is deleted.
+
+    Added because there was no such endpoint, and both callers were paying for
+    it. The admin's TermDetail *guessed*: it asked the list endpoint for
+    `q=<slug with dashes as spaces>` and took `list.find(exact) ?? list[0]`.
+    Measured against a copy of prod, that resolves 16,099 pornstars correctly
+    but leaves 950 unopenable ("no term with slug …", because the name never
+    ILIKE-matches the de-slugged guess — "April O'Neil" vs "april o neil") and
+    silently resolves 3 to the *wrong* term, where an edit would hit the wrong
+    row. The public taxonomy pages had no term lookup at all, so a deleted term
+    just rendered an empty page instead of redirecting.
+
+    Path is `/by-slug/{slug}` rather than `/{slug}`: `/{kind}/count` already
+    exists, and a bare `/{kind}/{slug}` would swallow it (and any future
+    sub-route) whenever a term's slug collided with the literal segment.
+    """
+    config = get_table_config(kind)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"SELECT id, name, slug{', gender' if config.has_gender else ''} "
+            f"FROM {config.table} WHERE slug = $1 AND deleted_at IS NULL",
+            slug,
+        )
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No {kind[:-1]} with slug '{slug}'")
+    return TermRef(
+        id=row["id"],
+        name=row["name"],
+        slug=row["slug"],
+        gender=row["gender"] if config.has_gender else None,
+    )
+
+
 @router.get("/{kind}/count")
 async def count_terms(
     kind: TaxonomyKind = Path(...),

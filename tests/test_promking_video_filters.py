@@ -85,6 +85,30 @@ def test_build_video_filters_q_does_not_join_taxonomy_tables():
     assert "JOIN video_categories" not in joins_sql
 
 
+def test_build_video_filters_taxonomy_filters_exclude_deleted_terms():
+    """
+    Taxonomy deletion is soft. Without these clauses a deleted term kept serving
+    its whole catalogue — /pornstar/angel-youngs, deleted 2026-07-07, still
+    returned 281 videos.
+    """
+    where_sql, _joins, _params = build_video_filters(
+        site="fxv", actor="jane-star", studio="sample-studio", category="trending-hd"
+    )
+
+    assert "actor_terms.deleted_at IS NULL" in where_sql
+    assert "studio_terms.deleted_at IS NULL" in where_sql
+    assert "category_terms.deleted_at IS NULL" in where_sql
+
+
+def test_build_video_filters_q_excludes_deleted_terms():
+    """q must not match videos through a term the operator deleted."""
+    where_sql, _joins, _params = build_video_filters(site="fxv", q="angel youngs")
+
+    assert "q_p.deleted_at IS NULL" in where_sql
+    assert "q_s.deleted_at IS NULL" in where_sql
+    assert "q_c.deleted_at IS NULL" in where_sql
+
+
 def test_build_video_filters_disabled_and_source():
     # Test disabled=False, source="pornxp"
     where_sql, joins_sql, params = build_video_filters(

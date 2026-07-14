@@ -159,7 +159,11 @@ def build_video_filters(
                 "JOIN pornstars actor_terms ON actor_terms.id = actor_filter.pornstar_id",
             ]
         )
+        # deleted_at: taxonomy deletion is soft, so without this a deleted
+        # pornstar's page kept serving her whole catalogue (verified:
+        # /pornstar/angel-youngs, deleted 2026-07-07, still returned 281 videos).
         where.append(f"actor_terms.slug = {add_param(actor)}")
+        where.append("actor_terms.deleted_at IS NULL")
     if studio:
         joins.extend(
             [
@@ -168,6 +172,7 @@ def build_video_filters(
             ]
         )
         where.append(f"studio_terms.slug = {add_param(studio)}")
+        where.append("studio_terms.deleted_at IS NULL")
     if category:
         joins.extend(
             [
@@ -176,6 +181,7 @@ def build_video_filters(
             ]
         )
         where.append(f"category_terms.slug = {add_param(category)}")
+        where.append("category_terms.deleted_at IS NULL")
     if related_to:
         joins.extend(
             [
@@ -536,7 +542,13 @@ async def get_video(
 ) -> VideoDetail | None:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        where_clause = "WHERE slug = $1"
+        # `disabled_at IS NULL` is the whole point of disabling. Without it a
+        # video "deleted" in the admin stayed fully served and playable at its
+        # own URL — only unlinked from listings and the sitemap. 307 videos were
+        # in that state, the oldest disabled 9 days, including anything pulled
+        # for a takedown. Callers that need disabled rows (the admin) use the
+        # list endpoint's explicit `disabled` param.
+        where_clause = "WHERE slug = $1 AND disabled_at IS NULL"
         params = [slug]
         if site:
             where_clause += " AND EXISTS (SELECT 1 FROM video_sites WHERE video_id = videos.id AND site = $2)"
