@@ -252,18 +252,25 @@ async def get_term_by_slug(
 @router.get("/{kind}/count")
 async def count_terms(
     kind: TaxonomyKind = Path(...),
-    site: Site | None = Query(None),
+    site: Site | None = Query(None, description="Deprecated, ignored. Taxonomies are global."),
     q: str | None = Query(None),
     gender: str | None = Query(None),
 ) -> dict:
-    """Count rows matching the same filters as list_terms. Cheap path the
-    admin uses to render proper pagination + a 'matching X of Y' counter."""
+    """
+    Count rows matching the same filters as list_terms. Cheap path the admin
+    uses to render proper pagination + a 'matching X of Y' counter.
+
+    `site` is accepted and ignored, exactly as list_terms does. It used to be
+    honoured here while list_terms ignored it, so the count and the list it
+    paginates disagreed: count(site=fxv) said 9,972 pornstars while the list
+    returned all 17,057. The admin pager computed ceil(9972/50)=200 pages over
+    342 pages of data and simply stopped near 10k — though a hand-typed offset
+    still returned rows, because the rows were always there. A count that
+    doesn't match its list is not a count.
+    """
     table_config = get_table_config(kind)
-    table, join_table, term_column = (
-        table_config.table,
-        table_config.join_table,
-        table_config.term_column,
-    )
+    # Only `table` is needed now that the site join is gone.
+    table = table_config.table
 
     extra_where: list[str] = []
     extra_params: list = []
@@ -294,24 +301,15 @@ async def count_terms(
 
     pool = await get_pool()
     async with pool.acquire() as conn:
-        if site:
-            sql = f"""
-                SELECT COUNT(DISTINCT {table}.id) AS total
-                FROM {table}
-                JOIN {join_table} ON {join_table}.{term_column} = {table}.id
-                JOIN video_sites ON video_sites.video_id = {join_table}.video_id
-                WHERE video_sites.site = $1 AND {table}.deleted_at IS NULL
-                {''.join(f' AND {clause}' for clause in extra_where)}
-            """
-            base_params = [site]
-        else:
-            sql = f"""
-                SELECT COUNT(*) AS total
-                FROM {table}
-                WHERE {table}.deleted_at IS NULL
-                {''.join(f' AND {clause}' for clause in extra_where)}
-            """
-            base_params = []
+        # No site branch: list_terms has none either, and the pager needs the two
+        # to agree. See the docstring.
+        sql = f"""
+            SELECT COUNT(*) AS total
+            FROM {table}
+            WHERE {table}.deleted_at IS NULL
+            {''.join(f' AND {clause}' for clause in extra_where)}
+        """
+        base_params: list = []
         for index, _ in enumerate(extra_params, start=len(base_params) + 1):
             sql = sql.replace(f"__p{index - len(base_params)}__", f"${index}", 1)
         total = await conn.fetchval(sql, *base_params, *extra_params)
