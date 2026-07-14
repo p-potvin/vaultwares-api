@@ -152,10 +152,16 @@ async def merge_favourites(
         # DISTINCT guards against a video carrying duplicate video_sites rows.
         # ON CONFLICT DO NOTHING relies on favourites_user_video_uniq
         # (migration 0006) and is what makes the re-run a no-op.
+        #
+        # `$1::int` is load-bearing — do not drop the cast. In an INSERT ... SELECT
+        # the select list's types are resolved before they're matched to the target
+        # columns, so a bare `$1` gives Postgres no context to infer from; asyncpg
+        # sends it untyped, it defaults to text, and the statement dies with
+        # 'column "user_id" is of type integer but expression is of type text'.
         inserted = await conn.fetch(
             """
             INSERT INTO favourites (user_id, video_id)
-            SELECT DISTINCT $1, v.id
+            SELECT DISTINCT $1::int, v.id
               FROM videos v
               JOIN video_sites vs ON vs.video_id = v.id
              WHERE vs.site = $2
