@@ -114,9 +114,39 @@ def build_video_filters(
         joins.append("JOIN video_sites ON video_sites.video_id = videos.id")
         where.append(f"video_sites.site = {add_param(site)}")
     if q:
+        # Match the title *and* the names of anything linked to the video.
+        #
+        # Title-only FTS made the most common tube queries return nothing: a
+        # search for "brazzers" found 0 videos while the Brazzers studio had 17
+        # linked, and "Chloe Temple" found 30 of her 217. Real search_logs rows
+        # show users hitting exactly this ("brazzers" -> 1, "bangbros" -> 0).
+        #
+        # Subqueries, not JOINs: joining the taxonomy tables here would multiply
+        # a video row once per linked pornstar/studio/category and corrupt both
+        # the result set and /count.
+        #
+        # And deliberately non-correlated `IN (SELECT ...)` rather than
+        # `EXISTS (... WHERE x.video_id = videos.id)`. The correlated form makes
+        # Postgres re-run a 17k-row ILIKE scan of `pornstars` per candidate video:
+        # measured against a copy of prod (69k videos), counts took 24-33s. The
+        # non-correlated form is computed once and hashed — same rows (verified
+        # identical via EXCEPT both ways), 130-240ms. Don't "tidy" these into
+        # EXISTS.
+        q_ts = add_param(q)
+        q_like = add_param(f"%{q}%")
         where.append(
-            "to_tsvector('english', videos.title) @@ plainto_tsquery('english', "
-            f"{add_param(q)})"
+            "("
+            f"to_tsvector('english', videos.title) @@ plainto_tsquery('english', {q_ts})"
+            " OR videos.id IN (SELECT q_vp.video_id FROM video_pornstars q_vp"
+            "                    JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id"
+            f"                  WHERE q_p.name ILIKE {q_like})"
+            " OR videos.id IN (SELECT q_vs.video_id FROM video_studios q_vs"
+            "                    JOIN studios q_s ON q_s.id = q_vs.studio_id"
+            f"                  WHERE q_s.name ILIKE {q_like})"
+            " OR videos.id IN (SELECT q_vc.video_id FROM video_categories q_vc"
+            "                    JOIN categories q_c ON q_c.id = q_vc.category_id"
+            f"                  WHERE q_c.name ILIKE {q_like})"
+            ")"
         )
     if actor:
         joins.extend(
