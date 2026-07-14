@@ -230,6 +230,38 @@ class FetchActivity(BaseModel):
     errors: int
 
 
+class CatalogGrowth(BaseModel):
+    added_24h: int
+    added_7d: int
+    added_30d: int
+
+
+class TpdbEnrichment(BaseModel):
+    enriched_count: int
+    enrichment_pct: float
+
+
+class DiscoveryHealthStats(BaseModel):
+    no_categories: int
+    no_pornstars: int
+    no_studios: int
+
+
+class SearchQuerySummary(BaseModel):
+    query: str
+    n: int
+
+
+class DeadEndSearchSummary(BaseModel):
+    query: str
+    n: int
+
+
+class ConversionSummary(BaseModel):
+    total_conversions: int
+    total_payout: float
+
+
 class StatsResponse(BaseModel):
     videos_total: dict[str, int] = Field(default_factory=dict)  # site -> count
     videos_per_source: list[dict] = Field(default_factory=list)
@@ -243,8 +275,57 @@ class StatsResponse(BaseModel):
     top_pornstars: list[TopTermRef] = Field(default_factory=list)
     top_categories: list[TopTermRef] = Field(default_factory=list)
     favourites_total: int = 0
+    # Added in v0.3.0
+    catalog_growth: Optional[CatalogGrowth] = None
+    tpdb_enrichment: Optional[TpdbEnrichment] = None
+    discovery_health: Optional[DiscoveryHealthStats] = None
+    fetch_error_rate_7d: float = 0.0
+    top_searches: list[SearchQuerySummary] = Field(default_factory=list)
+    top_dead_end_searches: list[DeadEndSearchSummary] = Field(default_factory=list)
+    conversions: Optional[ConversionSummary] = None
+
+
+class SearchLogRequest(BaseModel):
+    site: Site
+    query: str
+    results_count: int
+
+
+class AdClickRequest(BaseModel):
+    site: Site
+    ad_id: str
+    placement: Optional[str] = None
+
+
+class VideoReactionRequest(BaseModel):
+    anon_id: Optional[str] = None
+    user_id: Optional[int] = None
+    reaction_type: str  # 'like' or 'dislike'
+
+
+class VideoPlayRequest(BaseModel):
+    site: Site
+    anon_id: Optional[str] = None
+    user_id: Optional[int] = None
+    duration_watched: Optional[int] = None
+    completed: int = 0  # 0 or 1
+
+
+class PostbackRequest(BaseModel):
+    site: Site
+    offer_id: Optional[str] = None
+    offer_name: Optional[str] = None
+    aff_click_id: Optional[str] = None
+    transaction_id: Optional[str] = None
+    payout: Optional[str] = None
+    currency: Optional[str] = None
+    source: Optional[str] = None
+    ip: Optional[str] = None
+    ran: Optional[str] = None
+    raw_params: dict
 
 
 class QueryRequest(BaseModel):
     sql: str
+
 

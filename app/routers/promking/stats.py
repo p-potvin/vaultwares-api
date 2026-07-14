@@ -28,6 +28,12 @@ from ._models import (
     TopTermRef,
     TopVideoRef,
     ViewsSummary,
+    CatalogGrowth,
+    TpdbEnrichment,
+    DiscoveryHealthStats,
+    SearchQuerySummary,
+    DeadEndSearchSummary,
+    ConversionSummary,
 )
 
 router = APIRouter(prefix="/stats", tags=["promking:stats"])
@@ -195,6 +201,103 @@ async def stats(
             *videos_params,
         )
 
+        # ── Catalog Growth Velocity ──────────────────────────────────────
+        growth_row = await conn.fetchrow(
+            f"""
+            SELECT
+              COUNT(*) FILTER (WHERE v.created_at >= NOW() - INTERVAL '1 day')::bigint AS added_24h,
+              COUNT(*) FILTER (WHERE v.created_at >= NOW() - INTERVAL '7 days')::bigint AS added_7d,
+              COUNT(*) FILTER (WHERE v.created_at >= NOW() - INTERVAL '30 days')::bigint AS added_30d
+            FROM videos v
+            {join_videos}
+            WHERE {where_videos}
+            """,
+            *videos_params,
+        )
+
+        # ── TPDB Enrichment ──────────────────────────────────────────────
+        tpdb_row = await conn.fetchrow(
+            f"""
+            SELECT
+              COUNT(DISTINCT ts.video_id)::bigint AS enriched_count,
+              (COUNT(DISTINCT ts.video_id) * 100.0 / NULLIF(COUNT(DISTINCT v.id), 0))::float AS enrichment_pct
+            FROM videos v
+            {join_videos}
+            LEFT JOIN tpdb_scenes ts ON ts.video_id = v.id
+            WHERE {where_videos}
+            """,
+            *videos_params,
+        )
+
+        # ── Discovery Health ──────────────────────────────────────────────
+        discovery_row = await conn.fetchrow(
+            f"""
+            SELECT
+              COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM video_categories vc WHERE vc.video_id = v.id))::bigint AS no_categories,
+              COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM video_pornstars vp WHERE vp.video_id = v.id))::bigint AS no_pornstars,
+              COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM video_studios vs WHERE vs.video_id = v.id))::bigint AS no_studios
+            FROM videos v
+            {join_videos}
+            WHERE {where_videos}
+            """,
+            *videos_params,
+        )
+
+        # ── Fetch Error Rate 7d ──────────────────────────────────────────
+        error_rate_row = await conn.fetchrow(
+            f"""
+            SELECT
+              (COUNT(*) FILTER (WHERE errors > 0) * 100.0 / NULLIF(COUNT(*), 0))::float AS run_error_rate
+            FROM fetch_runs
+            WHERE {where_runs}
+              AND started_at >= NOW() - INTERVAL '7 days'
+            """,
+            *runs_params,
+        )
+
+        # ── Search Logs & Dead-ends ──────────────────────────────────────
+        search_where = "TRUE"
+        search_params = []
+        if site:
+            search_where = "site = $1"
+            search_params = [site]
+
+        top_searches_rows = await conn.fetch(
+            f"""
+            SELECT query, COUNT(*)::bigint AS n
+            FROM search_logs
+            WHERE {search_where}
+            GROUP BY query
+            ORDER BY n DESC, query ASC
+            LIMIT 10
+            """,
+            *search_params,
+        )
+
+        top_dead_end_rows = await conn.fetch(
+            f"""
+            SELECT query, COUNT(*)::bigint AS n
+            FROM search_logs
+            WHERE {search_where} AND results_count = 0
+            GROUP BY query
+            ORDER BY n DESC, query ASC
+            LIMIT 10
+            """,
+            *search_params,
+        )
+
+        # ── Conversions & Payouts ────────────────────────────────────────
+        conversion_row = await conn.fetchrow(
+            f"""
+            SELECT
+              COUNT(*)::bigint AS total_conversions,
+              COALESCE(SUM(coalesce(nullif(payout, ''), '0')::float), 0.0)::float AS total_payout
+            FROM postbacks
+            WHERE {search_where}
+            """,
+            *search_params,
+        )
+
     views = ViewsSummary(
         total=int(views_row["total"] or 0),
         avg_per_video=float(views_row["avg_per_video"] or 0.0),
@@ -238,6 +341,27 @@ async def stats(
         top_pornstars=[TopTermRef(**dict(r)) for r in top_pornstars_rows],
         top_categories=[TopTermRef(**dict(r)) for r in top_categories_rows],
         favourites_total=int(favs_row["n"] or 0),
+        catalog_growth=CatalogGrowth(
+            added_24h=int(growth_row["added_24h"] or 0),
+            added_7d=int(growth_row["added_7d"] or 0),
+            added_30d=int(growth_row["added_30d"] or 0),
+        ),
+        tpdb_enrichment=TpdbEnrichment(
+            enriched_count=int(tpdb_row["enriched_count"] or 0),
+            enrichment_pct=float(tpdb_row["enrichment_pct"] or 0.0),
+        ),
+        discovery_health=DiscoveryHealthStats(
+            no_categories=int(discovery_row["no_categories"] or 0),
+            no_pornstars=int(discovery_row["no_pornstars"] or 0),
+            no_studios=int(discovery_row["no_studios"] or 0),
+        ),
+        fetch_error_rate_7d=float(error_rate_row["run_error_rate"] or 0.0),
+        top_searches=[SearchQuerySummary(query=r["query"], n=int(r["n"])) for r in top_searches_rows],
+        top_dead_end_searches=[DeadEndSearchSummary(query=r["query"], n=int(r["n"])) for r in top_dead_end_rows],
+        conversions=ConversionSummary(
+            total_conversions=int(conversion_row["total_conversions"] or 0),
+            total_payout=float(conversion_row["total_payout"] or 0.0),
+        ),
     )
 
 
