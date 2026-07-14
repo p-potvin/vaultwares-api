@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .auth import get_current_promking_user
 from .db import get_pool
@@ -47,6 +47,16 @@ class FavouriteListResponse(BaseModel):
 class ToggleFavouriteResponse(BaseModel):
     favourited: bool
     count: int
+
+
+class MergeFavouritesRequest(BaseModel):
+    site: Site
+    slugs: list[str] = Field(default_factory=list, max_length=500)
+
+
+class MergeFavouritesResponse(BaseModel):
+    merged: int
+    total: int
 
 
 class UserRow(BaseModel):
@@ -115,6 +125,55 @@ async def list_my_favourites(
     return FavouriteListResponse(videos=[FavouriteVideo(**dict(r)) for r in rows], total=int(total or 0))
 
 
+@router.post("/me/favourites/merge", response_model=MergeFavouritesResponse)
+async def merge_favourites(
+    payload: MergeFavouritesRequest,
+    user: dict = Depends(get_current_promking_user),
+) -> MergeFavouritesResponse:
+    """
+    Adopt a guest's localStorage favourites into their account.
+
+    Called once on login/register by the tube-site client. Additive and
+    idempotent — never removes a favourite the account already has, and
+    re-running with the same slugs is a no-op. Deliberately one round-trip
+    rather than a toggle-per-slug loop: toggling would *un*-favourite anything
+    already saved server-side, and the request-safety rule forbids the batch.
+    """
+    if not payload.slugs:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            total = await conn.fetchval(
+                "SELECT COUNT(*) FROM favourites WHERE user_id = $1", user["id"]
+            )
+        return MergeFavouritesResponse(merged=0, total=int(total or 0))
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # DISTINCT guards against a video carrying duplicate video_sites rows.
+        # ON CONFLICT DO NOTHING relies on favourites_user_video_uniq
+        # (migration 0006) and is what makes the re-run a no-op.
+        inserted = await conn.fetch(
+            """
+            INSERT INTO favourites (user_id, video_id)
+            SELECT DISTINCT $1, v.id
+              FROM videos v
+              JOIN video_sites vs ON vs.video_id = v.id
+             WHERE vs.site = $2
+               AND v.slug = ANY($3::text[])
+               AND v.disabled_at IS NULL
+            ON CONFLICT DO NOTHING
+            RETURNING id
+            """,
+            user["id"],
+            payload.site,
+            list(dict.fromkeys(payload.slugs)),
+        )
+        total = await conn.fetchval(
+            "SELECT COUNT(*) FROM favourites WHERE user_id = $1", user["id"]
+        )
+    return MergeFavouritesResponse(merged=len(inserted), total=int(total or 0))
+
+
 @router.post("/videos/{slug}/favourite", response_model=ToggleFavouriteResponse)
 async def toggle_video_favourite(
     slug: str = Path(...),
@@ -150,7 +209,7 @@ async def toggle_video_favourite(
             favourited = False
         else:
             await conn.execute(
-                "INSERT INTO favourites (user_id, video_id) VALUES ($1, $2)",
+                "INSERT INTO favourites (user_id, video_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
                 user["id"],
                 video["id"],
             )
