@@ -383,7 +383,7 @@ def _unique_names(names: list[str]) -> list[str]:
 
 def _merge_validated_term_names(
     source_names: list[str],
-    local_matches: dict[str, str],
+    local_matches: dict[str, dict],
     tpdb_names: list[str],
 ) -> list[str]:
     """
@@ -395,9 +395,10 @@ def _merge_validated_term_names(
     seen: set[str] = set()
 
     for name in _unique_names(source_names):
-        canonical = local_matches.get(_name_key(name))
-        if not canonical:
+        match_data = local_matches.get(_name_key(name))
+        if not match_data:
             continue
+        canonical = match_data["name"]
         key = _name_key(canonical)
         if key not in seen:
             ordered.append(canonical)
@@ -412,14 +413,15 @@ def _merge_validated_term_names(
     return ordered
 
 
-async def _fetch_local_term_matches(conn, table: str, names: list[str]) -> dict[str, str]:
+async def _fetch_local_term_matches(conn, table: str, names: list[str]) -> dict[str, dict]:
     keys = [_name_key(name) for name in names if str(name).strip()]
     if not keys:
         return {}
     rows = await conn.fetch(
         f"""
         SELECT lower(match.name) AS source_key,
-               COALESCE(primary_term.name, match.name) AS canonical_name
+               COALESCE(primary_term.name, match.name) AS canonical_name,
+               COALESCE(primary_term.disabled, match.disabled) AS disabled
           FROM {table} AS match
           LEFT JOIN {table} AS primary_term
             ON primary_term.id = match.merged_into_id
@@ -428,10 +430,10 @@ async def _fetch_local_term_matches(conn, table: str, names: list[str]) -> dict[
         """,
         keys,
     )
-    return {str(r["source_key"]): str(r["canonical_name"]) for r in rows}
+    return {str(r["source_key"]): {"name": str(r["canonical_name"]), "disabled": bool(r["disabled"])} for r in rows}
 
 
-async def _validate_video_terms(v: dict, actor_matches: dict[str, str], studio_matches: dict[str, str]) -> None:
+async def _validate_video_terms(v: dict, actor_matches: dict[str, dict], studio_matches: dict[str, dict]) -> None:
     source_actors = [str(n).strip() for n in (v.get("actors") or []) if str(n).strip()]
     source_studios = [str(n).strip() for n in (v.get("studios") or []) if str(n).strip()]
 
@@ -452,6 +454,21 @@ async def _validate_video_terms(v: dict, actor_matches: dict[str, str], studio_m
     if tpdb_data:
         v["categories"] = _unique_names(tpdb_data["categories"])
         v["_scene"] = tpdb_data.get("_scene")
+
+    is_disabled = False
+    for name in _unique_names(source_actors):
+        match_data = actor_matches.get(_name_key(name))
+        if match_data and match_data.get("disabled"):
+            is_disabled = True
+            break
+    if not is_disabled:
+        for name in _unique_names(source_studios):
+            match_data = studio_matches.get(_name_key(name))
+            if match_data and match_data.get("disabled"):
+                is_disabled = True
+                break
+    if is_disabled:
+        v["_disabled"] = True
 
 
 async def _run_subprocess_for_page(
@@ -876,7 +893,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
     added = 0
     skipped_bad = 0
     async with pool.acquire() as conn:
-        validation_inputs: list[tuple[dict[str, str], dict[str, str]]] = []
+        validation_inputs: list[tuple[dict[str, dict], dict[str, dict]]] = []
         for v in videos:
             actor_matches = await _fetch_local_term_matches(conn, "pornstars", v.get("actors") or [])
             studio_matches = await _fetch_local_term_matches(conn, "studios", v.get("studios") or [])
@@ -884,7 +901,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
 
     tpdb_sem = asyncio.Semaphore(8)
 
-    async def _validate_with_limit(v: dict, actor_matches: dict[str, str], studio_matches: dict[str, str]) -> None:
+    async def _validate_with_limit(v: dict, actor_matches: dict[str, dict], studio_matches: dict[str, dict]) -> None:
         async with tpdb_sem:
             await _validate_video_terms(v, actor_matches, studio_matches)
 
@@ -926,9 +943,9 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                     INSERT INTO videos (
                         source, source_url, embed_url, embed_type,
                         title, slug, thumbnail_url, preview_url, duration_seconds,
-                        views, description, qualities
+                        views, description, qualities, disabled_at
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                     ON CONFLICT (source_url) DO UPDATE SET updated_at = now()
                     RETURNING id, (xmax = 0) AS inserted
                     """,
@@ -944,6 +961,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                     views,
                     description,
                     qualities,
+                    "now" if v.get("_disabled") else None,
                 )
             except Exception as e:
                 # Bad row — log it via skipped_bad, keep the run alive.

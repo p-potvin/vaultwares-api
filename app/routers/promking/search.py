@@ -39,6 +39,8 @@ class SuggestTerm(BaseModel):
     name: str
     slug: str
     video_count: int
+    view_count: int
+    thumbnail: Optional[str] = None
 
 
 class SuggestSearch(BaseModel):
@@ -62,7 +64,7 @@ class SuggestResponse(BaseModel):
 # typeahead offers terms the operator has already deleted (verified: it suggested
 # "Angel Youngs", deleted 2026-07-07), which /taxonomies correctly hides.
 _TAXONOMY_SQL = """
-    SELECT t.name, t.slug, COUNT(DISTINCT lt.video_id)::int AS video_count
+    SELECT t.name, t.slug, COUNT(DISTINCT lt.video_id)::int AS video_count, COALESCE(SUM(v.views), 0)::int AS view_count, {image_col} AS thumbnail
       FROM {term_table} t
       JOIN {link_table} lt ON lt.{link_col} = t.id
       JOIN videos v        ON v.id = lt.video_id AND v.disabled_at IS NULL
@@ -75,9 +77,9 @@ _TAXONOMY_SQL = """
 """
 
 _GROUPS = {
-    "pornstars": ("pornstars", "video_pornstars", "pornstar_id"),
-    "studios": ("studios", "video_studios", "studio_id"),
-    "categories": ("categories", "video_categories", "category_id"),
+    "pornstars": ("pornstars", "video_pornstars", "pornstar_id", "t.image_url"),
+    "studios": ("studios", "video_studios", "studio_id", "t.image_url"),
+    "categories": ("categories", "video_categories", "category_id", "NULL"),
 }
 
 
@@ -100,10 +102,10 @@ async def suggest(
     pool = await get_pool()
     async with pool.acquire() as conn:
         groups: dict[str, list[SuggestTerm]] = {}
-        for key, (term_table, link_table, link_col) in _GROUPS.items():
+        for key, (term_table, link_table, link_col, image_col) in _GROUPS.items():
             rows = await conn.fetch(
                 _TAXONOMY_SQL.format(
-                    term_table=term_table, link_table=link_table, link_col=link_col
+                    term_table=term_table, link_table=link_table, link_col=link_col, image_col=image_col
                 ),
                 site,
                 contains,

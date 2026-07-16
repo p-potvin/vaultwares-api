@@ -18,6 +18,7 @@ class TermRef(BaseModel):
     name: str
     slug: str
     gender: Optional[str] = None
+    disabled: bool = False
 
 
 class BatchVideoIdsRequest(BaseModel):
@@ -102,6 +103,14 @@ class BatchTaxonomyDeleteRequest(BaseModel):
 class BatchTaxonomyDeleteResponse(BaseModel):
     deleted_count: int
     videos_orphaned: int
+
+
+class BatchTaxonomyDisableRequest(BaseModel):
+    term_ids: list[int] = Field(min_length=1)
+
+
+class BatchTaxonomyDisableResponse(BaseModel):
+    count: int
 
 
 class TaxonomyGenderUpdate(BaseModel):

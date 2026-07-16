@@ -11,6 +11,8 @@ from .db import get_pool
 from ._models import (
     BatchTaxonomyDeleteRequest,
     BatchTaxonomyDeleteResponse,
+    BatchTaxonomyDisableRequest,
+    BatchTaxonomyDisableResponse,
     BatchTaxonomyGenderUpdateRequest,
     BatchTaxonomyGenderUpdateResponse,
     BatchTaxonomyMergeRequest,
@@ -82,6 +84,7 @@ async def list_terms(
         ),
     ),
     sort: str = Query("default", description="Sort order: 'default', 'name_asc', 'name_desc', 'videos_asc', 'videos_desc', 'id_asc', 'id_desc', 'hot' (alias 'trending')"),
+    include_disabled: bool = Query(False, description="If true, includes disabled terms"),
 ) -> list[TermRef]:
     table_config = get_table_config(kind)
     table, join_table, term_column = (
@@ -89,8 +92,8 @@ async def list_terms(
         table_config.join_table,
         table_config.term_column,
     )
-    select_cols = f"{table}.id, {table}.name, {table}.slug"
-    group_cols = f"{table}.id, {table}.name, {table}.slug"
+    select_cols = f"{table}.id, {table}.name, {table}.slug, {table}.disabled"
+    group_cols = f"{table}.id, {table}.name, {table}.slug, {table}.disabled"
     if table_config.has_gender:
         select_cols += f", {table}.gender"
         group_cols += f", {table}.gender"
@@ -105,6 +108,9 @@ async def list_terms(
 
     if q:
         extra_where.append(f"{table}.name ILIKE {add_param(f'%{q}%')}")
+
+    if not include_disabled:
+        extra_where.append(f"{table}.disabled = false")
 
     if gender and table_config.has_gender and gender.lower() != "all":
         token = gender.lower()
@@ -213,6 +219,7 @@ async def list_terms(
 async def get_term_by_slug(
     kind: TaxonomyKind = Path(...),
     slug: str = Path(...),
+    include_disabled: bool = Query(False),
 ) -> TermRef:
     """
     Resolve exactly one term by slug. 404 when it doesn't exist or is deleted.
@@ -235,8 +242,8 @@ async def get_term_by_slug(
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            f"SELECT id, name, slug{', gender' if config.has_gender else ''} "
-            f"FROM {config.table} WHERE slug = $1 AND deleted_at IS NULL",
+            f"SELECT id, name, slug, disabled{', gender' if config.has_gender else ''} "
+            f"FROM {config.table} WHERE slug = $1 AND deleted_at IS NULL{' AND disabled = false' if not include_disabled else ''}",
             slug,
         )
     if row is None:
@@ -246,6 +253,7 @@ async def get_term_by_slug(
         name=row["name"],
         slug=row["slug"],
         gender=row["gender"] if config.has_gender else None,
+        disabled=bool(row["disabled"]),
     )
 
 
@@ -255,6 +263,7 @@ async def count_terms(
     site: Site | None = Query(None, description="Deprecated, ignored. Taxonomies are global."),
     q: str | None = Query(None),
     gender: str | None = Query(None),
+    include_disabled: bool = Query(False),
 ) -> dict:
     """
     Count rows matching the same filters as list_terms. Cheap path the admin
@@ -281,6 +290,8 @@ async def count_terms(
 
     if q:
         extra_where.append(f"{table}.name ILIKE {add_param(f'%{q}%')}")
+    if not include_disabled:
+        extra_where.append(f"{table}.disabled = false")
     if gender and table_config.has_gender and gender.lower() != "all":
         token = gender.lower()
         if token == "null":
@@ -352,7 +363,7 @@ async def create_term(
         # capitalisation of an existing term, return the existing row rather
         # than duplicating.
         existing = await conn.fetchrow(
-            f"SELECT id, name, slug{', gender' if config.has_gender else ''} "
+            f"SELECT id, name, slug, disabled{', gender' if config.has_gender else ''} "
             f"FROM {config.table} WHERE slug = $1 AND deleted_at IS NULL",
             slug,
         )
@@ -362,16 +373,17 @@ async def create_term(
                 name=existing["name"],
                 slug=existing["slug"],
                 gender=existing["gender"] if config.has_gender else None,
+                disabled=bool(existing["disabled"]),
             )
         if config.has_gender:
             row = await conn.fetchrow(
                 f"INSERT INTO {config.table} (name, slug{gender_col}) "
-                f"VALUES ($1, $2, $3) RETURNING id, name, slug, gender",
+                f"VALUES ($1, $2, $3) RETURNING id, name, slug, disabled, gender",
                 name, slug, gender_val,
             )
         else:
             row = await conn.fetchrow(
-                f"INSERT INTO {config.table} (name, slug) VALUES ($1, $2) RETURNING id, name, slug",
+                f"INSERT INTO {config.table} (name, slug) VALUES ($1, $2) RETURNING id, name, slug, disabled",
                 name, slug,
             )
     return TermRef(
@@ -379,6 +391,7 @@ async def create_term(
         name=row["name"],
         slug=row["slug"],
         gender=row["gender"] if config.has_gender else None,
+        disabled=bool(row["disabled"]),
     )
 
 
@@ -515,6 +528,36 @@ async def batch_delete_terms(
             payload.term_ids,
         )
     return BatchTaxonomyDeleteResponse(deleted_count=len(rows), videos_orphaned=int(videos_orphaned or 0))
+
+
+@router.post("/{kind}/batch/disable", response_model=BatchTaxonomyDisableResponse)
+async def batch_disable_terms(
+    payload: BatchTaxonomyDisableRequest,
+    kind: WriteTaxonomyKind = Path(...),
+) -> BatchTaxonomyDisableResponse:
+    config = get_table_config(kind)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"UPDATE {config.table} SET disabled = true WHERE id = ANY($1::int[]) AND deleted_at IS NULL AND disabled = false RETURNING id",
+            payload.term_ids,
+        )
+    return BatchTaxonomyDisableResponse(count=len(rows))
+
+
+@router.post("/{kind}/batch/enable", response_model=BatchTaxonomyDisableResponse)
+async def batch_enable_terms(
+    payload: BatchTaxonomyDisableRequest,
+    kind: WriteTaxonomyKind = Path(...),
+) -> BatchTaxonomyDisableResponse:
+    config = get_table_config(kind)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"UPDATE {config.table} SET disabled = false WHERE id = ANY($1::int[]) AND deleted_at IS NULL AND disabled = true RETURNING id",
+            payload.term_ids,
+        )
+    return BatchTaxonomyDisableResponse(count=len(rows))
 
 
 @router.post("/pornstars/batch/gender-update", response_model=BatchTaxonomyGenderUpdateResponse)

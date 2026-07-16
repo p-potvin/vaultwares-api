@@ -41,6 +41,10 @@ class PromKingMeResponse(BaseModel):
     # Added 2026-07-14 for the /account "member since" line. Optional so a token
     # minted against a pre-migration row can't 500 the profile screen.
     created_at: Optional[datetime] = None
+    preferences: dict = Field(default_factory=dict)
+
+class PromKingPreferencesUpdateRequest(BaseModel):
+    preferences: dict
 
 class PromKingFavoriteRequest(BaseModel):
     wallpaper_id: str
@@ -73,7 +77,7 @@ async def get_current_promking_user(
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, email, role, created_at, disabled_at FROM users WHERE id = $1",
+            "SELECT id, email, role, created_at, disabled_at, preferences FROM users WHERE id = $1",
             user_id,
         )
     if not row:
@@ -145,6 +149,36 @@ async def me(current_user: dict = Depends(get_current_promking_user)):
         email=current_user["email"],
         role=current_user["role"],
         created_at=current_user.get("created_at"),
+        preferences=current_user.get("preferences") or {},
+    )
+
+@router.patch("/me/preferences", response_model=PromKingMeResponse)
+async def update_preferences(
+    payload: PromKingPreferencesUpdateRequest,
+    current_user: dict = Depends(get_current_promking_user)
+):
+    import json
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE users 
+            SET preferences = $1
+            WHERE id = $2 
+            RETURNING id, email, role, created_at, disabled_at, preferences
+            """,
+            json.dumps(payload.preferences),
+            current_user["id"],
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+            
+    return PromKingMeResponse(
+        id=row["id"],
+        email=row["email"],
+        role=row["role"],
+        created_at=row.get("created_at"),
+        preferences=row.get("preferences") or {},
     )
 
 @router.get("/favorites", response_model=PromKingFavoritesResponse)

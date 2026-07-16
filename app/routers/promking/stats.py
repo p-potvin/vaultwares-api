@@ -233,9 +233,9 @@ async def stats(
         discovery_row = await conn.fetchrow(
             f"""
             SELECT
-              COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM video_categories vc WHERE vc.video_id = v.id))::bigint AS no_categories,
-              COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM video_pornstars vp WHERE vp.video_id = v.id))::bigint AS no_pornstars,
-              COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM video_studios vs WHERE vs.video_id = v.id))::bigint AS no_studios
+              COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = v.id AND c.disabled = false))::bigint AS no_categories,
+              COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = v.id AND p.disabled = false))::bigint AS no_pornstars,
+              COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = v.id AND s.disabled = false))::bigint AS no_studios
             FROM videos v
             {join_videos}
             WHERE {where_videos}
@@ -378,7 +378,7 @@ async def _top_taxonomy(conn, term_table: str, join_table: str, term_fk: str, si
           JOIN {join_table} j ON j.{term_fk} = t.id
           JOIN videos v ON v.id = j.video_id
           {join_videos}
-         WHERE {where_videos}
+         WHERE {where_videos} AND t.disabled = false
          GROUP BY t.id, t.name, t.slug
          ORDER BY view_sum DESC, video_count DESC
          LIMIT {TOP_N_LIMIT}
