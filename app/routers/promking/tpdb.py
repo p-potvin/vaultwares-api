@@ -48,6 +48,40 @@ async def fetch_tpdb_tags(title: str) -> dict | None:
     """
     if not title:
         return None
+
+    import hashlib
+    title_hash = hashlib.md5(title.encode('utf-8')).hexdigest()
+    not_found_id = f"notfound:{title_hash}"
+
+    # 1. Check local DB first
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT tpdb_id, data FROM tpdb_scenes WHERE title = $1 LIMIT 1",
+                title
+            )
+            if row:
+                if row["tpdb_id"].startswith("notfound:"):
+                    return None
+                scene = json.loads(row["data"])
+                categories = [tag["name"] for tag in scene.get("tags", [])]
+                performers = [perf["name"] for perf in scene.get("performers", [])]
+                studios = []
+                site = scene.get("site")
+                if site:
+                    studios.append(site["name"])
+                    network = site.get("network")
+                    if network and network.get("name") and network["name"] != site["name"]:
+                        studios.append(network["name"])
+                return {
+                    "categories": categories,
+                    "performers": performers,
+                    "studios": studios,
+                    "_scene": scene,
+                }
+    except Exception as e:
+        logger.warning(f"Failed to check local TPDB cache for '{title}': {e}")
         
     url = "https://api.theporndb.net/scenes"
     params = {"parse": title}
@@ -64,6 +98,20 @@ async def fetch_tpdb_tags(title: str) -> dict | None:
         return None
         
     if not data or not data.get("data"):
+        # Cache negative result
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO tpdb_scenes (title, tpdb_id, data)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (tpdb_id) DO NOTHING
+                    """,
+                    title, not_found_id, "{}"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to cache negative TPDB result for '{title}': {e}")
         return None
         
     scene = data["data"][0]
@@ -130,6 +178,9 @@ async def _backfill_single(type_: str, name: str, slug: str, row_id: int) -> Non
         async with httpx.AsyncClient() as client:
             data = await _make_tpdb_request(client, url, params, headers)
         if not data or not data.get("data"):
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(f"UPDATE {table} SET image_url = '' WHERE id = $1", row_id)
             return
         items = data["data"]
         match = next(
@@ -145,6 +196,9 @@ async def _backfill_single(type_: str, name: str, slug: str, row_id: int) -> Non
             image_url = match.get("logo") or match.get("poster") or match.get("image") or match.get("thumbnail")
             gender = None
         if not image_url:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(f"UPDATE {table} SET image_url = '' WHERE id = $1", row_id)
             return
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -184,9 +238,9 @@ async def resolve_tpdb_image(
             f"SELECT id, image_url, name FROM {table} WHERE slug = $1 LIMIT 1",
             slug
         )
-        # If we have a local record and it already has an image, just return it.
-        if row and row["image_url"]:
-            return {"imageUrl": row["image_url"]}
+        # If we have a local record and it already has an image (or was marked empty), return it.
+        if row and row["image_url"] is not None:
+            return {"imageUrl": row["image_url"] if row["image_url"] != "" else None}
 
     # 2. Not in local DB or missing image. Hit TPDB.
     endpoint = "performers" if type == "performer" else "sites"
@@ -205,6 +259,9 @@ async def resolve_tpdb_image(
         return {"imageUrl": None}
 
     if not data or not data.get("data"):
+        if row:
+            async with pool.acquire() as conn:
+                await conn.execute(f"UPDATE {table} SET image_url = '' WHERE id = $1", row["id"])
         return {"imageUrl": None}
 
     # Find first item with an image
@@ -221,6 +278,9 @@ async def resolve_tpdb_image(
         gender = None
 
     if not image_url:
+        if row:
+            async with pool.acquire() as conn:
+                await conn.execute(f"UPDATE {table} SET image_url = '' WHERE id = $1", row["id"])
         return {"imageUrl": None}
 
     # 3. Update local DB if row exists
@@ -285,10 +345,10 @@ async def resolve_tpdb_batch(
         slug = slugify(item.name)
         row = ps_by_slug.get(slug) if item.type == "performer" else st_by_slug.get(slug)
 
-        if row and row["image_url"]:
-            results[key] = row["image_url"]
+        if row and row["image_url"] is not None:
+            results[key] = row["image_url"] if row["image_url"] != "" else None
         else:
-            # Return None immediately; trigger background fetch if we have a DB row
+            # Return None immediately; trigger background fetch if we have a DB row (and it's not marked negative)
             results[key] = None
             backfill_key = (item.type, slug)
             if row and backfill_count < TPDB_BATCH_BACKFILL_LIMIT and backfill_key not in enqueued:

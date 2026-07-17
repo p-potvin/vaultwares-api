@@ -77,8 +77,8 @@ _TAXONOMY_SQL = """
 """
 
 _GROUPS = {
-    "pornstars": ("pornstars", "video_pornstars", "pornstar_id", "t.image_url"),
-    "studios": ("studios", "video_studios", "studio_id", "t.image_url"),
+    "pornstars": ("pornstars", "video_pornstars", "pornstar_id", "NULLIF(t.image_url, '')"),
+    "studios": ("studios", "video_studios", "studio_id", "NULLIF(t.image_url, '')"),
     "categories": ("categories", "video_categories", "category_id", "NULL"),
 }
 

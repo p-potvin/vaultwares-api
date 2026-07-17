@@ -1241,7 +1241,7 @@ wheels = [
 
 [[package]]
 name = "vaultwares-api"
-version = "0.1.21"
+version = "0.1.24"
 source = { editable = "." }
 dependencies = [
     { name = "accelerate" },
