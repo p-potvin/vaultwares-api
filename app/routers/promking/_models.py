@@ -17,6 +17,7 @@ class TermRef(BaseModel):
     id: int
     name: str
     slug: str
+    image_url: Optional[str] = None
     gender: Optional[str] = None
     disabled: bool = False
 

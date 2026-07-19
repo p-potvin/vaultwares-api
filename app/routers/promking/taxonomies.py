@@ -47,11 +47,11 @@ class TaxonomyTableConfig:
     join_table: str
     term_column: str
     has_gender: bool = False
-
+    has_image: bool = False
 
 _TABLES: dict[str, TaxonomyTableConfig] = {
-    "pornstars": TaxonomyTableConfig("pornstars", "pornstars", "video_pornstars", "pornstar_id", True),
-    "studios": TaxonomyTableConfig("studios", "studios", "video_studios", "studio_id"),
+    "pornstars": TaxonomyTableConfig("pornstars", "pornstars", "video_pornstars", "pornstar_id", True, True),
+    "studios": TaxonomyTableConfig("studios", "studios", "video_studios", "studio_id", False, True),
     "categories": TaxonomyTableConfig("categories", "categories", "video_categories", "category_id"),
 }
 
@@ -97,6 +97,9 @@ async def list_terms(
     if table_config.has_gender:
         select_cols += f", {table}.gender"
         group_cols += f", {table}.gender"
+    if table_config.has_image:
+        select_cols += f", {table}.image_url"
+        group_cols += f", {table}.image_url"
 
     extra_where: list[str] = []
     extra_params: list = []
