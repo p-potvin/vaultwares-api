@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.openapi.docs import get_swagger_ui_html
+from swagger_ui_bundle import swagger_ui_path
 from api.config import (
     CORS_ORIGINS, ALLOWED_ORIGINS, DB_URL, BOOTSTRAP_ADMIN_USERNAME,
     BOOTSTRAP_ADMIN_PASSWORD, BOOTSTRAP_ADMIN_IS_DISABLED,
@@ -123,6 +125,7 @@ app = FastAPI(
     description="Central API for VaultWares auth, DB-backed telemetry, monitor reads, logging, workflows, and media services.",
     version="0.2.16",
     lifespan=lifespan,
+    docs_url=None,  # served below via a self-hosted Swagger UI (default /docs pulls assets from a CDN, which our CSP blocks)
 )
 
 # Correlation ID and Security/Rate-Limit middlewares
@@ -151,6 +154,20 @@ if _faceswap_static_dir and os.path.isdir(_faceswap_static_dir):
 
 os.makedirs(ZIPPER_DEST_DIR, exist_ok=True)
 app.mount("/downloaded", StaticFiles(directory=ZIPPER_DEST_DIR), name="downloaded")
+
+# Self-hosted Swagger UI assets (served from "self" so our CSP allows them, unlike the CDN default)
+app.mount("/static/swagger-ui", StaticFiles(directory=str(swagger_ui_path)), name="swagger-ui-static")
+
+
+@app.get("/docs", include_in_schema=False)
+async def swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url,
+        title=f"{app.title} - Swagger UI",
+        swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
+        swagger_css_url="/static/swagger-ui/swagger-ui.css",
+        swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
+    )
 
 # Include Routers
 app.include_router(auth_router)
