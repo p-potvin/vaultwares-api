@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import HTMLResponse, Response
 from swagger_ui_bundle import swagger_ui_path
 from api.config import (
     CORS_ORIGINS, ALLOWED_ORIGINS, DB_URL, BOOTSTRAP_ADMIN_USERNAME,
@@ -158,16 +158,49 @@ app.mount("/downloaded", StaticFiles(directory=ZIPPER_DEST_DIR), name="downloade
 # Self-hosted Swagger UI assets (served from "self" so our CSP allows them, unlike the CDN default)
 app.mount("/static/swagger-ui", StaticFiles(directory=str(swagger_ui_path)), name="swagger-ui-static")
 
+_SWAGGER_UI_HTML = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{title}</title>
+<link rel="stylesheet" type="text/css" href="/static/swagger-ui/swagger-ui.css">
+<link rel="icon" type="image/png" href="/static/swagger-ui/favicon-32x32.png">
+</head>
+<body>
+<div id="swagger-ui"></div>
+<script src="/static/swagger-ui/swagger-ui-bundle.js"></script>
+<script src="/static/swagger-ui/swagger-ui-standalone-preset.js"></script>
+<script src="/docs/swagger-ui-init.js"></script>
+</body>
+</html>
+"""
+
 
 @app.get("/docs", include_in_schema=False)
 async def swagger_ui_html():
-    return get_swagger_ui_html(
-        openapi_url=app.openapi_url,
-        title=f"{app.title} - Swagger UI",
-        swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
-        swagger_css_url="/static/swagger-ui/swagger-ui.css",
-        swagger_favicon_url="/static/swagger-ui/favicon-32x32.png",
+    return HTMLResponse(_SWAGGER_UI_HTML.format(title=f"{app.title} - Swagger UI"))
+
+
+@app.get("/docs/swagger-ui-init.js", include_in_schema=False)
+async def swagger_ui_init_js():
+    # Kept as an external, same-origin script rather than inlined in the HTML above:
+    # our CSP has no 'unsafe-inline' for script-src, so an inline <script> (which is
+    # what fastapi.openapi.docs.get_swagger_ui_html renders) gets silently blocked
+    # by the browser and the UI never initializes even though its assets load fine.
+    js = (
+        "window.onload = function() {\n"
+        "  window.ui = SwaggerUIBundle({\n"
+        f"    url: {app.openapi_url!r},\n"
+        "    dom_id: '#swagger-ui',\n"
+        "    deepLinking: true,\n"
+        "    presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],\n"
+        "    plugins: [SwaggerUIBundle.plugins.DownloadUrl],\n"
+        "    layout: 'StandaloneLayout',\n"
+        "  });\n"
+        "};\n"
     )
+    return Response(content=js, media_type="application/javascript")
 
 # Include Routers
 app.include_router(auth_router)
