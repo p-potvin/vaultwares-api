@@ -280,13 +280,13 @@ async def update_manual_cursor(site: str, source: str, page: int) -> None:
         await conn.execute(
             """
             INSERT INTO settings (site, key, value, updated_at)
-            VALUES ($1, 'fetcher_manual_cursor', $2, NOW())
+            VALUES ($1::text::site, 'fetcher_manual_cursor', $2::jsonb, NOW())
             ON CONFLICT (site, key) DO UPDATE
               SET value = EXCLUDED.value,
                   updated_at = NOW()
             """,
             site,
-            val,
+            json.dumps(val),
         )
 
 
