@@ -21,7 +21,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .db import get_pool
-from .fetcher import _create_fetch_run_state, _drive_subprocess
+from .fetcher import _create_fetch_run_state, _drive_subprocess, get_manual_cursor
 
 log = logging.getLogger(__name__)
 
@@ -90,10 +90,12 @@ async def _reload_jobs() -> None:
 
 async def _scheduled_run(site: str, source: str, pages: int) -> None:
     """Kick off a fetch run with no SSE subscriber — pure background."""
+    cursor = await get_manual_cursor(site, source)
     state, _started_at = await _create_fetch_run_state(
         site=site,
         source=source,
         pages=pages,
+        start_page=cursor,
     )
     await _drive_subprocess(state)
 

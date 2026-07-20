@@ -162,7 +162,7 @@ class FetchRunRequest(BaseModel):
     site: Site
     source: str
     pages: int = Field(ge=1, le=100, default=3)
-    start_page: Optional[int] = Field(ge=1, default=None)
+    start_page: int = Field(ge=1, default=1)
     # Term-scoped fetch (studio / pornstar / category archive). When term_type
     # is set the run ignores the manual cursor and walks the archive from
     # page 1 sequentially. fetch_all keeps paging until an empty page.
