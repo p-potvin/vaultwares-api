@@ -202,7 +202,8 @@ async def webauthn_login_verify(request: Request, payload: dict):
         raise HTTPException(status_code=400, detail="Challenge missing or expired")
 
     challenge_info = WEBAUTHN_CHALLENGES.pop(challenge_str)
-    credential_id_str = credential_payload.get("id")
+    raw_id = credential_payload.get("rawId") or credential_payload.get("id")
+    credential_id_str = bytes_to_base64url(base64url_to_bytes(raw_id))
     
     db_cred = await WebAuthnCredential.get_or_none(credential_id=credential_id_str).prefetch_related("user")
     if not db_cred or db_cred.user.is_disabled:
