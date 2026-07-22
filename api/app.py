@@ -1,11 +1,11 @@
 import os
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, Response
-from swagger_ui_bundle import swagger_ui_path
 from api.config import (
     CORS_ORIGINS, ALLOWED_ORIGINS, DB_URL, BOOTSTRAP_ADMIN_USERNAME,
     BOOTSTRAP_ADMIN_PASSWORD, BOOTSTRAP_ADMIN_IS_DISABLED,
@@ -155,8 +155,11 @@ if _faceswap_static_dir and os.path.isdir(_faceswap_static_dir):
 os.makedirs(ZIPPER_DEST_DIR, exist_ok=True)
 app.mount("/downloaded", StaticFiles(directory=ZIPPER_DEST_DIR), name="downloaded")
 
-# Self-hosted Swagger UI assets (served from "self" so our CSP allows them, unlike the CDN default)
-app.mount("/static/swagger-ui", StaticFiles(directory=str(swagger_ui_path)), name="swagger-ui-static")
+# Self-hosted Swagger UI assets (served from "self" so our CSP allows them, unlike the CDN default).
+# Vendored in-repo (rather than via the swagger-ui-bundle PyPI package, which is stuck on
+# swagger-ui 4.15.5 and can't render OpenAPI 3.1 schemas, the version FastAPI/Pydantic v2 emit).
+_SWAGGER_UI_STATIC_DIR = Path(__file__).resolve().parent / "static" / "swagger-ui"
+app.mount("/static/swagger-ui", StaticFiles(directory=str(_SWAGGER_UI_STATIC_DIR)), name="swagger-ui-static")
 
 _SWAGGER_UI_HTML = """<!DOCTYPE html>
 <html>

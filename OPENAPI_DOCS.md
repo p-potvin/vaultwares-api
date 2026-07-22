@@ -5,7 +5,7 @@ The backend API is now served using FastAPI. You can access the auto-generated O
 - Swagger UI: [http://localhost:9001/docs](http://localhost:9001/docs) (default `python api_server.py`)
 - OpenAPI JSON: [http://localhost:9001/openapi.json](http://localhost:9001/openapi.json)
 
-Swagger UI's JS/CSS assets are served locally from the `swagger-ui-bundle` package (mounted at `/static/swagger-ui`) rather than pulled from a CDN, so the page renders correctly under the API's `default-src 'self'` Content-Security-Policy and works offline.
+Swagger UI's JS/CSS assets are vendored in-repo under `api/static/swagger-ui/` (mounted at `/static/swagger-ui`) rather than pulled from a CDN, so the page renders correctly under the API's `default-src 'self'` Content-Security-Policy and works offline. The vendored build is Swagger UI 5.x, which is required to render the OpenAPI 3.1 schemas FastAPI/Pydantic v2 generate — the older `swagger-ui-bundle` PyPI package (4.15.5) only understands OpenAPI up to 3.0.x and fails with "does not specify a valid version field" on a 3.1 document.
 
 ## How to Run the API Server
 
