@@ -5,6 +5,8 @@ The backend API is now served using FastAPI. You can access the auto-generated O
 - Swagger UI: [http://localhost:9001/docs](http://localhost:9001/docs) (default `python api_server.py`)
 - OpenAPI JSON: [http://localhost:9001/openapi.json](http://localhost:9001/openapi.json)
 
+Swagger UI's JS/CSS assets are served locally from the `swagger-ui-bundle` package (mounted at `/static/swagger-ui`) rather than pulled from a CDN, so the page renders correctly under the API's `default-src 'self'` Content-Security-Policy and works offline.
+
 ## How to Run the API Server
 
 1. Install dependencies (if not already):
