@@ -433,31 +433,31 @@ async def _fetch_local_term_matches(conn, table: str, names: list[str]) -> dict[
     return {str(r["source_key"]): {"name": str(r["canonical_name"]), "disabled": bool(r["disabled"])} for r in rows}
 
 
-async def _validate_video_terms(v: dict, actor_matches: dict[str, dict], studio_matches: dict[str, dict]) -> None:
-    source_actors = [str(n).strip() for n in (v.get("actors") or []) if str(n).strip()]
+async def _validate_video_terms(v: dict, pornstar_matches: dict[str, dict], studio_matches: dict[str, dict]) -> None:
+    source_pornstars = [str(n).strip() for n in (v.get("pornstars") or []) if str(n).strip()]
     source_studios = [str(n).strip() for n in (v.get("studios") or []) if str(n).strip()]
 
-    exact_actors = _merge_validated_term_names(source_actors, actor_matches, [])
+    exact_pornstars = _merge_validated_term_names(source_pornstars, pornstar_matches, [])
     exact_studios = _merge_validated_term_names(source_studios, studio_matches, [])
     needs_tpdb = (
-        len(exact_actors) < len(_unique_names(source_actors))
+        len(exact_pornstars) < len(_unique_names(source_pornstars))
         or len(exact_studios) < len(_unique_names(source_studios))
-        or (not source_actors and not source_studios)
+        or (not source_pornstars and not source_studios)
     )
 
     tpdb_data = await fetch_tpdb_tags(v.get("title")) if needs_tpdb else None
-    tpdb_actors = tpdb_data["performers"] if tpdb_data else []
+    tpdb_pornstars = tpdb_data["performers"] if tpdb_data else []
     tpdb_studios = tpdb_data["studios"] if tpdb_data else []
 
-    v["actors"] = _merge_validated_term_names(source_actors, actor_matches, tpdb_actors)
+    v["pornstars"] = _merge_validated_term_names(source_pornstars, pornstar_matches, tpdb_pornstars)
     v["studios"] = _merge_validated_term_names(source_studios, studio_matches, tpdb_studios)
     if tpdb_data:
         v["categories"] = _unique_names(tpdb_data["categories"])
         v["_scene"] = tpdb_data.get("_scene")
 
     is_disabled = False
-    for name in _unique_names(source_actors):
-        match_data = actor_matches.get(_name_key(name))
+    for name in _unique_names(source_pornstars):
+        match_data = pornstar_matches.get(_name_key(name))
         if match_data and match_data.get("disabled"):
             is_disabled = True
             break
@@ -895,19 +895,19 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
     async with pool.acquire() as conn:
         validation_inputs: list[tuple[dict[str, dict], dict[str, dict]]] = []
         for v in videos:
-            actor_matches = await _fetch_local_term_matches(conn, "pornstars", v.get("actors") or [])
+            pornstar_matches = await _fetch_local_term_matches(conn, "pornstars", v.get("pornstars") or [])
             studio_matches = await _fetch_local_term_matches(conn, "studios", v.get("studios") or [])
-            validation_inputs.append((actor_matches, studio_matches))
+            validation_inputs.append((pornstar_matches, studio_matches))
 
     tpdb_sem = asyncio.Semaphore(8)
 
-    async def _validate_with_limit(v: dict, actor_matches: dict[str, dict], studio_matches: dict[str, dict]) -> None:
+    async def _validate_with_limit(v: dict, pornstar_matches: dict[str, dict], studio_matches: dict[str, dict]) -> None:
         async with tpdb_sem:
-            await _validate_video_terms(v, actor_matches, studio_matches)
+            await _validate_video_terms(v, pornstar_matches, studio_matches)
 
     await asyncio.gather(
         *(
-            _validate_with_limit(v, actor_matches, studio_matches)
+            _validate_with_limit(v, pornstar_matches, studio_matches)
             for v, (actor_matches, studio_matches) in zip(videos, validation_inputs)
         )
     )
@@ -1031,7 +1031,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
 
 async def _attach_terms(conn, video_id: int, v: dict) -> None:
     for kind, table, join, term_column in (
-        ("actors", "pornstars", "video_pornstars", "pornstar_id"),
+        ("pornstars", "pornstars", "video_pornstars", "pornstar_id"),
         ("studios", "studios", "video_studios", "studio_id"),
         ("categories", "categories", "video_categories", "category_id"),
     ):

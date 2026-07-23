@@ -5,7 +5,7 @@ def test_build_video_filters_adds_taxonomy_and_related_clauses():
     where_sql, joins_sql, params = build_video_filters(
         site="pkt",
         q="studio search",
-        actor="jane-star",
+        pornstar="jane-star",
         studio="sample-studio",
         category="trending-hd",
         related_to="current-video",
@@ -18,13 +18,13 @@ def test_build_video_filters_adds_taxonomy_and_related_clauses():
     assert "video_pornstars" in joins_sql
     assert "video_studios" in joins_sql
     assert "video_categories" in joins_sql
-    assert "related_actors" in joins_sql
+    assert "related_pornstars" in joins_sql
     assert "related_studios" in joins_sql
     assert "related_categories" in joins_sql
     assert "to_tsvector('english', videos.title)" in where_sql
     # q now binds twice: the tsquery term and the ILIKE term, so the taxonomy
     # slug params shift up by one.
-    assert "actor_terms.slug = $4" in where_sql
+    assert "pornstar_terms.slug = $4" in where_sql
     assert "studio_terms.slug = $5" in where_sql
     assert "category_terms.slug = $6" in where_sql
     assert "related_video.slug = $7" in where_sql
@@ -92,10 +92,10 @@ def test_build_video_filters_taxonomy_filters_exclude_deleted_terms():
     returned 281 videos.
     """
     where_sql, _joins, _params = build_video_filters(
-        site="fxv", actor="jane-star", studio="sample-studio", category="trending-hd"
+        site="fxv", pornstar="jane-star", studio="sample-studio", category="trending-hd"
     )
 
-    assert "actor_terms.deleted_at IS NULL" in where_sql
+    assert "pornstar_terms.deleted_at IS NULL" in where_sql
     assert "studio_terms.deleted_at IS NULL" in where_sql
     assert "category_terms.deleted_at IS NULL" in where_sql
 

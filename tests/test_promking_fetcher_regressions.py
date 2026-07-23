@@ -35,7 +35,7 @@ async def test_finalize_run_uses_run_state_query_fields_without_req_attr():
 def test_merge_validated_term_names_keeps_exact_local_names_before_tpdb_names():
     merged = _merge_validated_term_names(
         source_names=["Old Star", "Unverified Star"],
-        local_matches={"old star": "Canonical Star"},
+        local_matches={"old star": {"name": "Canonical Star", "disabled": False}},
         tpdb_names=["Canonical Star", "Verified Star"],
     )
 

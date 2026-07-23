@@ -89,7 +89,7 @@ def build_video_filters(
     *,
     site: Site | None = None,
     q: str | None = None,
-    actor: str | None = None,
+    pornstar: str | None = None,
     studio: str | None = None,
     category: str | None = None,
     related_to: str | None = None,
@@ -152,18 +152,18 @@ def build_video_filters(
             f"                  WHERE q_c.name ILIKE {q_like} AND q_c.deleted_at IS NULL)"
             ")"
         )
-    if actor:
+    if pornstar:
         joins.extend(
             [
-                "JOIN video_pornstars actor_filter ON actor_filter.video_id = videos.id",
-                "JOIN pornstars actor_terms ON actor_terms.id = actor_filter.pornstar_id",
+                "JOIN video_pornstars pornstar_filter ON pornstar_filter.video_id = videos.id",
+                "JOIN pornstars pornstar_terms ON pornstar_terms.id = pornstar_filter.pornstar_id",
             ]
         )
         # deleted_at: taxonomy deletion is soft, so without this a deleted
         # pornstar's page kept serving her whole catalogue (verified:
         # /pornstar/angel-youngs, deleted 2026-07-07, still returned 281 videos).
-        where.append(f"actor_terms.slug = {add_param(actor)}")
-        where.append("actor_terms.deleted_at IS NULL")
+        where.append(f"pornstar_terms.slug = {add_param(pornstar)}")
+        where.append("pornstar_terms.deleted_at IS NULL")
     if studio:
         joins.extend(
             [
@@ -186,8 +186,8 @@ def build_video_filters(
         joins.extend(
             [
                 "JOIN videos related_video ON 1=1",
-                "LEFT JOIN video_pornstars related_actors ON related_actors.video_id = related_video.id",
-                "LEFT JOIN video_pornstars current_actors ON current_actors.video_id = videos.id AND current_actors.pornstar_id = related_actors.pornstar_id",
+                "LEFT JOIN video_pornstars related_pornstars ON related_pornstars.video_id = related_video.id",
+                "LEFT JOIN video_pornstars current_pornstars ON current_pornstars.video_id = videos.id AND current_pornstars.pornstar_id = related_pornstars.pornstar_id",
                 "LEFT JOIN video_studios related_studios ON related_studios.video_id = related_video.id",
                 "LEFT JOIN video_studios current_studios ON current_studios.video_id = videos.id AND current_studios.studio_id = related_studios.studio_id",
                 "LEFT JOIN video_categories related_categories ON related_categories.video_id = related_video.id",
@@ -198,7 +198,7 @@ def build_video_filters(
         where.append("videos.id <> related_video.id")
         where.append(
             "("
-            "current_actors.pornstar_id IS NOT NULL OR "
+            "current_pornstars.pornstar_id IS NOT NULL OR "
             "current_studios.studio_id IS NOT NULL OR "
             "current_categories.category_id IS NOT NULL"
             ")"
@@ -371,15 +371,15 @@ async def list_videos(
     limit: int = Query(50, ge=1, le=100000),
     offset: int = Query(0, ge=0),
     q: str | None = Query(None, description="Postgres FTS query over title."),
-    actor: str | None = Query(None, description="Filter by actor slug."),
+    pornstar: str | None = Query(None, description="Filter by pornstar slug."),
     studio: str | None = Query(None, description="Filter by studio slug."),
     category: str | None = Query(None, description="Filter by category slug."),
     related_to: str | None = Query(None, description="Related-video seed slug."),
     exclude_slug: str | None = Query(None, description="Slug to omit from results."),
-    actor_gender: str | None = Query(
+    pornstar_gender: str | None = Query(
         "female",
         description=(
-            "Filter the embedded actors_json by gender. Accepts 'female', 'male', "
+            "Filter the embedded pornstars_json by gender. Accepts 'female', 'male', "
             "'unknown', a comma-separated list, or 'all' (no filter — default "
             "for backward compat). Videos themselves are not hidden; only the "
             "embedded pornstar pills are filtered."
@@ -393,7 +393,7 @@ async def list_videos(
     where_sql, joins, params = build_video_filters(
         site=site,
         q=q,
-        actor=actor,
+        pornstar=pornstar,
         studio=studio,
         category=category,
         related_to=related_to,
@@ -401,12 +401,12 @@ async def list_videos(
         disabled=disabled,
         source=source,
     )
-    # Optional gender filter on the embedded actors_json subquery.
+    # Optional gender filter on the embedded pornstars_json subquery.
     gender_fragment, gender_params = build_gender_clause(
-        actor_gender, "a.gender", len(params) + 1
+        pornstar_gender, "a.gender", len(params) + 1
     )
     params.extend(gender_params)
-    actor_gender_clause = f" AND {gender_fragment}" if gender_fragment else ""
+    pornstar_gender_clause = f" AND {gender_fragment}" if gender_fragment else ""
     
     # Determine sorting order
     if sort == "title_asc":
@@ -439,8 +439,8 @@ async def list_videos(
                  SELECT coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'name', a.name, 'slug', a.slug)), '[]'::jsonb)
                  FROM video_pornstars va
                  JOIN pornstars a ON a.id = va.pornstar_id
-                 WHERE va.video_id = videos.id{actor_gender_clause}
-               ) as actors_json,
+                 WHERE va.video_id = videos.id{pornstar_gender_clause}
+               ) as pornstars_json,
                (
                  SELECT coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name, 'slug', s.slug)), '[]'::jsonb)
                  FROM video_studios vs
@@ -468,17 +468,17 @@ async def list_videos(
             except Exception:
                 d["qualities"] = None
                 
-        # Deserialise aggregated actors json/string
-        actors_val = d.pop("actors_json", None)
-        if isinstance(actors_val, str):
+        # Deserialise aggregated pornstars json/string
+        pornstars_val = d.pop("pornstars_json", None)
+        if isinstance(pornstars_val, str):
             try:
-                d["actors"] = json.loads(actors_val)
+                d["pornstars"] = json.loads(pornstars_val)
             except Exception:
-                d["actors"] = []
-        elif isinstance(actors_val, list):
-            d["actors"] = actors_val
+                d["pornstars"] = []
+        elif isinstance(pornstars_val, list):
+            d["pornstars"] = pornstars_val
         else:
-            d["actors"] = []
+            d["pornstars"] = []
             
         # Deserialise aggregated studios json/string
         studios_val = d.pop("studios_json", None)
@@ -500,7 +500,7 @@ async def list_videos(
 async def count_videos(
     site: Site | None = Query(None, description="Filter to videos belonging to the site."),
     q: str | None = Query(None),
-    actor: str | None = Query(None),
+    pornstar: str | None = Query(None),
     studio: str | None = Query(None),
     category: str | None = Query(None),
     disabled: bool | None = Query(False, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
@@ -510,7 +510,7 @@ async def count_videos(
     where_sql, joins, params = build_video_filters(
         site=site,
         q=q,
-        actor=actor,
+        pornstar=pornstar,
         studio=studio,
         category=category,
         disabled=disabled,
@@ -532,7 +532,7 @@ async def count_videos(
 async def get_video(
     slug: str,
     site: Site | None = Query(None, description="Filter to ensure the video belongs to the site."),
-    actor_gender: str | None = Query(
+    pornstar_gender: str | None = Query(
         None,
         description=(
             "Filter returned pornstars by gender (default 'all'). "
@@ -569,21 +569,21 @@ async def get_video(
             return None
 
         video_id = row["id"]
-        actor_sql = """
+        pornstar_sql = """
             SELECT pornstars.id, pornstars.name, pornstars.slug
             FROM pornstars
             JOIN video_pornstars ON video_pornstars.pornstar_id = pornstars.id
             WHERE video_pornstars.video_id = $1
         """
-        actor_params: list = [video_id]
+        pornstar_params: list = [video_id]
         gender_fragment, gender_params = build_gender_clause(
-            actor_gender, "pornstars.gender", len(actor_params) + 1
+            pornstar_gender, "pornstars.gender", len(pornstar_params) + 1
         )
-        actor_params.extend(gender_params)
+        pornstar_params.extend(gender_params)
         if gender_fragment:
-            actor_sql += f" AND {gender_fragment}"
-        actor_sql += " ORDER BY pornstars.name ASC"
-        actors = await conn.fetch(actor_sql, *actor_params)
+            pornstar_sql += f" AND {gender_fragment}"
+        pornstar_sql += " ORDER BY pornstars.name ASC"
+        pornstars = await conn.fetch(pornstar_sql, *pornstar_params)
         studios = await conn.fetch(
             """
             SELECT studios.id, studios.name, studios.slug
@@ -613,7 +613,7 @@ async def get_video(
         except Exception:
             payload["qualities"] = None
 
-    payload["actors"] = [TermRef(**dict(r)) for r in actors]
+    payload["pornstars"] = [TermRef(**dict(r)) for r in pornstars]
     payload["studios"] = [TermRef(**dict(r)) for r in studios]
     payload["categories"] = [TermRef(**dict(r)) for r in categories]
     return VideoDetail(**payload)

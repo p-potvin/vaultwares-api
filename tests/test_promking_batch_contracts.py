@@ -34,9 +34,9 @@ def test_video_add_taxonomy_request_uses_pornstars_kind():
     assert request.kind == "pornstars"
 
 
-def test_video_add_taxonomy_request_rejects_actor_kind_for_writes():
+def test_video_add_taxonomy_request_rejects_invalid_kind_for_writes():
     with pytest.raises(ValidationError):
-        BatchAddTaxonomyRequest(video_ids=[10], kind="actors", term_ids=[3])
+        BatchAddTaxonomyRequest(video_ids=[10], kind="invalid", term_ids=[3])
 
 
 def test_metadata_update_clause_only_allows_safe_video_fields():

@@ -140,7 +140,7 @@ class VideoListItem(BaseModel):
     views: int = 0
     created_at: datetime
     disabled_at: Optional[datetime] = None
-    actors: list[TermRef] = Field(default_factory=list)
+    pornstars: list[TermRef] = Field(default_factory=list)
     studios: list[TermRef] = Field(default_factory=list)
     qualities: Optional[list[dict]] = None
 
