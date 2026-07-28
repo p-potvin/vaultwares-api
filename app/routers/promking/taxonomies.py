@@ -92,6 +92,7 @@ async def list_terms(
     ),
     sort: str = Query("default", description="Sort order: 'default', 'name_asc', 'name_desc', 'videos_asc', 'videos_desc', 'id_asc', 'id_desc', 'hot' (alias 'trending')"),
     include_disabled: bool = Query(False, description="If true, includes disabled terms"),
+    letter: str | None = Query(None, description="Filter by first letter (A-Z or 0-9)"),
 ) -> list[TermRef]:
     table_config = get_table_config(kind)
     table, join_table, term_column = (
@@ -118,6 +119,13 @@ async def list_terms(
 
     if q:
         extra_where.append(f"{table}.name ILIKE {add_param(f'%{q}%')}")
+
+    if letter:
+        let = letter.upper()
+        if let == "0-9":
+            extra_where.append(f"{table}.name ~ '^[0-9]'")
+        elif len(let) == 1 and let.isalpha():
+            extra_where.append(f"UPPER(LEFT({table}.name, 1)) = {add_param(let)}")
 
     if not include_disabled:
         extra_where.append(f"{table}.disabled = false")
@@ -286,6 +294,7 @@ async def count_terms(
     q: str | None = Query(None),
     gender: str | None = Query(None),
     include_disabled: bool = Query(False),
+    letter: str | None = Query(None, description="Filter by first letter (A-Z or 0-9)"),
 ) -> dict:
     """
     Count rows matching the same filters as list_terms. Cheap path the admin
@@ -312,6 +321,12 @@ async def count_terms(
 
     if q:
         extra_where.append(f"{table}.name ILIKE {add_param(f'%{q}%')}")
+    if letter:
+        let = letter.upper()
+        if let == "0-9":
+            extra_where.append(f"{table}.name ~ '^[0-9]'")
+        elif len(let) == 1 and let.isalpha():
+            extra_where.append(f"UPPER(LEFT({table}.name, 1)) = {add_param(let)}")
     if not include_disabled:
         extra_where.append(f"{table}.disabled = false")
     if gender and table_config.has_gender and gender.lower() != "all":
