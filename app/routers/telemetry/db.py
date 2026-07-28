@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -313,14 +314,24 @@ def _max_metric(rows: Iterable[Any], key: str) -> float:
     return max(values) if values else 0.0
 
 
-def _hotspot_peak(rows: Iterable[Any]) -> float:
-    """Largest single click-hotspot bucket, summed across rows."""
+def _hotspot_buckets(rows: Iterable[Any]) -> Dict[str, float]:
     hotspots: Dict[str, float] = {}
     for row in rows:
         metrics = _as_dict(row["metrics"])
         for key, value in (metrics.get("click_hotspots") or {}).items():
             hotspots[key] = hotspots.get(key, 0.0) + float(value or 0)
-    return max(hotspots.values()) if hotspots else 0.0
+    return hotspots
+
+
+def _hotspot_peak(rows: Iterable[Any]) -> float:
+    """Largest single click-hotspot bucket, summed across rows."""
+    buckets = _hotspot_buckets(rows)
+    return max(buckets.values()) if buckets else 0.0
+
+
+def _hotspot_total(rows: Iterable[Any]) -> float:
+    """Clicks actually attributed to a hotspot bucket."""
+    return sum(_hotspot_buckets(rows).values())
 
 
 def _natural_path_summary(
@@ -349,11 +360,15 @@ def _kpi_signals(
     generated_at: datetime,
     peaks: Dict[str, float] | None = None,
     hotspot_peak: float | None = None,
+    hotspot_total: float | None = None,
     best_hour: int | None = None,
     best_day: str | None = None,
     active_day_count: int | None = None,
     sample_count: int | None = None,
     expected_minutes: int | None = None,
+    late_night_minutes: float | None = None,
+    weekly_consistency: float | None = None,
+    ramp_up_minutes: float | None = None,
 ) -> Dict[str, Any]:
     """Derive KPI signals.
 
@@ -400,6 +415,8 @@ def _kpi_signals(
         expected_minutes = max(1, hours * 60)
     if hotspot_peak is None:
         hotspot_peak = _hotspot_peak(rows_list)
+    if hotspot_total is None:
+        hotspot_total = _hotspot_total(rows_list)
 
     lag_minutes = 0.0
     if latest_received_at:
@@ -407,7 +424,10 @@ def _kpi_signals(
 
     return {
         "focus": {
-            "context_switches_per_hour": round(context_switches / max(1.0, hours), 2),
+            # Per *active* hour, not wall-clock hour. Wall-clock included idle
+            # time, so this could not be reconciled with flow stability
+            # (active minutes per switch); the two are now exact reciprocals.
+            "context_switches_per_hour": round(context_switches / max(0.01, active_hours), 2),
             "avg_focus_minutes_per_switch": round(active_minutes / max(1.0, context_switches), 2),
             "longest_focus_block_minutes": round(peak("longest_focus_streak_seconds") / 60.0, 2),
             "avg_recorded_focus_streak_minutes": round(
@@ -430,7 +450,11 @@ def _kpi_signals(
             "clicks_per_active_minute": round(clicks / max(1.0, active_minutes), 2),
             "scrolls_per_active_minute": round(totals.get("scroll_ticks", 0.0) / max(1.0, active_minutes), 2),
             "pointer_meters_per_active_hour": round(totals.get("mouse_distance_m", 0.0) / max(0.01, active_hours), 2),
-            "hotspot_top_share": round(hotspot_peak / clicks, 4) if clicks > 0 and hotspot_peak else 0.0,
+            # Share of *bucketed* clicks, matching the denominator clients use to
+            # label each zone on the hotspot grid. Dividing by total clicks
+            # instead understated this whenever some clicks landed outside a
+            # sampled bucket.
+            "hotspot_top_share": round(hotspot_peak / hotspot_total, 4) if hotspot_total > 0 else 0.0,
         },
         "rhythm": {
             "best_hour_utc": best_hour,
@@ -438,9 +462,16 @@ def _kpi_signals(
             "active_minutes_per_day": round(active_minutes / max(1.0, active_day_count), 2),
             "avg_rest_gap_minutes": round((totals.get("rest_gap_seconds_total", 0.0) / max(1.0, totals.get("active_starts_after_rest", 0.0))) / 60.0, 2),
             "longest_rest_gap_minutes": round(peak("rest_gap_seconds_max") / 60.0, 2),
+            # Previously absent from the payload entirely, which is why the
+            # dashboard rendered "-" for these three.
+            "ramp_up_minutes": round(ramp_up_minutes, 2) if ramp_up_minutes is not None else None,
+            "weekly_consistency_score": round(weekly_consistency, 4) if weekly_consistency is not None else None,
+            "late_night_active_minutes": round(late_night_minutes, 2) if late_night_minutes is not None else None,
         },
         "reliability": {
-            "data_coverage_percent": round((sample_count / expected_minutes) * 100.0, 2),
+            # Bounded by definition: it is a share of the window. Clamped so a
+            # boundary rounding artefact can never surface as >100% again.
+            "data_coverage_percent": round(min(100.0, (sample_count / expected_minutes) * 100.0), 2),
             "missing_minutes_estimate": max(0, expected_minutes - sample_count),
             "batch_lag_minutes": round(lag_minutes, 2),
             "spool_backlog_batches": int(peak("spool_backlog_batches")),
@@ -493,7 +524,13 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
 
         span = await conn.fetchrow(
             f"""
-            SELECT COUNT(*) AS sample_count,
+            SELECT COUNT(*) AS event_count,
+                   -- Coverage counts *minutes observed*, so it must be distinct
+                   -- minute buckets from minute_rollup events only. Counting raw
+                   -- rows let natural_path (and any duplicate rollup for the same
+                   -- minute) inflate the numerator past 100%.
+                   COUNT(DISTINCT date_trunc('minute', {_EVENT_TS_SQL}))
+                       FILTER (WHERE event_type = 'minute_rollup') AS covered_minutes,
                    MIN({_EVENT_TS_SQL}) AS first_seen,
                    COUNT(DISTINCT (({_EVENT_TS_SQL}) AT TIME ZONE 'UTC')::date) AS active_days
             FROM input_events
@@ -518,6 +555,49 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
             FROM input_events
             WHERE {_EVENT_TS_SQL} >= $1
             GROUP BY 1 ORDER BY total DESC LIMIT 1
+            """,
+            since,
+        )
+        # Active seconds logged between 22:00 and 06:00 UTC.
+        late_night_row = await conn.fetchrow(
+            f"""
+            SELECT COALESCE(SUM({_WEIGHT_SQL}), 0) AS total
+            FROM input_events
+            WHERE {_EVENT_TS_SQL} >= $1
+              AND (
+                    EXTRACT(HOUR FROM (({_EVENT_TS_SQL}) AT TIME ZONE 'UTC')) >= 22
+                 OR EXTRACT(HOUR FROM (({_EVENT_TS_SQL}) AT TIME ZONE 'UTC')) < 6
+              )
+            """,
+            since,
+        )
+        # Active weight per ISO weekday, for the consistency score.
+        weekday_rows = await conn.fetch(
+            f"""
+            SELECT EXTRACT(ISODOW FROM (({_EVENT_TS_SQL}) AT TIME ZONE 'UTC'))::int AS dow,
+                   SUM({_WEIGHT_SQL}) AS total
+            FROM input_events
+            WHERE {_EVENT_TS_SQL} >= $1
+            GROUP BY 1
+            """,
+            since,
+        )
+        # First activity vs. first "full" minute of each day, for ramp-up.
+        ramp_rows = await conn.fetch(
+            f"""
+            WITH per_day AS (
+                SELECT (({_EVENT_TS_SQL}) AT TIME ZONE 'UTC')::date AS day,
+                       {_EVENT_TS_SQL} AS ts,
+                       {_WEIGHT_SQL} AS weight
+                FROM input_events
+                WHERE {_EVENT_TS_SQL} >= $1
+                  AND event_type = 'minute_rollup'
+            )
+            SELECT day,
+                   MIN(ts) AS first_ts,
+                   MIN(ts) FILTER (WHERE weight >= 48) AS steady_ts
+            FROM per_day
+            GROUP BY day
             """,
             since,
         )
@@ -590,16 +670,43 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
     totals = {row["name"]: float(row["total"] or 0) for row in metric_rows}
     peaks = {row["name"]: float(row["peak"] or 0) for row in metric_rows}
 
-    sample_count = int(span["sample_count"] or 0) if span else 0
+    covered_minutes = int(span["covered_minutes"] or 0) if span else 0
     active_days = int(span["active_days"] or 0) if span else 0
     first_seen = span["first_seen"] if span else None
+
+    # ── Rhythm signals ───────────────────────────────────────────────────────
+    late_night_minutes = float((late_night_row["total"] if late_night_row else 0) or 0) / 60.0
+
+    # Weekly consistency: normalized entropy of active weight across weekdays.
+    # 1.0 = spread perfectly evenly, 0.0 = the entire load on a single day.
+    weekday_weights = [float(row["total"] or 0) for row in weekday_rows if (row["total"] or 0) > 0]
+    weekly_consistency = None
+    if weekday_weights:
+        if len(weekday_weights) == 1:
+            weekly_consistency = 0.0
+        else:
+            grand = sum(weekday_weights)
+            entropy = -sum((w / grand) * math.log(w / grand) for w in weekday_weights)
+            weekly_consistency = entropy / math.log(7)
+
+    # Ramp-up: minutes from a day's first recorded activity to its first
+    # near-full active minute (>=48s of 60), averaged over days that reached one.
+    ramp_deltas = [
+        (row["steady_ts"] - row["first_ts"]).total_seconds() / 60.0
+        for row in ramp_rows
+        if row["steady_ts"] and row["first_ts"]
+    ]
+    ramp_up_minutes = sum(ramp_deltas) / len(ramp_deltas) if ramp_deltas else None
 
     # Coverage is measured against the span actually observable in this window,
     # not the raw request. Asking for 20 years of history when the tracker has
     # only ever recorded a month should not report ~0% coverage.
     observed_hours = (generated_at - first_seen).total_seconds() / 3600.0 if first_seen else 0.0
     effective_hours = min(float(window_hours), observed_hours) if first_seen else float(window_hours)
-    expected_minutes = max(1, int(round(max(effective_hours, 0.0) * 60)))
+    # +1 because a span running from the first to the last recorded minute
+    # contains one more minute bucket than the elapsed difference between them
+    # (1439 minutes elapsed == 1440 distinct minutes observed).
+    expected_minutes = max(1, int(round(max(effective_hours, 0.0) * 60)) + (1 if first_seen else 0))
 
     latest_dt = latest_row["received_at"] if latest_row else None
     latest = latest_dt.isoformat() if latest_dt else None
@@ -638,6 +745,10 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
             {"category": row["category"], "name": row["name"], "count": round(float(row["total"] or 0), 2)}
             for row in window_rows
         ],
+        # Total across *all* hotspot buckets, not just the top 20 returned above.
+        # Clients need this as the denominator so their per-zone percentages
+        # agree with hotspot_top_share.
+        "click_hotspot_total": round(sum(hotspots.values()), 2) if hotspots else 0.0,
         "kpis": _kpi_signals(
             (),
             totals,
@@ -646,11 +757,15 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
             generated_at=generated_at,
             peaks=peaks,
             hotspot_peak=max(hotspots.values()) if hotspots else 0.0,
+            hotspot_total=sum(hotspots.values()) if hotspots else 0.0,
             best_hour=int(best_hour_row["name"]) if best_hour_row and best_hour_row["name"] is not None else None,
             best_day=best_day_row["name"].isoformat() if best_day_row and best_day_row["name"] else None,
             active_day_count=active_days,
-            sample_count=sample_count,
+            sample_count=covered_minutes,
             expected_minutes=expected_minutes,
+            late_night_minutes=late_night_minutes,
+            weekly_consistency=weekly_consistency,
+            ramp_up_minutes=ramp_up_minutes,
         ),
         "events": [
             {

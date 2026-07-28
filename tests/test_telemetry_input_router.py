@@ -181,13 +181,22 @@ def test_kpi_signals_derive_focus_typing_pointer_rhythm_and_reliability():
         generated_at=datetime(2026, 6, 7, 15, 7, tzinfo=timezone.utc),
     )
 
-    assert kpis["focus"]["context_switches_per_hour"] == 1.5
+    # Switch rate is per *active* hour, not wall-clock: 3 switches over 180
+    # active seconds (0.05h) => 60/h. Wall-clock hours counted idle time, which
+    # made this irreconcilable with avg_focus_minutes_per_switch below.
+    assert kpis["focus"]["context_switches_per_hour"] == 60.0
+    # The two are exact reciprocals: 60 / (switches per active hour) == minutes
+    # per switch. Guards against the pair drifting apart again.
+    assert kpis["focus"]["avg_focus_minutes_per_switch"] == 1.0
+    assert 60 / kpis["focus"]["context_switches_per_hour"] == kpis["focus"]["avg_focus_minutes_per_switch"]
     assert kpis["focus"]["longest_focus_block_minutes"] == 3.0
     assert kpis["focus"]["avg_switch_recovery_seconds"] == 5.0
     assert kpis["typing"]["paste_share"] == 0.5
     assert kpis["typing"]["shortcut_density_per_1000_keys"] == 50.0
     assert kpis["pointer"]["scrolls_per_active_minute"] == 20.0
-    assert kpis["pointer"]["hotspot_top_share"] == 0.5
+    # Share of *bucketed* clicks (15 in the top bucket of 20 total), not of all
+    # recorded clicks -- this is the denominator the hotspot grid labels use.
+    assert kpis["pointer"]["hotspot_top_share"] == 0.75
     assert kpis["rhythm"]["best_hour_utc"] == 15
     assert kpis["rhythm"]["best_day"] == "2026-06-07"
     assert kpis["reliability"]["data_coverage_percent"] == 1.67
