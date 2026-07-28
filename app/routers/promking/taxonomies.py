@@ -5,7 +5,13 @@ from dataclasses import dataclass
 import re
 import time
 
-from fastapi import APIRouter, HTTPException, Path, Query
+from fastapi import APIRouter, HTTPException, Path, Query, Request, Response
+from fastapi.responses import Response
+from fastapi.concurrency import run_in_threadpool
+import urllib.request
+import urllib.parse
+import io
+from PIL import Image
 
 from .db import get_pool
 from ._models import (
@@ -70,6 +76,7 @@ def slugify(value: str) -> str:
 
 @router.get("/{kind}", response_model=list[TermRef])
 async def list_terms(
+    request: Request,
     kind: TaxonomyKind = Path(...),
     site: Site | None = Query(None, description="Deprecated, ignored. Taxonomies are global."),
     limit: int = Query(100, ge=1, le=50000),
@@ -215,47 +222,59 @@ async def list_terms(
             sql = sql.replace(f"__p{index - len(base_params)}__", f"${index}", 1)
 
         rows = await conn.fetch(sql, *base_params, *extra_params)
-    return [TermRef(**dict(r)) for r in rows]
+    results = []
+    user_agent = request.headers.get("user-agent", "").lower()
+    is_mobile = "mobile" in user_agent or "android" in user_agent or "iphone" in user_agent
+    resize_param = request.query_params.get("resize") == "true" or request.headers.get("x-resize-mobile") == "true"
+    
+    for r in rows:
+        item = dict(r)
+        if item.get("image_url") and (is_mobile or resize_param):
+            original_url = item["image_url"]
+            escaped_url = urllib.parse.quote_plus(original_url)
+            item["image_url"] = f"/api/promking/taxonomies/image/resize?url={escaped_url}&w=150&h=150"
+        results.append(TermRef(**item))
+    return results
 
 
 @router.get("/{kind}/by-slug/{slug}", response_model=TermRef)
 async def get_term_by_slug(
+    request: Request,
     kind: TaxonomyKind = Path(...),
     slug: str = Path(...),
     include_disabled: bool = Query(False),
 ) -> TermRef:
     """
     Resolve exactly one term by slug. 404 when it doesn't exist or is deleted.
-
-    Added because there was no such endpoint, and both callers were paying for
-    it. The admin's TermDetail *guessed*: it asked the list endpoint for
-    `q=<slug with dashes as spaces>` and took `list.find(exact) ?? list[0]`.
-    Measured against a copy of prod, that resolves 16,099 pornstars correctly
-    but leaves 950 unopenable ("no term with slug …", because the name never
-    ILIKE-matches the de-slugged guess — "April O'Neil" vs "april o neil") and
-    silently resolves 3 to the *wrong* term, where an edit would hit the wrong
-    row. The public taxonomy pages had no term lookup at all, so a deleted term
-    just rendered an empty page instead of redirecting.
-
-    Path is `/by-slug/{slug}` rather than `/{slug}`: `/{kind}/count` already
-    exists, and a bare `/{kind}/{slug}` would swallow it (and any future
-    sub-route) whenever a term's slug collided with the literal segment.
     """
     config = get_table_config(kind)
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            f"SELECT id, name, slug, disabled{', gender' if config.has_gender else ''} "
+            f"SELECT id, name, slug, disabled"
+            f"{', gender' if config.has_gender else ''}"
+            f"{', image_url' if config.has_image else ''} "
             f"FROM {config.table} WHERE slug = $1 AND deleted_at IS NULL{' AND disabled = false' if not include_disabled else ''}",
             slug,
         )
     if row is None:
         raise HTTPException(status_code=404, detail=f"No {kind[:-1]} with slug '{slug}'")
+
+    image_url = row["image_url"] if config.has_image else None
+    user_agent = request.headers.get("user-agent", "").lower()
+    is_mobile = "mobile" in user_agent or "android" in user_agent or "iphone" in user_agent
+    resize_param = request.query_params.get("resize") == "true" or request.headers.get("x-resize-mobile") == "true"
+    
+    if image_url and (is_mobile or resize_param):
+        escaped_url = urllib.parse.quote_plus(image_url)
+        image_url = f"/api/promking/taxonomies/image/resize?url={escaped_url}&w=150&h=150"
+
     return TermRef(
         id=row["id"],
         name=row["name"],
         slug=row["slug"],
         gender=row["gender"] if config.has_gender else None,
+        image_url=image_url,
         disabled=bool(row["disabled"]),
     )
 
@@ -583,3 +602,53 @@ async def batch_update_pornstar_gender(
             else:
                 errors.append(TaxonomyConflict(term_id=item.pornstar_id, reason="pornstar not found"))
     return BatchTaxonomyGenderUpdateResponse(count=count, errors=errors)
+
+
+@router.get("/image/resize", include_in_schema=True)
+async def resize_image(
+    request: Request,
+    url: str = Query(..., description="The absolute URL of the image to resize"),
+    w: int = Query(150, ge=1, le=2000),
+    h: int = Query(150, ge=1, le=2000),
+):
+    user_agent = request.headers.get("user-agent", "").lower()
+    is_mobile = "mobile" in user_agent or "android" in user_agent or "iphone" in user_agent
+    
+    target_w = w
+    target_h = h
+    if is_mobile:
+        target_w = min(w, 120)
+        target_h = min(h, 120)
+
+    def _fetch():
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        )
+        with urllib.request.urlopen(req, timeout=10.0) as r:
+            return r.read()
+
+    try:
+        img_data = await run_in_threadpool(_fetch)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch image: {str(e)}")
+
+    try:
+        img = Image.open(io.BytesIO(img_data))
+        # Keep transparency / RGBA if needed, or convert to RGB
+        if img.mode in ("RGBA", "LA", "P"):
+            img.thumbnail((target_w, target_h), Image.Resampling.LANCZOS)
+            output_format = "PNG"
+            media_type = "image/png"
+        else:
+            img.thumbnail((target_w, target_h), Image.Resampling.LANCZOS)
+            output_format = "JPEG"
+            media_type = "image/jpeg"
+            
+        out_buf = io.BytesIO()
+        img.save(out_buf, format=output_format, quality=85)
+        return Response(content=out_buf.getvalue(), media_type=media_type, headers={
+            "Cache-Control": "public, max-age=604800, immutable"
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing image: {str(e)}")
