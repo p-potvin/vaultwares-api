@@ -88,7 +88,7 @@ async def ingest_batch(batch: InputBatch, request: Request) -> Dict[str, Any]:
 
 
 @router.get("/summary")
-async def input_summary(hours: int = Query(24, ge=1, le=24 * 14)) -> Dict[str, Any]:
+async def input_summary(hours: int = Query(24, ge=1, le=24 * 365 * 20)) -> Dict[str, Any]:
     return await get_input_summary(hours=hours)
 
 

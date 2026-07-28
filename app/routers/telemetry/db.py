@@ -503,7 +503,6 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
     generated_at = datetime.now(timezone.utc)
     window_hours = max(1, hours)
     since = generated_at - timedelta(hours=window_hours)
-
     async with pool.acquire() as conn:
         # Totals and per-key peaks across the whole window, in one pass.
         metric_rows = await conn.fetch(
@@ -643,6 +642,7 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
             LIMIT 100
             """,
             since,
+            max_events_limit,
         )
         natural_totals = await conn.fetchrow(
             f"""
@@ -656,6 +656,7 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
             WHERE COALESCE(started_at, created_at) >= $1
             """,
             since,
+            max_paths_limit,
         )
         natural_triggers = await conn.fetch(
             """
