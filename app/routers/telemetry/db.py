@@ -210,6 +210,37 @@ async def store_input_batch(batch: Dict[str, Any]) -> Dict[str, Any]:
     return {"batch_id": batch["batch_id"], "inserted": inserted, "duplicates": duplicates, "received": len(events)}
 
 
+# ── Input-summary SQL building blocks ────────────────────────────────────────
+# Aggregates are computed in Postgres rather than by pulling rows into Python.
+# The previous implementation fetched `LIMIT 2000` minute rollups and summed
+# them here, which silently capped every total/KPI at the most recent ~2000
+# minutes (~33h) no matter how wide a window the caller asked for.
+
+_EVENT_TS_SQL = "COALESCE(bucket_start, timestamp, received_at)"
+
+# Mirrors _duration_weight(): max(1.0, active_seconds or duration_seconds).
+_WEIGHT_SQL = """
+    GREATEST(
+        1.0,
+        COALESCE(
+            NULLIF(
+                CASE WHEN jsonb_typeof(metrics -> 'active_seconds') = 'number'
+                     THEN (metrics ->> 'active_seconds')::float8 END,
+                0
+            ),
+            CASE WHEN jsonb_typeof(metrics -> 'duration_seconds') = 'number'
+                 THEN (metrics ->> 'duration_seconds')::float8 END,
+            0
+        )
+    )
+"""
+
+
+def _jsonb_number(expr: str) -> str:
+    """Read a JSONB value as float8, yielding 0 for non-numeric entries."""
+    return f"CASE WHEN jsonb_typeof({expr}) = 'number' THEN ({expr} #>> '{{}}')::float8 ELSE 0 END"
+
+
 def _num(metrics: Dict[str, Any], key: str) -> float:
     try:
         return float(metrics.get(key, 0) or 0)
@@ -232,6 +263,12 @@ def _row_dt(row: Any, key: str) -> datetime | None:
     return None
 
 
+# NOTE: _sum_numeric_metrics / _bucket_counts / _window_counts are the readable
+# reference implementations of the aggregations get_input_summary() now performs
+# in SQL (see _WEIGHT_SQL and the queries below). They are no longer on the
+# request path; they remain as executable documentation of the intended
+# semantics and are covered by tests/test_telemetry_input_router.py. Any change
+# to the SQL aggregation should be mirrored here, and vice versa.
 def _sum_numeric_metrics(rows: Iterable[Any]) -> Dict[str, float]:
     totals: Dict[str, float] = {}
     for row in rows:
@@ -276,44 +313,30 @@ def _max_metric(rows: Iterable[Any], key: str) -> float:
     return max(values) if values else 0.0
 
 
-def _hotspot_top_share(rows: Iterable[Any], clicks: float) -> float:
+def _hotspot_peak(rows: Iterable[Any]) -> float:
+    """Largest single click-hotspot bucket, summed across rows."""
     hotspots: Dict[str, float] = {}
     for row in rows:
         metrics = _as_dict(row["metrics"])
         for key, value in (metrics.get("click_hotspots") or {}).items():
             hotspots[key] = hotspots.get(key, 0.0) + float(value or 0)
-    if not hotspots or clicks <= 0:
-        return 0.0
-    return max(hotspots.values()) / clicks
+    return max(hotspots.values()) if hotspots else 0.0
 
 
-def _natural_path_summary(rows: Iterable[Any]) -> Dict[str, Any]:
-    rows_list = list(rows)
-    triggers: Dict[str, int] = {}
-    total_duration_ms = 0.0
-    total_points = 0.0
-    total_keys = 0.0
-    total_distance_m = 0.0
-    latest = None
-    for row in rows_list:
-        trigger = str(row["trigger"] or "unknown")
-        triggers[trigger] = triggers.get(trigger, 0) + 1
-        total_duration_ms += float(row["duration_ms"] or 0)
-        stats = _as_dict(row["stats"])
-        total_points += float(stats.get("point_count") or 0)
-        total_keys += float(stats.get("key_count") or 0)
-        total_distance_m += float(stats.get("distance_m") or 0)
-        if latest is None and row["started_at"]:
-            latest = row["started_at"].isoformat()
-    count = len(rows_list)
+def _natural_path_summary(
+    totals: Any,
+    trigger_rows: Iterable[Any],
+) -> Dict[str, Any]:
+    count = int((totals["path_count"] if totals else 0) or 0)
+    latest_started = totals["latest_started_at"] if totals else None
     return {
         "count": count,
-        "latest_started_at": latest,
-        "triggers": [{"name": name, "count": count} for name, count in sorted(triggers.items(), key=lambda item: item[1], reverse=True)],
-        "avg_duration_seconds": round((total_duration_ms / max(1, count)) / 1000.0, 2),
-        "avg_points": round(total_points / max(1, count), 2),
-        "avg_keys": round(total_keys / max(1, count), 2),
-        "total_distance_m": round(total_distance_m, 4),
+        "latest_started_at": latest_started.isoformat() if latest_started else None,
+        "triggers": [{"name": row["name"], "count": int(row["count"])} for row in trigger_rows],
+        "avg_duration_seconds": round((float((totals["duration_ms"] if totals else 0) or 0) / max(1, count)) / 1000.0, 2),
+        "avg_points": round(float((totals["points"] if totals else 0) or 0) / max(1, count), 2),
+        "avg_keys": round(float((totals["keys"] if totals else 0) or 0) / max(1, count), 2),
+        "total_distance_m": round(float((totals["distance_m"] if totals else 0) or 0), 4),
     }
 
 
@@ -324,7 +347,20 @@ def _kpi_signals(
     hours: int,
     latest_received_at: datetime | None,
     generated_at: datetime,
+    peaks: Dict[str, float] | None = None,
+    hotspot_peak: float | None = None,
+    best_hour: int | None = None,
+    best_day: str | None = None,
+    active_day_count: int | None = None,
+    sample_count: int | None = None,
+    expected_minutes: int | None = None,
 ) -> Dict[str, Any]:
+    """Derive KPI signals.
+
+    The keyword arguments let a caller supply values already aggregated in SQL
+    over the *full* window. When omitted they are derived from ``rows``, which
+    keeps the pure-Python path (and its unit tests) working unchanged.
+    """
     rows_list = list(rows)
     active_minutes = max(0.0, totals.get("active_seconds", 0.0) / 60.0)
     active_hours = active_minutes / 60.0
@@ -336,20 +372,35 @@ def _kpi_signals(
     focus_streak_samples = totals.get("focus_streak_samples", 0.0)
     recovery_samples = totals.get("switch_recovery_samples", 0.0)
 
-    active_by_hour: Dict[int, float] = {}
-    active_by_day: Dict[str, float] = {}
-    for row in rows_list:
-        timestamp = _row_dt(row, "bucket_start") or _row_dt(row, "timestamp") or _row_dt(row, "received_at")
-        if not timestamp:
-            continue
-        active = _duration_weight(_as_dict(row["metrics"]))
-        active_by_hour[timestamp.hour] = active_by_hour.get(timestamp.hour, 0.0) + active
-        day = timestamp.date().isoformat()
-        active_by_day[day] = active_by_day.get(day, 0.0) + active
+    if best_hour is None or best_day is None or active_day_count is None:
+        active_by_hour: Dict[int, float] = {}
+        active_by_day: Dict[str, float] = {}
+        for row in rows_list:
+            timestamp = _row_dt(row, "bucket_start") or _row_dt(row, "timestamp") or _row_dt(row, "received_at")
+            if not timestamp:
+                continue
+            active = _duration_weight(_as_dict(row["metrics"]))
+            active_by_hour[timestamp.hour] = active_by_hour.get(timestamp.hour, 0.0) + active
+            day = timestamp.date().isoformat()
+            active_by_day[day] = active_by_day.get(day, 0.0) + active
 
-    best_hour = max(active_by_hour.items(), key=lambda item: item[1])[0] if active_by_hour else None
-    best_day = max(active_by_day.items(), key=lambda item: item[1])[0] if active_by_day else None
-    expected_minutes = max(1, hours * 60)
+        if best_hour is None:
+            best_hour = max(active_by_hour.items(), key=lambda item: item[1])[0] if active_by_hour else None
+        if best_day is None:
+            best_day = max(active_by_day.items(), key=lambda item: item[1])[0] if active_by_day else None
+        if active_day_count is None:
+            active_day_count = len(active_by_day)
+
+    def peak(key: str) -> float:
+        return peaks.get(key, 0.0) if peaks is not None else _max_metric(rows_list, key)
+
+    if sample_count is None:
+        sample_count = len(rows_list)
+    if expected_minutes is None:
+        expected_minutes = max(1, hours * 60)
+    if hotspot_peak is None:
+        hotspot_peak = _hotspot_peak(rows_list)
+
     lag_minutes = 0.0
     if latest_received_at:
         lag_minutes = max(0.0, (generated_at - latest_received_at).total_seconds() / 60.0)
@@ -358,7 +409,7 @@ def _kpi_signals(
         "focus": {
             "context_switches_per_hour": round(context_switches / max(1.0, hours), 2),
             "avg_focus_minutes_per_switch": round(active_minutes / max(1.0, context_switches), 2),
-            "longest_focus_block_minutes": round(_max_metric(rows_list, "longest_focus_streak_seconds") / 60.0, 2),
+            "longest_focus_block_minutes": round(peak("longest_focus_streak_seconds") / 60.0, 2),
             "avg_recorded_focus_streak_minutes": round(
                 (totals.get("focus_streak_seconds_total", 0.0) / max(1.0, focus_streak_samples)) / 60.0,
                 2,
@@ -367,7 +418,7 @@ def _kpi_signals(
                 totals.get("switch_recovery_seconds_total", 0.0) / max(1.0, recovery_samples),
                 2,
             ),
-            "longest_active_block_minutes": round(_max_metric(rows_list, "longest_active_block_seconds") / 60.0, 2),
+            "longest_active_block_minutes": round(peak("longest_active_block_seconds") / 60.0, 2),
         },
         "typing": {
             "paste_share": round(chars_pasted / max(1.0, chars_typed + chars_pasted), 4),
@@ -379,83 +430,196 @@ def _kpi_signals(
             "clicks_per_active_minute": round(clicks / max(1.0, active_minutes), 2),
             "scrolls_per_active_minute": round(totals.get("scroll_ticks", 0.0) / max(1.0, active_minutes), 2),
             "pointer_meters_per_active_hour": round(totals.get("mouse_distance_m", 0.0) / max(0.01, active_hours), 2),
-            "hotspot_top_share": round(_hotspot_top_share(rows_list, clicks), 4),
+            "hotspot_top_share": round(hotspot_peak / clicks, 4) if clicks > 0 and hotspot_peak else 0.0,
         },
         "rhythm": {
             "best_hour_utc": best_hour,
             "best_day": best_day,
-            "active_minutes_per_day": round(active_minutes / max(1.0, len(active_by_day)), 2),
+            "active_minutes_per_day": round(active_minutes / max(1.0, active_day_count), 2),
             "avg_rest_gap_minutes": round((totals.get("rest_gap_seconds_total", 0.0) / max(1.0, totals.get("active_starts_after_rest", 0.0))) / 60.0, 2),
-            "longest_rest_gap_minutes": round(_max_metric(rows_list, "rest_gap_seconds_max") / 60.0, 2),
+            "longest_rest_gap_minutes": round(peak("rest_gap_seconds_max") / 60.0, 2),
         },
         "reliability": {
-            "data_coverage_percent": round((len(rows_list) / expected_minutes) * 100.0, 2),
-            "missing_minutes_estimate": max(0, expected_minutes - len(rows_list)),
+            "data_coverage_percent": round((sample_count / expected_minutes) * 100.0, 2),
+            "missing_minutes_estimate": max(0, expected_minutes - sample_count),
             "batch_lag_minutes": round(lag_minutes, 2),
-            "spool_backlog_batches": int(_max_metric(rows_list, "spool_backlog_batches")),
-            "spool_backlog_bytes": int(_max_metric(rows_list, "spool_backlog_bytes")),
+            "spool_backlog_batches": int(peak("spool_backlog_batches")),
+            "spool_backlog_bytes": int(peak("spool_backlog_bytes")),
         },
     }
+
+
+async def _nested_metric_sums(conn: Any, since: datetime, field: str) -> Dict[str, float]:
+    """SUM a nested JSONB map inside metrics (e.g. click_hotspots) by key."""
+    rows = await conn.fetch(
+        f"""
+        SELECT kv.key AS name, SUM({_jsonb_number('kv.value')}) AS total
+        FROM input_events
+        CROSS JOIN LATERAL jsonb_each(metrics -> '{field}') AS kv
+        WHERE {_EVENT_TS_SQL} >= $1
+          AND jsonb_typeof(metrics -> '{field}') = 'object'
+        GROUP BY kv.key
+        """,
+        since,
+    )
+    return {row["name"]: float(row["total"] or 0) for row in rows}
 
 
 async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
     if os.environ.get("VW_TELEMETRY_AUTO_SCHEMA", "1") == "1":
         await ensure_schema()
     pool = await get_pool()
-    since = datetime.now(timezone.utc) - timedelta(hours=max(1, min(hours, 24 * 14)))
+    generated_at = datetime.now(timezone.utc)
+    window_hours = max(1, hours)
+    since = generated_at - timedelta(hours=window_hours)
+
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
+        # Totals and per-key peaks across the whole window, in one pass.
+        metric_rows = await conn.fetch(
+            f"""
+            SELECT kv.key AS name,
+                   SUM({_jsonb_number('kv.value')}) AS total,
+                   MAX({_jsonb_number('kv.value')}) AS peak
+            FROM input_events
+            CROSS JOIN LATERAL jsonb_each(metrics) AS kv
+            WHERE {_EVENT_TS_SQL} >= $1
+              AND jsonb_typeof(kv.value) = 'number'
+            GROUP BY kv.key
+            """,
+            since,
+        )
+        latency = await _nested_metric_sums(conn, since, "key_latency_buckets")
+        hotspots = await _nested_metric_sums(conn, since, "click_hotspots")
+
+        span = await conn.fetchrow(
+            f"""
+            SELECT COUNT(*) AS sample_count,
+                   MIN({_EVENT_TS_SQL}) AS first_seen,
+                   COUNT(DISTINCT (({_EVENT_TS_SQL}) AT TIME ZONE 'UTC')::date) AS active_days
+            FROM input_events
+            WHERE {_EVENT_TS_SQL} >= $1
+            """,
+            since,
+        )
+        latest_row = await conn.fetchrow(
+            f"""
+            SELECT received_at
+            FROM input_events
+            WHERE {_EVENT_TS_SQL} >= $1
+            ORDER BY {_EVENT_TS_SQL} DESC
+            LIMIT 1
+            """,
+            since,
+        )
+        best_hour_row = await conn.fetchrow(
+            f"""
+            SELECT EXTRACT(HOUR FROM (({_EVENT_TS_SQL}) AT TIME ZONE 'UTC'))::int AS name,
+                   SUM({_WEIGHT_SQL}) AS total
+            FROM input_events
+            WHERE {_EVENT_TS_SQL} >= $1
+            GROUP BY 1 ORDER BY total DESC LIMIT 1
+            """,
+            since,
+        )
+        best_day_row = await conn.fetchrow(
+            f"""
+            SELECT (({_EVENT_TS_SQL}) AT TIME ZONE 'UTC')::date AS name,
+                   SUM({_WEIGHT_SQL}) AS total
+            FROM input_events
+            WHERE {_EVENT_TS_SQL} >= $1
+            GROUP BY 1 ORDER BY total DESC LIMIT 1
+            """,
+            since,
+        )
+        focus_rows = await conn.fetch(
+            f"""
+            SELECT COALESCE(NULLIF(dimensions ->> 'focus_category', ''), 'unknown') AS name,
+                   SUM({_WEIGHT_SQL}) AS total
+            FROM input_events
+            WHERE {_EVENT_TS_SQL} >= $1
+            GROUP BY 1 ORDER BY total DESC
+            """,
+            since,
+        )
+        window_rows = await conn.fetch(
+            f"""
+            SELECT COALESCE(NULLIF(dimensions ->> 'focus_category', ''), 'unknown') AS category,
+                   COALESCE(NULLIF(dimensions ->> 'window_name', ''),
+                            NULLIF(dimensions ->> 'window_app', ''), 'unknown') AS name,
+                   SUM({_WEIGHT_SQL}) AS total
+            FROM input_events
+            WHERE {_EVENT_TS_SQL} >= $1
+            GROUP BY 1, 2 ORDER BY total DESC LIMIT 20
+            """,
+            since,
+        )
+        # Display-only tail; the aggregates above already cover the full window.
+        event_rows = await conn.fetch(
+            f"""
             SELECT event_id, event_type, timestamp, bucket_start, metrics, dimensions, received_at
             FROM input_events
-            WHERE COALESCE(bucket_start, timestamp, received_at) >= $1
-            ORDER BY COALESCE(bucket_start, timestamp, received_at) DESC
-            LIMIT 2000
+            WHERE {_EVENT_TS_SQL} >= $1
+            ORDER BY {_EVENT_TS_SQL} DESC
+            LIMIT 100
             """,
             since,
         )
-        natural_rows = await conn.fetch(
-            """
-            SELECT path_id, trigger, started_at, ended_at, duration_ms, stats
+        natural_totals = await conn.fetchrow(
+            f"""
+            SELECT COUNT(*) AS path_count,
+                   MAX(COALESCE(started_at, created_at)) AS latest_started_at,
+                   COALESCE(SUM(duration_ms), 0) AS duration_ms,
+                   COALESCE(SUM({_jsonb_number("stats -> 'point_count'")}), 0) AS points,
+                   COALESCE(SUM({_jsonb_number("stats -> 'key_count'")}), 0) AS keys,
+                   COALESCE(SUM({_jsonb_number("stats -> 'distance_m'")}), 0) AS distance_m
             FROM natural_paths
             WHERE COALESCE(started_at, created_at) >= $1
-            ORDER BY COALESCE(started_at, created_at) DESC
-            LIMIT 500
             """,
             since,
         )
-    rows_list = list(rows)
-    totals = _sum_numeric_metrics(rows_list)
-    latency: Dict[str, float] = {}
-    hotspots: Dict[str, float] = {}
-    latest = None
-    latest_dt = None
-    for row in rows_list:
-        metrics = _as_dict(row["metrics"])
-        if latest is None:
-            latest_dt = row["received_at"]
-            latest = latest_dt.isoformat() if latest_dt else None
-        for key, value in (metrics.get("key_latency_buckets") or {}).items():
-            latency[key] = latency.get(key, 0.0) + float(value or 0)
-        for key, value in (metrics.get("click_hotspots") or {}).items():
-            hotspots[key] = hotspots.get(key, 0.0) + float(value or 0)
+        natural_triggers = await conn.fetch(
+            """
+            SELECT COALESCE(NULLIF(trigger, ''), 'unknown') AS name, COUNT(*) AS count
+            FROM natural_paths
+            WHERE COALESCE(started_at, created_at) >= $1
+            GROUP BY 1 ORDER BY count DESC
+            """,
+            since,
+        )
+
+    totals = {row["name"]: float(row["total"] or 0) for row in metric_rows}
+    peaks = {row["name"]: float(row["peak"] or 0) for row in metric_rows}
+
+    sample_count = int(span["sample_count"] or 0) if span else 0
+    active_days = int(span["active_days"] or 0) if span else 0
+    first_seen = span["first_seen"] if span else None
+
+    # Coverage is measured against the span actually observable in this window,
+    # not the raw request. Asking for 20 years of history when the tracker has
+    # only ever recorded a month should not report ~0% coverage.
+    observed_hours = (generated_at - first_seen).total_seconds() / 3600.0 if first_seen else 0.0
+    effective_hours = min(float(window_hours), observed_hours) if first_seen else float(window_hours)
+    expected_minutes = max(1, int(round(max(effective_hours, 0.0) * 60)))
+
+    latest_dt = latest_row["received_at"] if latest_row else None
+    latest = latest_dt.isoformat() if latest_dt else None
+
     active_minutes = max(1.0, totals.get("active_seconds", 0.0) / 60.0)
     chars = totals.get("chars_typed", 0.0)
     clicks = totals.get("clicks", 0.0)
     travel_m = totals.get("mouse_distance_m", 0.0)
+
     stale = True
-    if latest:
-        try:
-            stale = datetime.fromisoformat(latest.replace("Z", "+00:00")) < datetime.now(timezone.utc) - timedelta(minutes=10)
-        except Exception:
-            stale = True
-    generated_at = datetime.now(timezone.utc)
+    if latest_dt:
+        stale = latest_dt < generated_at - timedelta(minutes=10)
+
     return {
         "source": "vaultwares-api",
         "status": "stale" if stale else "online",
         "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
         "latest_received_at": latest,
-        "window_hours": hours,
+        "window_hours": window_hours,
+        "effective_window_hours": round(effective_hours, 2),
         "totals": {key: round(value, 4) for key, value in totals.items()},
         "derived": {
             "wpm": round((chars / 5.0) / active_minutes, 2),
@@ -464,11 +628,30 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
             "click_to_travel_ratio": round(clicks / max(0.001, travel_m), 2),
         },
         "key_latency_buckets": [{"name": key, "count": count} for key, count in sorted(latency.items())],
-        "click_hotspots": [{"name": key, "count": count} for key, count in sorted(hotspots.items(), key=lambda item: item[1], reverse=True)[:20]],
-        "natural_paths": _natural_path_summary(natural_rows),
-        "focus_categories": _bucket_counts(rows_list, "focus_category"),
-        "focus_windows": _window_counts(rows_list),
-        "kpis": _kpi_signals(rows_list, totals, hours=hours, latest_received_at=latest_dt, generated_at=generated_at),
+        "click_hotspots": [
+            {"name": key, "count": count}
+            for key, count in sorted(hotspots.items(), key=lambda item: item[1], reverse=True)[:20]
+        ],
+        "natural_paths": _natural_path_summary(natural_totals, natural_triggers),
+        "focus_categories": [{"name": row["name"], "count": round(float(row["total"] or 0), 2)} for row in focus_rows],
+        "focus_windows": [
+            {"category": row["category"], "name": row["name"], "count": round(float(row["total"] or 0), 2)}
+            for row in window_rows
+        ],
+        "kpis": _kpi_signals(
+            (),
+            totals,
+            hours=window_hours,
+            latest_received_at=latest_dt,
+            generated_at=generated_at,
+            peaks=peaks,
+            hotspot_peak=max(hotspots.values()) if hotspots else 0.0,
+            best_hour=int(best_hour_row["name"]) if best_hour_row and best_hour_row["name"] is not None else None,
+            best_day=best_day_row["name"].isoformat() if best_day_row and best_day_row["name"] else None,
+            active_day_count=active_days,
+            sample_count=sample_count,
+            expected_minutes=expected_minutes,
+        ),
         "events": [
             {
                 "event_id": row["event_id"],
@@ -477,7 +660,7 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
                 "metrics": _as_dict(row["metrics"]),
                 "dimensions": _as_dict(row["dimensions"]),
             }
-            for row in rows_list[:100]
+            for row in event_rows
         ],
         "privacy": {
             "raw_text": "natural_paths_raw_keys_owner_opt_in",
