@@ -105,6 +105,80 @@ async def process_batch(pool, table, rows, kind):
                     logger.info(f"  -> Updated image_url")
 
 
+async def backfill_video_terms(pool):
+    logger.info("--- Backfilling videos missing pornstars ---")
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT v.id, v.title
+              FROM videos v
+             LEFT JOIN video_pornstars vp ON vp.video_id = v.id
+             WHERE vp.video_id IS NULL AND v.disabled_at IS NULL
+             ORDER BY v.id DESC
+             LIMIT 200
+            """
+        )
+    logger.info(f"Found {len(rows)} videos without pornstars.")
+    if not rows:
+        return
+
+    async with httpx.AsyncClient() as client:
+        headers = {
+            "Authorization": f"Bearer {TPDB_API_KEY}",
+            "Accept": "application/json"
+        }
+        for row in rows:
+            video_id = row["id"]
+            title = row["title"]
+            logger.info(f"Checking TPDB for video id={video_id}: {title}")
+            url = "https://api.theporndb.net/scenes"
+            try:
+                data = await _make_tpdb_request(client, url, {"parse": title}, headers)
+            except Exception as e:
+                logger.warning(f"  -> TPDB scene search error: {e}")
+                continue
+
+            if not data or not data.get("data"):
+                logger.info("  -> No scene found on TPDB")
+                continue
+
+            scene = data["data"][0] if isinstance(data["data"], list) and data["data"] else data["data"]
+            performers = [p.get("name") for p in scene.get("performers", []) if p.get("name")]
+            studios = []
+            site_info = scene.get("site")
+            if site_info and site_info.get("name"):
+                studios.append(site_info["name"])
+
+            if not performers and not studios:
+                logger.info("  -> Scene found but no performers/studios listed")
+                continue
+
+            async with pool.acquire() as conn:
+                for name in performers:
+                    slug = slugify(name)
+                    if not slug:
+                        continue
+                    p_row = await conn.fetchrow(
+                        "INSERT INTO pornstars (name, slug) VALUES ($1, $2) ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name RETURNING id",
+                        name, slug
+                    )
+                    if p_row:
+                        await conn.execute("INSERT INTO video_pornstars (video_id, pornstar_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", video_id, p_row["id"])
+                        logger.info(f"  -> Linked pornstar: {name}")
+
+                for name in studios:
+                    slug = slugify(name)
+                    if not slug:
+                        continue
+                    s_row = await conn.fetchrow(
+                        "INSERT INTO studios (name, slug) VALUES ($1, $2) ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name RETURNING id",
+                        name, slug
+                    )
+                    if s_row:
+                        await conn.execute("INSERT INTO video_studios (video_id, studio_id) VALUES ($1, $2) ON CONFLICT DO NOTHING", video_id, s_row["id"])
+                        logger.info(f"  -> Linked studio: {name}")
+
+
 async def main():
     dsn = os.environ.get("PROMKING_DATABASE_URL")
     if not dsn:
@@ -117,19 +191,22 @@ async def main():
         init=_register_json_codecs,
     )
     
-    # 1. Backfill pornstars
+    # 1. Backfill pornstars images & gender
     logger.info("--- Backfilling pornstars ---")
     async with pool.acquire() as conn:
         pornstars = await conn.fetch("SELECT id, name FROM pornstars WHERE image_url IS NULL AND deleted_at IS NULL ORDER BY id DESC")
     logger.info(f"Found {len(pornstars)} pornstars to process.")
     await process_batch(pool, "pornstars", pornstars, "performer")
     
-    # 2. Backfill studios
+    # 2. Backfill studios images
     logger.info("--- Backfilling studios ---")
     async with pool.acquire() as conn:
         studios = await conn.fetch("SELECT id, name FROM studios WHERE image_url IS NULL AND deleted_at IS NULL ORDER BY id DESC")
     logger.info(f"Found {len(studios)} studios to process.")
     await process_batch(pool, "studios", studios, "studio")
+    
+    # 3. Backfill videos missing pornstars
+    await backfill_video_terms(pool)
     
     logger.info("Done!")
 

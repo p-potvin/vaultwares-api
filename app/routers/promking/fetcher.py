@@ -434,8 +434,19 @@ async def _fetch_local_term_matches(conn, table: str, names: list[str]) -> dict[
 
 
 async def _validate_video_terms(v: dict, pornstar_matches: dict[str, dict], studio_matches: dict[str, dict]) -> None:
-    source_pornstars = [str(n).strip() for n in (v.get("pornstars") or []) if str(n).strip()]
-    source_studios = [str(n).strip() for n in (v.get("studios") or []) if str(n).strip()]
+    raw_pornstars = [str(n).strip() for n in (v.get("pornstars") or []) if str(n).strip()]
+    raw_studios = [str(n).strip() for n in (v.get("studios") or []) if str(n).strip()]
+
+    source_pornstars: list[str] = []
+    source_studios: list[str] = list(raw_studios)
+
+    # Sub-studio check: if a scraped "pornstar" pill matches an existing studio in DB, treat as studio
+    for name in raw_pornstars:
+        name_k = _name_key(name)
+        if name_k in studio_matches:
+            source_studios.append(name)
+        else:
+            source_pornstars.append(name)
 
     exact_pornstars = _merge_validated_term_names(source_pornstars, pornstar_matches, [])
     exact_studios = _merge_validated_term_names(source_studios, studio_matches, [])
@@ -895,8 +906,9 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
     async with pool.acquire() as conn:
         validation_inputs: list[tuple[dict[str, dict], dict[str, dict]]] = []
         for v in videos:
-            pornstar_matches = await _fetch_local_term_matches(conn, "pornstars", v.get("pornstars") or [])
-            studio_matches = await _fetch_local_term_matches(conn, "studios", v.get("studios") or [])
+            all_names = list(set((v.get("pornstars") or []) + (v.get("studios") or [])))
+            pornstar_matches = await _fetch_local_term_matches(conn, "pornstars", all_names)
+            studio_matches = await _fetch_local_term_matches(conn, "studios", all_names)
             validation_inputs.append((pornstar_matches, studio_matches))
 
     tpdb_sem = asyncio.Semaphore(8)
