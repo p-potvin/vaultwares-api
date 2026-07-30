@@ -167,10 +167,42 @@ def _sanitize(value: Any) -> Any:
     return value
 
 
-def _contains(value: Any, needle: str) -> bool:
-    if not needle:
+def _match_query(event: Any, query: str) -> bool:
+    if not query:
         return True
-    return needle.casefold() in json.dumps(value, ensure_ascii=False, default=str).casefold()
+    if not isinstance(event, dict):
+        return False
+    
+    query_lower = query.casefold()
+    
+    for field in ("summary", "kind", "event_type", "type", "actor", "actor_name", "agentHeader", "agent_header", "plan", "plan_path", "planPath", "service_id", "service_name", "failure_class"):
+        val = event.get(field)
+        if val is not None and query_lower in str(val).casefold():
+            return True
+            
+    commands = event.get("commands") or []
+    if isinstance(commands, list):
+        for cmd in commands:
+            if query_lower in str(cmd).casefold():
+                return True
+    elif query_lower in str(commands).casefold():
+        return True
+        
+    files = event.get("files") or []
+    if isinstance(files, list):
+        for f in files:
+            if query_lower in str(f).casefold():
+                return True
+    elif query_lower in str(files).casefold():
+        return True
+        
+    runtime = event.get("runtime")
+    if isinstance(runtime, dict):
+        for val in runtime.values():
+            if val is not None and query_lower in str(val).casefold():
+                return True
+                
+    return False
 
 
 def _field_matches(value: Any, expected: Optional[str]) -> bool:
@@ -274,7 +306,9 @@ def _load_health_inventory() -> List[Dict[str, Any]]:
     return services if isinstance(services, list) else []
 
 
-def _service_status(status: Optional[str], checked_at: Optional[str]) -> str:
+def _service_status(service_id: str, status: Optional[str], checked_at: Optional[str]) -> str:
+    if service_id.startswith("tech-oracle-") or service_id in {"prom-king-wallpaper-foundry", "media-mullvad-gateway"}:
+        return "suspended"
     normalized = str(status or "").casefold()
     if not checked_at or not normalized:
         return "unmonitored"
@@ -283,7 +317,7 @@ def _service_status(status: Optional[str], checked_at: Optional[str]) -> str:
     if normalized in {"failed", "offline", "error"}:
         return "offline"
     if normalized in {"stale", "missing"}:
-        return "stale"
+        return "degraded"
     if normalized == "unmonitored":
         return "unmonitored"
     return "degraded"
@@ -346,7 +380,7 @@ def get_services_summary() -> Dict[str, Any]:
             for path in paths
             if isinstance(path, dict) and isinstance(path.get("duration_ms"), (int, float))
         ]
-        status = _service_status(rollup.get("status") if rollup else None, checked_at if rollup else None)
+        status = _service_status(service_id, rollup.get("status") if rollup else None, checked_at if rollup else None)
         item = {
                 "id": service_id,
                 "name": service.get("name") or service_id,
@@ -901,12 +935,12 @@ async def overview(
     }
 
 
-def _health_search_items(filters: Dict[str, Optional[str]], query: str, limit: int) -> List[Dict[str, Any]]:
+def _health_search_items(filters: Dict[str, Optional[str]], query: str, start_date: Optional[str], end_date: Optional[str], limit: int) -> List[Dict[str, Any]]:
     root = _health_root()
     items: List[Dict[str, Any]] = []
     for path in _jsonl_files(root / "data" / "events", limit=12):
         for event in _tail_jsonl(path, max_lines=800):
-            if not _contains(event, query):
+            if not _match_query(event, query):
                 continue
             if not _field_matches(event.get("service_id") or event.get("service_name"), filters.get("service")):
                 continue
@@ -914,8 +948,15 @@ def _health_search_items(filters: Dict[str, Optional[str]], query: str, limit: i
                 continue
             if not _field_matches(event.get("event_type"), filters.get("event")):
                 continue
-            if not _field_matches(event.get("timestamp"), filters.get("date")):
-                continue
+            
+            ts = event.get("timestamp")
+            if ts:
+                event_date = ts.split("T")[0]
+                if start_date and event_date < start_date:
+                    continue
+                if end_date and event_date > end_date:
+                    continue
+                    
             ok_filter = filters.get("ok")
             if ok_filter and str(event.get("ok")).casefold() != ok_filter.casefold():
                 continue
@@ -940,12 +981,12 @@ def _health_search_items(filters: Dict[str, Optional[str]], query: str, limit: i
     return items
 
 
-def _agent_search_items(filters: Dict[str, Optional[str]], query: str, limit: int) -> List[Dict[str, Any]]:
+def _agent_search_items(filters: Dict[str, Optional[str]], query: str, start_date: Optional[str], end_date: Optional[str], limit: int) -> List[Dict[str, Any]]:
     root = _agent_root()
     items: List[Dict[str, Any]] = []
     for path in _json_files(root / "events", limit=160):
         event = _read_json(path, {})
-        if not isinstance(event, dict) or not _contains(event, query):
+        if not isinstance(event, dict) or not _match_query(event, query):
             continue
         runtime = event.get("runtime") if isinstance(event.get("runtime"), dict) else {}
         if not _field_matches(event.get("project") or event.get("repo"), filters.get("project")):
@@ -959,8 +1000,13 @@ def _agent_search_items(filters: Dict[str, Optional[str]], query: str, limit: in
         servers = runtime.get("mcpServers") or runtime.get("mcp_servers") or event.get("mcpServers") or []
         if not _field_matches(" ".join(str(server) for server in servers), filters.get("mcp_server")):
             continue
-        if not _field_matches(_event_timestamp(event), filters.get("date")):
-            continue
+        ts = _event_timestamp(event)
+        if ts:
+            event_date = ts.split("T")[0]
+            if start_date and event_date < start_date:
+                continue
+            if end_date and event_date > end_date:
+                continue
         items.append(_agent_event_summary(event, path))
         if len(items) >= limit:
             return items
@@ -979,7 +1025,8 @@ async def events_search(
     service: Optional[str] = None,
     run: Optional[str] = None,
     event: Optional[str] = None,
-    date: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     ok: Optional[str] = None,
     limit: int = Query(40, ge=1, le=100),
 ) -> Dict[str, Any]:
@@ -992,7 +1039,8 @@ async def events_search(
         "service": service,
         "run": run,
         "event": event,
-        "date": date,
+        "start_date": start_date,
+        "end_date": end_date,
         "ok": ok,
     }
     from app.routers.telemetry.agent_ledger_db import search_agent_ledger_events
@@ -1007,7 +1055,8 @@ async def events_search(
             model=model,
             tool=tool,
             mcp_server=mcp_server,
-            date=date,
+            start_date=start_date,
+            end_date=end_date,
             limit=limit,
         )
         raw_items = agent_result.get("items") if isinstance(agent_result.get("items"), list) else []
@@ -1021,7 +1070,7 @@ async def events_search(
             if isinstance(item, dict)
         ]
     if source in {"all", "health-ledger"}:
-        health_items = _health_search_items(filters, q, limit)
+        health_items = _health_search_items(filters, q, start_date, end_date, limit)
     items = sorted(
         agent_items + health_items,
         key=lambda item: str(item.get("timestamp") or ""),

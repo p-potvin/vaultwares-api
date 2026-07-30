@@ -1,6 +1,6 @@
 {
   "name": "vaultwares-api",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "VaultWares core AI/media orchestration engine for multimodal pipelines",
   "keywords": [
     "vaultwares",

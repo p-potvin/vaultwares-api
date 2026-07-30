@@ -211,7 +211,8 @@ async def search_agent_ledger_events(
     model: Optional[str] = None,
     tool: Optional[str] = None,
     mcp_server: Optional[str] = None,
-    date: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
     limit: int = 100,
 ) -> Dict[str, Any]:
     if os.environ.get("VW_TELEMETRY_AUTO_SCHEMA", "1") == "1":
@@ -222,15 +223,28 @@ async def search_agent_ledger_events(
             """
             SELECT raw
             FROM agent_ledger_events
-            WHERE ($1::text = '' OR raw::text ILIKE '%' || $1 || '%')
+            WHERE ($1::text = '' OR (
+                (raw->>'summary' ILIKE '%' || $1 || '%') OR
+                (raw->>'kind' ILIKE '%' || $1 || '%') OR
+                (raw->>'actor' ILIKE '%' || $1 || '%') OR
+                (raw->>'agentHeader' ILIKE '%' || $1 || '%') OR
+                (raw->>'agent_header' ILIKE '%' || $1 || '%') OR
+                (raw->>'plan' ILIKE '%' || $1 || '%') OR
+                (raw->>'planPath' ILIKE '%' || $1 || '%') OR
+                (raw->>'plan_path' ILIKE '%' || $1 || '%') OR
+                (raw->'commands'::text ILIKE '%' || $1 || '%') OR
+                (raw->'files'::text ILIKE '%' || $1 || '%') OR
+                (raw->'runtime'::text ILIKE '%' || $1 || '%')
+              ))
               AND ($2::text IS NULL OR project ILIKE '%' || $2 || '%')
               AND ($3::text IS NULL OR kind ILIKE '%' || $3 || '%')
               AND ($4::text IS NULL OR runtime::text ILIKE '%' || $4 || '%')
               AND ($5::text IS NULL OR runtime::text ILIKE '%' || $5 || '%')
               AND ($6::text IS NULL OR runtime::text ILIKE '%' || $6 || '%')
-              AND ($7::text IS NULL OR created_at::date::text = $7 OR raw::text ILIKE '%' || $7 || '%')
+              AND ($7::text IS NULL OR created_at::date >= $7::date)
+              AND ($8::text IS NULL OR created_at::date <= $8::date)
             ORDER BY COALESCE(created_at, ingested_at) DESC, id DESC
-            LIMIT $8
+            LIMIT $9
             """,
             q,
             project,
@@ -238,7 +252,8 @@ async def search_agent_ledger_events(
             model,
             tool,
             mcp_server,
-            date,
+            start_date,
+            end_date,
             max(1, min(limit, 500)),
         )
     items = [_raw_to_change_event(_as_dict(row["raw"])) for row in rows]
