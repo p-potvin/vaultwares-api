@@ -502,8 +502,16 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
     pool = await get_pool()
     generated_at = datetime.now(timezone.utc)
     window_hours = max(1, hours)
-    since = generated_at - timedelta(hours=window_hours)
+
     async with pool.acquire() as conn:
+        latest_db_row = await conn.fetchrow(
+            f"SELECT received_at FROM input_events ORDER BY {_EVENT_TS_SQL} DESC LIMIT 1"
+        )
+        latest_db_dt = latest_db_row["received_at"] if latest_db_row else None
+        if latest_db_dt:
+            since = latest_db_dt - timedelta(hours=window_hours)
+        else:
+            since = generated_at - timedelta(hours=window_hours)
         # Totals and per-key peaks across the whole window, in one pass.
         metric_rows = await conn.fetch(
             f"""
