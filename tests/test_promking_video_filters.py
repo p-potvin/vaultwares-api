@@ -130,3 +130,23 @@ def test_build_video_filters_disabled_and_source():
     assert "videos.disabled_at IS NOT NULL" in where_sql
     assert "videos.source" not in where_sql
     assert params == ["fxv"]
+
+
+def test_build_video_filters_health():
+    # Test missing_thumbnail
+    where_sql, _, params = build_video_filters(site="fxv", health="missing_thumbnail")
+    assert "videos.thumbnail_url IS NULL OR videos.thumbnail_url = ''" in where_sql
+    assert params == ["fxv"]
+
+    # Test tpdb_matched
+    where_sql, _, params = build_video_filters(site="fxv", health="tpdb_matched")
+    assert "EXISTS (SELECT 1 FROM tpdb_scenes ts WHERE ts.video_id = videos.id)" in where_sql
+
+    # Test tpdb_unmatched
+    where_sql, _, params = build_video_filters(site="fxv", health="tpdb_unmatched")
+    assert "NOT EXISTS (SELECT 1 FROM tpdb_scenes ts WHERE ts.video_id = videos.id)" in where_sql
+
+    # Test untagged_categories
+    where_sql, _, params = build_video_filters(site="fxv", health="untagged_categories")
+    assert "NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = false)" in where_sql
+

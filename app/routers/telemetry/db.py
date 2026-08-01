@@ -508,10 +508,10 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
             f"SELECT received_at FROM input_events ORDER BY {_EVENT_TS_SQL} DESC LIMIT 1"
         )
         latest_db_dt = latest_db_row["received_at"] if latest_db_row else None
-        if latest_db_dt:
-            since = latest_db_dt - timedelta(hours=window_hours)
-        else:
-            since = generated_at - timedelta(hours=window_hours)
+        # Always anchor the window to "now" so historical data is returned
+        # even when the tracker is down. The status light (stale/online)
+        # communicates whether fresh data is flowing.
+        since = generated_at - timedelta(hours=window_hours)
         # Totals and per-key peaks across the whole window, in one pass.
         metric_rows = await conn.fetch(
             f"""
@@ -650,7 +650,6 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
             LIMIT 100
             """,
             since,
-            max_events_limit,
         )
         natural_totals = await conn.fetchrow(
             f"""
@@ -664,7 +663,6 @@ async def get_input_summary(hours: int = 24) -> Dict[str, Any]:
             WHERE COALESCE(started_at, created_at) >= $1
             """,
             since,
-            max_paths_limit,
         )
         natural_triggers = await conn.fetch(
             """

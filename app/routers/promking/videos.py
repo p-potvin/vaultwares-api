@@ -96,6 +96,7 @@ def build_video_filters(
     exclude_slug: str | None = None,
     disabled: bool | None = None,
     source: str | None = None,
+    health: str | None = None,
 ) -> tuple[str, str, list]:
     """Build taxonomy/related filters for list_videos.
 
@@ -212,6 +213,23 @@ def build_video_filters(
             where.append("videos.disabled_at IS NULL")
     if source:
         where.append(f"videos.source = {add_param(source)}")
+    if health:
+        if health == "missing_thumbnail":
+            where.append("(videos.thumbnail_url IS NULL OR videos.thumbnail_url = '')")
+        elif health == "missing_duration":
+            where.append("(videos.duration_seconds IS NULL OR videos.duration_seconds = 0)")
+        elif health == "missing_description":
+            where.append("(videos.description IS NULL OR videos.description = '')")
+        elif health == "tpdb_matched":
+            where.append("EXISTS (SELECT 1 FROM tpdb_scenes ts WHERE ts.video_id = videos.id)")
+        elif health == "tpdb_unmatched":
+            where.append("NOT EXISTS (SELECT 1 FROM tpdb_scenes ts WHERE ts.video_id = videos.id)")
+        elif health == "untagged_categories":
+            where.append("NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = false)")
+        elif health == "untagged_pornstars":
+            where.append("NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = false)")
+        elif health == "untagged_studios":
+            where.append("NOT EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND s.disabled = false)")
 
     return " AND ".join(where), "\n        ".join(joins), params
 
@@ -387,6 +405,7 @@ async def list_videos(
     ),
     disabled: bool | None = Query(False, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
     source: str | None = Query(None, description="Filter by video source."),
+    health: str | None = Query(None, description="Filter by catalog health issue."),
     sort: str = Query("default", description="Sort order: 'default', 'title_asc', 'title_desc', 'views_desc', 'views_asc', 'duration_desc', 'duration_asc', 'date_desc', 'date_asc'"),
 ) -> list[VideoListItem]:
     pool = await get_pool()
@@ -400,6 +419,7 @@ async def list_videos(
         exclude_slug=exclude_slug,
         disabled=disabled,
         source=source,
+        health=health,
     )
     # Optional gender filter on the embedded pornstars_json subquery.
     gender_fragment, gender_params = build_gender_clause(
@@ -505,6 +525,7 @@ async def count_videos(
     category: str | None = Query(None),
     disabled: bool | None = Query(False, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
     source: str | None = Query(None, description="Filter by video source."),
+    health: str | None = Query(None, description="Filter by catalog health issue."),
 ) -> dict:
     """Count videos for the given site + filters. Cheap path for admin pagination."""
     where_sql, joins, params = build_video_filters(
@@ -515,6 +536,7 @@ async def count_videos(
         category=category,
         disabled=disabled,
         source=source,
+        health=health,
     )
     pool = await get_pool()
     sql = f"""

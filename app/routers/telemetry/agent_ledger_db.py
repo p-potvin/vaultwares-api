@@ -232,9 +232,9 @@ async def search_agent_ledger_events(
                 (raw->>'plan' ILIKE '%' || $1 || '%') OR
                 (raw->>'planPath' ILIKE '%' || $1 || '%') OR
                 (raw->>'plan_path' ILIKE '%' || $1 || '%') OR
-                (raw->'commands'::text ILIKE '%' || $1 || '%') OR
-                (raw->'files'::text ILIKE '%' || $1 || '%') OR
-                (raw->'runtime'::text ILIKE '%' || $1 || '%')
+                (raw->'commands')::text ILIKE '%' || $1 || '%' OR
+                (raw->'files')::text ILIKE '%' || $1 || '%' OR
+                (raw->'runtime')::text ILIKE '%' || $1 || '%'
               ))
               AND ($2::text IS NULL OR project ILIKE '%' || $2 || '%')
               AND ($3::text IS NULL OR kind ILIKE '%' || $3 || '%')
