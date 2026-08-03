@@ -433,9 +433,15 @@ async def _fetch_local_term_matches(conn, table: str, names: list[str]) -> dict[
     return {str(r["source_key"]): {"name": str(r["canonical_name"]), "disabled": bool(r["disabled"])} for r in rows}
 
 
-async def _validate_video_terms(v: dict, pornstar_matches: dict[str, dict], studio_matches: dict[str, dict]) -> None:
+async def _validate_video_terms(
+    v: dict,
+    pornstar_matches: dict[str, dict],
+    studio_matches: dict[str, dict],
+    category_matches: dict[str, dict],
+) -> None:
     raw_pornstars = [str(n).strip() for n in (v.get("pornstars") or []) if str(n).strip()]
     raw_studios = [str(n).strip() for n in (v.get("studios") or []) if str(n).strip()]
+    raw_categories = [str(n).strip() for n in (v.get("categories") or []) if str(n).strip()]
 
     source_pornstars: list[str] = []
     source_studios: list[str] = list(raw_studios)
@@ -475,6 +481,13 @@ async def _validate_video_terms(v: dict, pornstar_matches: dict[str, dict], stud
     if not is_disabled:
         for name in _unique_names(source_studios):
             match_data = studio_matches.get(_name_key(name))
+            if match_data and match_data.get("disabled"):
+                is_disabled = True
+                break
+    if not is_disabled:
+        all_cat_names = _unique_names(raw_categories + (v.get("categories") or []))
+        for name in all_cat_names:
+            match_data = category_matches.get(_name_key(name))
             if match_data and match_data.get("disabled"):
                 is_disabled = True
                 break
@@ -610,22 +623,16 @@ async def _drive_term_run(state: RunState) -> None:
     """
     try:
         label = f"{state.term_type}:{state.term_name or state.term_slug}"
-        # fetch_all no longer means "no upper bound" — it means "walk until the
-        # archive tells us to stop". The safety cap here is what actually holds:
-        # pornxp/1porn tag pages happily hand out unrelated content past the
-        # real end, so an unbounded walk is a runaway (see id 57 taking 30+ min
-        # on a single pornstar tag). 30 pages ≈ 720 videos, more than any real
-        # single term.
         MAX_SAFETY_PAGES = 30
         page_budget = MAX_SAFETY_PAGES if state.fetch_all else min(state.pages, MAX_SAFETY_PAGES)
         target = f"up to {page_budget} page(s)"
         await _broadcast(state, json.dumps({"event": "log", "line": f"▶ Term fetch {label} on {state.source} — {target}, cursor ignored."}))
 
-        candidates: list[dict] = []
         fetched_urls: set[str] = set()
         current_page = 1
         consecutive_all_known_pages = 0
         source_declared_pages: Optional[int] = None
+        state.summary = {"fetched": 0, "added": 0, "skipped": 0, "errors": 0}
 
         while current_page <= page_budget:
             await _broadcast(state, json.dumps({"event": "log", "line": f"--- Fetching Page {current_page}/{page_budget} ---"}))
@@ -636,9 +643,6 @@ async def _drive_term_run(state: RunState) -> None:
                 await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
                 break
 
-            # The source may have just told us the real total. This is the only
-            # trustworthy stop signal for pornxp, whose tag pagination keeps
-            # returning unrelated content past the real end of the archive.
             if listing_meta and source_declared_pages is None:
                 total = listing_meta.get("total_items")
                 page_size = listing_meta.get("page_size") or len(page_videos) or 36
@@ -654,61 +658,51 @@ async def _drive_term_run(state: RunState) -> None:
                 break
 
             page_new_urls: list[str] = []
+            page_candidates: list[dict] = []
             for v in page_videos:
                 url = v.get("sourceUrl")
                 if url and url not in fetched_urls:
                     fetched_urls.add(url)
-                    candidates.append(v)
+                    page_candidates.append(v)
                     page_new_urls.append(url)
             if not page_new_urls:
                 await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} repeated earlier items — end of archive."}))
                 break
 
-            # Per-page DB dedup: if every URL on this page is already in the
-            # DB, the "unknown zone" ended pages ago. Two in a row → stop, the
-            # source is likely serving unrelated overflow content.
             existing_on_page = await check_existing_links(state.site, page_new_urls)
             unknown_on_page = len(page_new_urls) - len(existing_on_page)
             await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page}: {unknown_on_page} new / {len(existing_on_page)} already in DB (of {len(page_new_urls)})"}))
+            
             if unknown_on_page == 0:
                 consecutive_all_known_pages += 1
+                state.summary["fetched"] += len(page_videos)
+                state.summary["skipped"] += len(page_videos)
                 if consecutive_all_known_pages >= 2:
                     await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ 2 consecutive all-known pages — stopping."}))
                     break
             else:
                 consecutive_all_known_pages = 0
+                candidates_to_persist = [v for v in page_candidates if v.get("sourceUrl") not in existing_on_page]
+                existing_meta = await get_existing_videos_meta(state.site)
+                filtered_candidates = filter_duplicate_candidates(candidates_to_persist, existing_meta)
+                
+                added_this_page, disabled_this_page = await _persist_videos(state.site, filtered_candidates)
+                skipped_this_page = len(page_videos) - added_this_page
+
+                state.summary["fetched"] += len(page_videos)
+                state.summary["added"] += added_this_page
+                state.summary["skipped"] += skipped_this_page
+
+                await _broadcast(
+                    state,
+                    json.dumps({
+                        "event": "persisted",
+                        "summary": dict(state.summary),
+                        "candidates": len(filtered_candidates),
+                    }),
+                )
             current_page += 1
 
-        urls_to_check = [v["sourceUrl"] for v in candidates if v.get("sourceUrl")]
-        existing_urls = await check_existing_links(state.site, urls_to_check)
-        candidates = [v for v in candidates if v.get("sourceUrl") not in existing_urls]
-
-        await _broadcast(state, json.dumps({"event": "log", "line": f"🔍 Comparing {len(candidates)} candidates by title and duration..."}))
-        existing_meta = await get_existing_videos_meta(state.site)
-        filtered_candidates = filter_duplicate_candidates(candidates, existing_meta)
-
-        await _broadcast(state, json.dumps({"event": "log", "line": f"💾 Persisting {len(filtered_candidates)} videos to database..."}))
-        added = 0
-        if filtered_candidates:
-            try:
-                added = await _persist_videos(state.site, filtered_candidates)
-            except Exception as e:
-                state.error = f"persist failed: {e}"
-
-        state.summary = {
-            "fetched": len(fetched_urls),
-            "added": added,
-            "skipped": len(fetched_urls) - added,
-            "errors": 1 if state.error else 0,
-        }
-        await _broadcast(
-            state,
-            json.dumps({
-                "event": "persisted",
-                "summary": dict(state.summary),
-                "candidates": len(filtered_candidates),
-            }),
-        )
     except Exception as e:
         state.error = f"Term run driver error: {e}"
         await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
@@ -722,7 +716,6 @@ async def _drive_subprocess(state: RunState) -> None:
         return
     try:
         start_page = state.start_page if hasattr(state, "start_page") and state.start_page is not None else await get_manual_cursor(state.site, state.source)
-        # Introduce randomness to the starting page to avoid different sites starting on the same page
         start_offset = 0 if hasattr(state, "start_page") and state.start_page is not None else random.randint(0, 4)
         current_page = start_page + start_offset
         
@@ -731,9 +724,10 @@ async def _drive_subprocess(state: RunState) -> None:
         pages_counted = 0
         has_hit_duplicate = False
         awaiting_new_after_duplicate = False
-        candidates = []
         fetched_urls = set()
         
+        state.summary = {"fetched": 0, "added": 0, "skipped": 0, "errors": 0}
+
         MAX_SAFETY_PAGES = 500
         total_pages_fetched = 0
         
@@ -765,12 +759,6 @@ async def _drive_subprocess(state: RunState) -> None:
                     awaiting_new_after_duplicate = True
                     await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ Hit first duplicate zone at page {current_page}."}))
                 
-                if awaiting_new_after_duplicate:
-                    await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} skipped from count (in duplicate zone)."}))
-                else:
-                    pages_counted += 1
-                    await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} counted. ({pages_counted}/{state.pages})"}))
-                # Random step for the next page to implement randomized fetching
                 page_step = random.randint(1, 3)
                 current_page += page_step
                 continue
@@ -778,64 +766,47 @@ async def _drive_subprocess(state: RunState) -> None:
             urls_to_check = [v["sourceUrl"] for v in unique_page_videos if v.get("sourceUrl")]
             existing_urls = await check_existing_links(state.site, urls_to_check)
             
-            for v in unique_page_videos:
-                url = v.get("sourceUrl")
-                if url in existing_urls:
-                    if not has_hit_duplicate:
-                        has_hit_duplicate = True
-                        awaiting_new_after_duplicate = True
-                        await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ Hit first duplicate at link: {url}"}))
-                else:
-                    candidates.append(v)
-                    if awaiting_new_after_duplicate:
-                        awaiting_new_after_duplicate = False
-                        await _broadcast(state, json.dumps({"event": "log", "line": f"✨ Found next unknown video at page {current_page}. Counting starts now."}))
-            
-            if not awaiting_new_after_duplicate:
-                pages_counted += 1
-                await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} counted towards requested pages. ({pages_counted}/{state.pages})"}))
+            new_candidates = [v for v in unique_page_videos if v.get("sourceUrl") not in existing_urls]
+
+            if not new_candidates:
+                await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page}: all {len(unique_page_videos)} videos already in DB."}))
+                if not has_hit_duplicate:
+                    has_hit_duplicate = True
+                    awaiting_new_after_duplicate = True
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ Hit first duplicate at link on page {current_page}."}))
             else:
-                await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} skipped from count (duplicates zone)."}))
+                existing_meta = await get_existing_videos_meta(state.site)
+                filtered_candidates = filter_duplicate_candidates(new_candidates, existing_meta)
                 
-            # Random step for the next page to implement randomized fetching
+                added_this_page, disabled_this_page = await _persist_videos(state.site, filtered_candidates)
+                
+                skipped_this_page = len(page_videos) - added_this_page
+                state.summary["fetched"] += len(page_videos)
+                state.summary["added"] += added_this_page
+                state.summary["skipped"] += skipped_this_page
+
+                await _broadcast(
+                    state,
+                    json.dumps({
+                        "event": "persisted",
+                        "summary": dict(state.summary),
+                        "candidates": len(filtered_candidates),
+                    }),
+                )
+
+                if added_this_page > 0:
+                    pages_counted += 1
+                    awaiting_new_after_duplicate = False
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"✨ Page {current_page}: +{added_this_page} active videos added to DB ({disabled_this_page} disabled). ({pages_counted}/{state.pages} counted pages)"}))
+                else:
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page}: 0 active videos added (filtered out as duplicates or disabled terms)."}))
+
             page_step = random.randint(1, 3)
             current_page += page_step
             
         await update_manual_cursor(state.site, state.source, current_page)
         await _broadcast(state, json.dumps({"event": "log", "line": f"💾 Saved next cursor page P = {current_page} in DB settings."}))
         
-        await _broadcast(state, json.dumps({"event": "log", "line": f"🔍 Comparing {len(candidates)} candidates by title and duration..."}))
-        existing_meta = await get_existing_videos_meta(state.site)
-        filtered_candidates = filter_duplicate_candidates(candidates, existing_meta)
-        
-        rejected_count = len(candidates) - len(filtered_candidates)
-        if rejected_count > 0:
-            await _broadcast(state, json.dumps({"event": "log", "line": f"🚫 Rejected {rejected_count} candidates due to similar titles/durations."}))
-            
-        await _broadcast(state, json.dumps({"event": "log", "line": f"💾 Persisting {len(filtered_candidates)} videos to database..."}))
-        
-        added = 0
-        if filtered_candidates:
-            try:
-                added = await _persist_videos(state.site, filtered_candidates)
-            except Exception as e:
-                state.error = f"persist failed: {e}"
-                
-        state.summary = {
-            "fetched": len(fetched_urls),
-            "added": added,
-            "skipped": len(fetched_urls) - added,
-            "errors": 1 if state.error else 0,
-        }
-        
-        await _broadcast(
-            state,
-            json.dumps({
-                "event": "persisted",
-                "summary": dict(state.summary),
-                "candidates": len(filtered_candidates),
-            }),
-        )
     except Exception as e:
         state.error = f"Subprocess driver error: {e}"
         await _broadcast(state, json.dumps({"event": "error", "message": state.error}))
@@ -884,43 +855,37 @@ async def _finalize_run(state: RunState) -> None:
 
 # ─── persistence ──────────────────────────────────────────────────────────
 
-async def _persist_videos(site: str, videos: list[dict]) -> int:
+async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
     """
     Insert videos one at a time WITHOUT an outer transaction.
-
-    Earlier this used `async with conn.transaction():` to wrap the whole
-    batch, but Postgres aborts the whole transaction on any single failed
-    statement (e.g. a NOT NULL violation on embed_url). asyncpg then makes
-    every subsequent statement raise "current transaction is aborted",
-    the inner try/except swallows them, and at the end the .transaction()
-    context manager re-raises at commit — so the run finalisation never
-    ran. Per-row autocommit is fine here: each INSERT is independently
-    idempotent via ON CONFLICT (site, source_url) DO NOTHING.
+    Returns (active_added_count, disabled_skipped_count).
     """
     if not videos:
-        return 0
+        return 0, 0
         
     pool = await get_pool()
     added = 0
+    disabled_skipped = 0
     skipped_bad = 0
     async with pool.acquire() as conn:
-        validation_inputs: list[tuple[dict[str, dict], dict[str, dict]]] = []
+        validation_inputs: list[tuple[dict[str, dict], dict[str, dict], dict[str, dict]]] = []
         for v in videos:
-            all_names = list(set((v.get("pornstars") or []) + (v.get("studios") or [])))
+            all_names = list(set((v.get("pornstars") or []) + (v.get("studios") or []) + (v.get("categories") or [])))
             pornstar_matches = await _fetch_local_term_matches(conn, "pornstars", all_names)
             studio_matches = await _fetch_local_term_matches(conn, "studios", all_names)
-            validation_inputs.append((pornstar_matches, studio_matches))
+            category_matches = await _fetch_local_term_matches(conn, "categories", all_names)
+            validation_inputs.append((pornstar_matches, studio_matches, category_matches))
 
     tpdb_sem = asyncio.Semaphore(8)
 
-    async def _validate_with_limit(v: dict, pornstar_matches: dict[str, dict], studio_matches: dict[str, dict]) -> None:
+    async def _validate_with_limit(v: dict, pornstar_matches: dict[str, dict], studio_matches: dict[str, dict], category_matches: dict[str, dict]) -> None:
         async with tpdb_sem:
-            await _validate_video_terms(v, pornstar_matches, studio_matches)
+            await _validate_video_terms(v, pornstar_matches, studio_matches, category_matches)
 
     await asyncio.gather(
         *(
-            _validate_with_limit(v, pornstar_matches, studio_matches)
-            for v, (actor_matches, studio_matches) in zip(videos, validation_inputs)
+            _validate_with_limit(v, actor_matches, studio_matches, category_matches)
+            for v, (actor_matches, studio_matches, category_matches) in zip(videos, validation_inputs)
         )
     )
 
@@ -949,6 +914,9 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
             description = v.get("description")
             if description is not None and not isinstance(description, str):
                 description = str(description)
+
+            is_video_disabled = bool(v.get("_disabled"))
+
             try:
                 row = await conn.fetchrow(
                     """
@@ -973,7 +941,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                     views,
                     description,
                     qualities,
-                    "now" if v.get("_disabled") else None,
+                    "now" if is_video_disabled else None,
                 )
             except Exception as e:
                 # Bad row — log it via skipped_bad, keep the run alive.
@@ -986,7 +954,10 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
                 
             video_id = int(row["id"])
             if row["inserted"]:
-                added += 1
+                if not is_video_disabled:
+                    added += 1
+                else:
+                    disabled_skipped += 1
 
             # Insert into video_sites to track many-to-many relationship
             await conn.execute(
@@ -1038,7 +1009,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> int:
             "promking: persisted %d videos, skipped %d (validation/dup/error)",
             added, skipped_bad,
         )
-    return added
+    return added, disabled_skipped
 
 
 async def _attach_terms(conn, video_id: int, v: dict) -> None:

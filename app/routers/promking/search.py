@@ -71,6 +71,10 @@ _TAXONOMY_SQL = """
       JOIN video_sites vs  ON vs.video_id = v.id AND vs.site = $1
      WHERE t.name ILIKE $2
        AND t.deleted_at IS NULL
+       AND t.disabled = false
+       AND NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = v.id AND p.disabled = true)
+       AND NOT EXISTS (SELECT 1 FROM video_studios vs_s JOIN studios s ON s.id = vs_s.studio_id WHERE vs_s.video_id = v.id AND s.disabled = true)
+       AND NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = v.id AND c.disabled = true)
      GROUP BY t.id, t.name, t.slug
      ORDER BY (t.name ILIKE $3) DESC, video_count DESC, t.name ASC
      LIMIT $4

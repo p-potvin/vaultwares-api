@@ -165,6 +165,8 @@ def build_video_filters(
         # /pornstar/angel-youngs, deleted 2026-07-07, still returned 281 videos).
         where.append(f"pornstar_terms.slug = {add_param(pornstar)}")
         where.append("pornstar_terms.deleted_at IS NULL")
+        if disabled is False:
+            where.append("pornstar_terms.disabled = false")
     if studio:
         joins.extend(
             [
@@ -174,6 +176,8 @@ def build_video_filters(
         )
         where.append(f"studio_terms.slug = {add_param(studio)}")
         where.append("studio_terms.deleted_at IS NULL")
+        if disabled is False:
+            where.append("studio_terms.disabled = false")
     if category:
         joins.extend(
             [
@@ -183,6 +187,8 @@ def build_video_filters(
         )
         where.append(f"category_terms.slug = {add_param(category)}")
         where.append("category_terms.deleted_at IS NULL")
+        if disabled is False:
+            where.append("category_terms.disabled = false")
     if related_to:
         joins.extend(
             [
@@ -211,6 +217,9 @@ def build_video_filters(
             where.append("videos.disabled_at IS NOT NULL")
         else:
             where.append("videos.disabled_at IS NULL")
+            where.append("NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = true)")
+            where.append("NOT EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND s.disabled = true)")
+            where.append("NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = true)")
     if source:
         where.append(f"videos.source = {add_param(source)}")
     if health:
@@ -459,13 +468,13 @@ async def list_videos(
                  SELECT coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'name', a.name, 'slug', a.slug)), '[]'::jsonb)
                  FROM video_pornstars va
                  JOIN pornstars a ON a.id = va.pornstar_id
-                 WHERE va.video_id = videos.id{pornstar_gender_clause}
+                 WHERE va.video_id = videos.id AND a.disabled = false AND a.deleted_at IS NULL{pornstar_gender_clause}
                ) as pornstars_json,
                (
                  SELECT coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name, 'slug', s.slug)), '[]'::jsonb)
                  FROM video_studios vs
                  JOIN studios s ON s.id = vs.studio_id
-                 WHERE vs.video_id = videos.id
+                 WHERE vs.video_id = videos.id AND s.disabled = false AND s.deleted_at IS NULL
                ) as studios_json
         FROM videos
         {joins}
@@ -570,7 +579,12 @@ async def get_video(
         # in that state, the oldest disabled 9 days, including anything pulled
         # for a takedown. Callers that need disabled rows (the admin) use the
         # list endpoint's explicit `disabled` param.
-        where_clause = "WHERE slug = $1 AND disabled_at IS NULL"
+        where_clause = """
+            WHERE slug = $1 AND disabled_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = true)
+              AND NOT EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND s.disabled = true)
+              AND NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = true)
+        """
         params = [slug]
         if site:
             where_clause += " AND EXISTS (SELECT 1 FROM video_sites WHERE video_id = videos.id AND site = $2)"
@@ -595,7 +609,7 @@ async def get_video(
             SELECT pornstars.id, pornstars.name, pornstars.slug
             FROM pornstars
             JOIN video_pornstars ON video_pornstars.pornstar_id = pornstars.id
-            WHERE video_pornstars.video_id = $1
+            WHERE video_pornstars.video_id = $1 AND pornstars.disabled = false AND pornstars.deleted_at IS NULL
         """
         pornstar_params: list = [video_id]
         gender_fragment, gender_params = build_gender_clause(
@@ -611,7 +625,7 @@ async def get_video(
             SELECT studios.id, studios.name, studios.slug
             FROM studios
             JOIN video_studios ON video_studios.studio_id = studios.id
-            WHERE video_studios.video_id = $1
+            WHERE video_studios.video_id = $1 AND studios.disabled = false AND studios.deleted_at IS NULL
             ORDER BY studios.name ASC
             """,
             video_id,
@@ -621,7 +635,7 @@ async def get_video(
             SELECT categories.id, categories.name, categories.slug
             FROM categories
             JOIN video_categories ON video_categories.category_id = categories.id
-            WHERE video_categories.video_id = $1
+            WHERE video_categories.video_id = $1 AND categories.disabled = false AND categories.deleted_at IS NULL
             ORDER BY categories.name ASC
             """,
             video_id,
