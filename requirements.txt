@@ -3,8 +3,8 @@
 # ============================================================
 
 # ---- multi-modal model (SmolVLM2) ----
-transformers>=5.5.0
-torch>=2.12.1
+transformers>=5.14.1
+torch>=2.13.0
 accelerate>=0.26.0
 
 # ---- image processing ----
@@ -15,7 +15,7 @@ spandrel>=0.4.1
 # ---- 3D processing ----
 open3d>=0.18.0
 trimesh>=4.0.0
-gradio>=6.15.1
+gradio>=6.22.0
 GPUtil
 pynvml
 matplotlib
