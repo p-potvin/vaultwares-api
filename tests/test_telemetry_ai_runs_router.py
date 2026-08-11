@@ -437,3 +437,89 @@ def test_settle_rejects_negative_cost(monkeypatch):
         json={"request_ids": ["req-1"], "cost_usd": -1.0},
     )
     assert response.status_code == 422
+
+
+# ── SQL construction ────────────────────────────────────────────────────────
+#
+# The router tests above mock the persistence layer, so they cannot catch a
+# malformed query. These assert on the generated SQL directly.
+
+def test_day_window_does_not_use_string_concatenation():
+    # `($1 || ' days')::interval` makes Postgres infer the parameter as TEXT,
+    # so asyncpg rejects the int it is actually handed with a DataError. This
+    # shipped once; make_interval is the type-safe form.
+    from app.routers.telemetry.ai_runs_db import _where
+
+    sql, params = _where(7, {})
+
+    assert "|| ' days'" not in sql
+    assert "make_interval" in sql
+    assert params == [7]
+    assert all(isinstance(p, int) for p in params)
+
+
+def test_filters_are_parameterised_not_interpolated():
+    from app.routers.telemetry.ai_runs_db import _where
+
+    sql, params = _where(30, {"provider": "huggingface", "project": "vault-inference"})
+
+    # Values must arrive as bind parameters; only $n placeholders in the SQL.
+    assert "huggingface" not in sql
+    assert "vault-inference" not in sql
+    assert params == [30, "huggingface", "vault-inference"]
+    assert "$1" in sql and "$2" in sql and "$3" in sql
+
+
+def test_unknown_filter_keys_are_ignored():
+    # Keys are looked up in a fixed map, so a caller cannot inject a predicate.
+    from app.routers.telemetry.ai_runs_db import _where
+
+    sql, params = _where(None, {"provider": "hf", "; DROP TABLE ai_runs;--": "x"})
+
+    assert "DROP TABLE" not in sql
+    assert params == ["hf"]
+
+
+def test_timeline_bucket_is_whitelisted():
+    # `bucket` is interpolated into date_trunc(), never parameterised, so an
+    # unknown value must fall back rather than reach the query.
+    import asyncio
+
+    from app.routers.telemetry import ai_runs_db
+
+    captured = {}
+
+    class FakeConn:
+        async def fetch(self, sql, *args):
+            captured["sql"] = sql
+            return []
+
+    class FakeAcquire:
+        async def __aenter__(self):
+            return FakeConn()
+
+        async def __aexit__(self, *a):
+            return False
+
+    class FakePool:
+        def acquire(self):
+            return FakeAcquire()
+
+    async def fake_pool():
+        return FakePool()
+
+    async def noop_schema():
+        return None
+
+    original_pool = ai_runs_db.get_pool
+    original_schema = ai_runs_db.ensure_schema
+    ai_runs_db.get_pool = fake_pool
+    ai_runs_db.ensure_schema = noop_schema
+    try:
+        asyncio.run(ai_runs_db.get_timeline("month'); DROP TABLE ai_runs;--", 30, {}))
+    finally:
+        ai_runs_db.get_pool = original_pool
+        ai_runs_db.ensure_schema = original_schema
+
+    assert "DROP TABLE" not in captured["sql"]
+    assert "date_trunc('day'" in captured["sql"]  # fell back to the default
