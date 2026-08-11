@@ -214,12 +214,12 @@ async def provisional_runs(limit: int = 500, days: int = 30) -> Dict[str, Any]:
                    started_at, cost_usd
             FROM ai_runs
             WHERE cost_state <> 'settled'
-              AND started_at >= now() - ($2 || ' days')::interval
+              AND started_at >= now() - make_interval(days => $2::int)
             ORDER BY started_at
             LIMIT $1
             """,
             min(max(limit, 1), 2000),
-            days,
+            int(days),
         )
     return {"runs": [dict(r) for r in rows], "count": len(rows)}
 
@@ -235,8 +235,10 @@ async def get_rollup_timeline(
     if bucket not in {"hour", "day", "week", "month"}:
         bucket = "day"
 
-    clauses = ["hour >= now() - ($1 || ' days')::interval"]
-    params: List[Any] = [days]
+    # make_interval, not ($1 || ' days')::interval — the concatenation makes
+    # Postgres infer the parameter as TEXT and asyncpg then rejects the int.
+    clauses = ["hour >= now() - make_interval(days => $1::int)"]
+    params: List[Any] = [int(days)]
     for key in ("provider", "runtime", "model", "project"):
         value = (filters or {}).get(key)
         if value:

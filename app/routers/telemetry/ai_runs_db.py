@@ -214,8 +214,11 @@ def _where(days: Optional[int], filters: Optional[Dict[str, Any]] = None) -> Tup
     clauses: List[str] = []
     params: List[Any] = []
     if days:
-        params.append(days)
-        clauses.append(f"started_at >= now() - (${len(params)} || ' days')::interval")
+        params.append(int(days))
+        # make_interval rather than ($n || ' days')::interval: the concatenation
+        # makes Postgres infer the parameter as TEXT, so asyncpg rejects the int
+        # it is actually given.
+        clauses.append(f"started_at >= now() - make_interval(days => ${len(params)}::int)")
     for key, value in (filters or {}).items():
         template = _FILTERS.get(key)
         if template and value:
