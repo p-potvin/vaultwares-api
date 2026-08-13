@@ -180,6 +180,16 @@ _SWAGGER_UI_HTML = """<!DOCTYPE html>
 """
 
 
+@app.get("/", include_in_schema=False)
+async def root_ping():
+    return {"status": "ok", "service": "vaultwares-api", "version": "0.2.16"}
+
+
+@app.get("/healthz", include_in_schema=False)
+async def healthz_ping():
+    return {"status": "ok", "service": "vaultwares-api"}
+
+
 @app.get("/docs", include_in_schema=False)
 async def swagger_ui_html():
     return HTMLResponse(_SWAGGER_UI_HTML.format(title=f"{app.title} - Swagger UI"))
