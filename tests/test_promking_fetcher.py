@@ -1,3 +1,4 @@
+import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException, BackgroundTasks
@@ -108,3 +109,27 @@ async def test_run_fetcher_validation_fullvideos_everywhere():
         
         assert len(bg.tasks) == 1
         assert bg.tasks[0].func == _drive_subprocess
+
+
+@pytest.mark.anyio
+async def test_get_and_set_cursors():
+    from app.routers.promking.fetcher import get_all_cursors, set_cursor, CursorUpdateRequest
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow.return_value = {"value": json.dumps({"pornxp": 42, "1porn": 10})}
+    mock_conn.transaction = MagicMock()
+    mock_conn.transaction.return_value.__aenter__.return_value = None
+    mock_conn.transaction.return_value.__aexit__.return_value = False
+    
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+    mock_pool.acquire.return_value.__aexit__.return_value = False
+
+    with patch("app.routers.promking.fetcher.get_pool", return_value=mock_pool):
+        cursors = await get_all_cursors(site="fxv")
+        assert cursors == {"pornxp": 42, "1porn": 10}
+
+        update_req = CursorUpdateRequest(site="fxv", source="pornxp", page=43)
+        res = await set_cursor(update_req)
+        assert res["ok"] is True
+        assert res["page"] == 43

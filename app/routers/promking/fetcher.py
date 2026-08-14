@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Optional
+from pydantic import BaseModel
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -37,6 +38,12 @@ from ._models import FetchRunHandle, FetchRunRequest, Site
 from .tpdb import fetch_tpdb_tags
 
 router = APIRouter(prefix="/fetcher", tags=["promking:fetcher"])
+
+
+class CursorUpdateRequest(BaseModel):
+    site: Site
+    source: str
+    page: int
 
 
 # ─── Run registry (in-memory) ──────────────────────────────────────────────
@@ -134,6 +141,31 @@ async def list_cron_jobs() -> list[dict]:
     """
     from .cron import get_scheduled_jobs
     return await get_scheduled_jobs()
+
+
+@router.get("/cursors")
+async def get_all_cursors(site: Site = Query(...)) -> dict[str, int]:
+    """Get current page cursor for each source on this site."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT value FROM settings WHERE site = $1 AND key = 'fetcher_manual_cursor'",
+            site,
+        )
+    if row and row["value"]:
+        val = json.loads(row["value"]) if isinstance(row["value"], str) else row["value"]
+        if isinstance(val, dict):
+            return {str(k): int(v) for k, v in val.items() if str(v).isdigit()}
+    return {}
+
+
+@router.put("/cursors")
+async def set_cursor(payload: CursorUpdateRequest) -> dict:
+    """Set the current page index for a source on this site."""
+    if payload.page < 1:
+        raise HTTPException(status_code=400, detail="Page must be at least 1")
+    await update_manual_cursor(payload.site, payload.source, payload.page)
+    return {"ok": True, "site": payload.site, "source": payload.source, "page": payload.page}
 
 
 @router.post("/run", response_model=FetchRunHandle)
@@ -314,51 +346,42 @@ async def check_existing_links(site: str, links: list[str]) -> set[str]:
     return {r["source_url"] for r in rows}
 
 
-async def get_existing_videos_meta(site: str) -> list[dict]:
-    """
-    Slug + duration for every video already surfaced on this site. Used by
-    the term-scoped fetcher's dedupe step. Same JOIN pattern as above.
-    """
+async def check_existing_slugs(slugs: list[str]) -> set[str]:
+    """Check which of candidate slugs already exist in videos table."""
+    if not slugs:
+        return set()
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
-            SELECT v.slug, v.duration_seconds
-              FROM videos v
-              JOIN video_sites vs ON vs.video_id = v.id
-             WHERE vs.site = $1
-            """,
-            site,
+            "SELECT slug FROM videos WHERE slug = ANY($1)",
+            slugs,
         )
-    return [{"slug": r["slug"], "duration_seconds": r["duration_seconds"]} for r in rows]
+    return {r["slug"] for r in rows}
 
 
-def filter_duplicate_candidates(candidates: list[dict], existing_meta: list[dict]) -> list[dict]:
+def filter_duplicate_candidates(
+    candidates: list[dict],
+    existing_urls: set[str],
+    existing_slugs: set[str],
+) -> list[dict]:
+    """Filter candidates that are already in DB by sourceUrl or slug, or duplicate on the page."""
     unique_candidates = []
-    seen_slugs = {item["slug"] for item in existing_meta}
-    
+    seen_urls = set(existing_urls)
+    seen_slugs = set(existing_slugs)
+
     for c in candidates:
+        url = c.get("sourceUrl")
         slug = _slugify(c.get("title") or "")
-        if not slug:
+        if not url or not slug:
             continue
-        duration = c.get("durationSeconds")
-        
-        if slug in seen_slugs:
+
+        if url in seen_urls or slug in seen_slugs:
             continue
-            
-        is_dup = False
-        for ext in existing_meta:
-            ext_duration = ext["duration_seconds"]
-            if duration is not None and ext_duration is not None and duration == ext_duration:
-                ext_slug = ext["slug"]
-                if slug in ext_slug or ext_slug in slug:
-                    is_dup = True
-                    break
-        
-        if not is_dup:
-            unique_candidates.append(c)
-            seen_slugs.add(slug)
-            
+
+        seen_urls.add(url)
+        seen_slugs.add(slug)
+        unique_candidates.append(c)
+
     return unique_candidates
 
 
@@ -683,8 +706,9 @@ async def _drive_term_run(state: RunState) -> None:
             else:
                 consecutive_all_known_pages = 0
                 candidates_to_persist = [v for v in page_candidates if v.get("sourceUrl") not in existing_on_page]
-                existing_meta = await get_existing_videos_meta(state.site)
-                filtered_candidates = filter_duplicate_candidates(candidates_to_persist, existing_meta)
+                candidate_slugs = [_slugify(v.get("title") or "") for v in candidates_to_persist if v.get("title")]
+                existing_slugs = await check_existing_slugs(candidate_slugs)
+                filtered_candidates = filter_duplicate_candidates(candidates_to_persist, existing_on_page, existing_slugs)
                 
                 added_this_page, disabled_this_page = await _persist_videos(state.site, filtered_candidates)
                 skipped_this_page = len(page_videos) - added_this_page
@@ -716,14 +740,11 @@ async def _drive_subprocess(state: RunState) -> None:
         return
     try:
         start_page = state.start_page if hasattr(state, "start_page") and state.start_page is not None else await get_manual_cursor(state.site, state.source)
-        start_offset = 0 if hasattr(state, "start_page") and state.start_page is not None else random.randint(0, 4)
-        current_page = start_page + start_offset
+        current_page = max(1, start_page)
         
-        await _broadcast(state, json.dumps({"event": "log", "line": f"▶ Back-catalog cursor: start fetching at page {current_page} (cursor was {start_page}, random offset +{start_offset})"}))
+        await _broadcast(state, json.dumps({"event": "log", "line": f"▶ Fetching {state.source} on {state.site} starting at page {current_page} (target: {state.pages} page(s))"}))
         
         pages_counted = 0
-        has_hit_duplicate = False
-        awaiting_new_after_duplicate = False
         fetched_urls = set()
         
         state.summary = {"fetched": 0, "added": 0, "skipped": 0, "errors": 0}
@@ -732,7 +753,7 @@ async def _drive_subprocess(state: RunState) -> None:
         total_pages_fetched = 0
         
         while pages_counted < state.pages and total_pages_fetched < MAX_SAFETY_PAGES:
-            await _broadcast(state, json.dumps({"event": "log", "line": f"--- Fetching Page {current_page} ---"}))
+            await _broadcast(state, json.dumps({"event": "log", "line": f"--- Fetching Page {current_page} ({pages_counted + 1}/{state.pages}) ---"}))
             try:
                 page_videos, _meta = await _run_subprocess_for_page(state, current_page)
             except Exception as e:
@@ -741,9 +762,12 @@ async def _drive_subprocess(state: RunState) -> None:
                 break
                 
             total_pages_fetched += 1
+            pages_counted += 1
             if not page_videos:
                 await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} returned 0 videos. Stopping."}))
                 break
+
+            state.summary["fetched"] += len(page_videos)
                 
             unique_page_videos = []
             for v in page_videos:
@@ -753,14 +777,9 @@ async def _drive_subprocess(state: RunState) -> None:
                     unique_page_videos.append(v)
             
             if not unique_page_videos:
+                state.summary["skipped"] += len(page_videos)
                 await _broadcast(state, json.dumps({"event": "log", "line": f"All videos on page {current_page} were already processed in this run."}))
-                if not has_hit_duplicate:
-                    has_hit_duplicate = True
-                    awaiting_new_after_duplicate = True
-                    await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ Hit first duplicate zone at page {current_page}."}))
-                
-                page_step = random.randint(1, 3)
-                current_page += page_step
+                current_page += 1
                 continue
 
             urls_to_check = [v["sourceUrl"] for v in unique_page_videos if v.get("sourceUrl")]
@@ -769,19 +788,16 @@ async def _drive_subprocess(state: RunState) -> None:
             new_candidates = [v for v in unique_page_videos if v.get("sourceUrl") not in existing_urls]
 
             if not new_candidates:
+                state.summary["skipped"] += len(page_videos)
                 await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page}: all {len(unique_page_videos)} videos already in DB."}))
-                if not has_hit_duplicate:
-                    has_hit_duplicate = True
-                    awaiting_new_after_duplicate = True
-                    await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ Hit first duplicate at link on page {current_page}."}))
             else:
-                existing_meta = await get_existing_videos_meta(state.site)
-                filtered_candidates = filter_duplicate_candidates(new_candidates, existing_meta)
+                candidate_slugs = [_slugify(v.get("title") or "") for v in new_candidates if v.get("title")]
+                existing_slugs = await check_existing_slugs(candidate_slugs)
+                filtered_candidates = filter_duplicate_candidates(new_candidates, existing_urls, existing_slugs)
                 
                 added_this_page, disabled_this_page = await _persist_videos(state.site, filtered_candidates)
                 
                 skipped_this_page = len(page_videos) - added_this_page
-                state.summary["fetched"] += len(page_videos)
                 state.summary["added"] += added_this_page
                 state.summary["skipped"] += skipped_this_page
 
@@ -795,14 +811,11 @@ async def _drive_subprocess(state: RunState) -> None:
                 )
 
                 if added_this_page > 0:
-                    pages_counted += 1
-                    awaiting_new_after_duplicate = False
-                    await _broadcast(state, json.dumps({"event": "log", "line": f"✨ Page {current_page}: +{added_this_page} active videos added to DB ({disabled_this_page} disabled). ({pages_counted}/{state.pages} counted pages)"}))
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"✨ Page {current_page}: +{added_this_page} active videos added to DB ({disabled_this_page} disabled)."}))
                 else:
                     await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page}: 0 active videos added (filtered out as duplicates or disabled terms)."}))
 
-            page_step = random.randint(1, 3)
-            current_page += page_step
+            current_page += 1
             
         await update_manual_cursor(state.site, state.source, current_page)
         await _broadcast(state, json.dumps({"event": "log", "line": f"💾 Saved next cursor page P = {current_page} in DB settings."}))
@@ -944,9 +957,40 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
                     "now" if is_video_disabled else None,
                 )
             except Exception as e:
-                # Bad row — log it via skipped_bad, keep the run alive.
-                skipped_bad += 1
-                continue
+                if "videos_slug_uniq" in str(e) or "slug" in str(e).lower():
+                    disambiguated_slug = f"{slug[:70]}-{uuid.uuid4().hex[:6]}"
+                    try:
+                        row = await conn.fetchrow(
+                            """
+                            INSERT INTO videos (
+                                source, source_url, embed_url, embed_type,
+                                title, slug, thumbnail_url, preview_url, duration_seconds,
+                                views, description, qualities, disabled_at
+                            )
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                            ON CONFLICT (source_url) DO UPDATE SET updated_at = now()
+                            RETURNING id, (xmax = 0) AS inserted
+                            """,
+                            v.get("source"),
+                            v.get("sourceUrl"),
+                            v.get("embedUrl"),
+                            v.get("embedType", "mp4"),
+                            v.get("title"),
+                            disambiguated_slug,
+                            v.get("thumbnailUrl"),
+                            v.get("previewUrl"),
+                            v.get("durationSeconds"),
+                            views,
+                            description,
+                            qualities,
+                            "now" if is_video_disabled else None,
+                        )
+                    except Exception:
+                        skipped_bad += 1
+                        continue
+                else:
+                    skipped_bad += 1
+                    continue
                 
             if not row:
                 skipped_bad += 1
