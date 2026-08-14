@@ -44,6 +44,9 @@ router = APIRouter(prefix="/taxonomies", tags=["promking:taxonomies"])
 HOT_DECAY_SECONDS = 21 * 86400   # a video's weight decays ~1/e once it is 21 days old
 HOT_ROTATE_SECONDS = 6 * 3600    # the jitter reshuffles membership every 6 hours
 HOT_JITTER = 0.5                 # ±25% multiplicative wobble (0.75‥1.25) on the score
+HOT_CACHE_TTL_SECONDS = 120.0    # 2-minute in-memory cache for hot taxonomy queries
+
+_hot_terms_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
 @dataclass(frozen=True)
@@ -187,6 +190,27 @@ async def list_terms(
     else:
         sort_order = f"{table}.name ASC"
 
+    cache_key = None
+    if sort in ("hot", "trending") and not q:
+        bucket_now = int(time.time() // HOT_ROTATE_SECONDS)
+        cache_key = f"{kind}:{limit}:{offset}:{gender}:{include_disabled}:{letter}:{bucket_now}"
+        cached = _hot_terms_cache.get(cache_key)
+        if cached:
+            cached_ts, cached_items = cached
+            if time.time() - cached_ts < HOT_CACHE_TTL_SECONDS:
+                user_agent = request.headers.get("user-agent", "").lower()
+                is_mobile = "mobile" in user_agent or "android" in user_agent or "iphone" in user_agent
+                resize_param = request.query_params.get("resize") == "true" or request.headers.get("x-resize-mobile") == "true"
+                results = []
+                for item in cached_items:
+                    it = dict(item)
+                    if it.get("image_url") and (is_mobile or resize_param):
+                        original_url = it["image_url"]
+                        escaped_url = urllib.parse.quote_plus(original_url)
+                        it["image_url"] = f"/api/promking/taxonomies/image/resize?url={escaped_url}&w=150&h=150"
+                    results.append(TermRef(**it))
+                return results
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         if sort in ("hot", "trending"):
@@ -230,11 +254,15 @@ async def list_terms(
             sql = sql.replace(f"__p{index - len(base_params)}__", f"${index}", 1)
 
         rows = await conn.fetch(sql, *base_params, *extra_params)
+
+    if cache_key:
+        _hot_terms_cache[cache_key] = (time.time(), [dict(r) for r in rows])
+
     results = []
     user_agent = request.headers.get("user-agent", "").lower()
     is_mobile = "mobile" in user_agent or "android" in user_agent or "iphone" in user_agent
     resize_param = request.query_params.get("resize") == "true" or request.headers.get("x-resize-mobile") == "true"
-    
+
     for r in rows:
         item = dict(r)
         if item.get("image_url") and (is_mobile or resize_param):

@@ -479,7 +479,6 @@ async def list_videos(
         FROM videos
         {joins}
         WHERE {where_sql}
-        GROUP BY videos.id
         ORDER BY {sort_order}
         LIMIT {limit_param} OFFSET {offset_param}
     """
@@ -536,7 +535,25 @@ async def count_videos(
     source: str | None = Query(None, description="Filter by video source."),
     health: str | None = Query(None, description="Filter by catalog health issue."),
 ) -> dict:
-    """Count videos for the given site + filters. Cheap path for admin pagination."""
+    pool = await get_pool()
+    if q and not (pornstar or studio or category or source or health):
+        q_like = f"%{q}%"
+        extra_filters = "AND disabled_at IS NULL" if disabled is False else ("AND disabled_at IS NOT NULL" if disabled is True else "")
+        sql = f"""
+            SELECT count(DISTINCT id) FROM (
+                SELECT id FROM videos WHERE to_tsvector('english', title) @@ plainto_tsquery('english', $1) {extra_filters}
+                UNION ALL
+                SELECT q_vp.video_id FROM video_pornstars q_vp JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id WHERE q_p.name ILIKE $2 AND q_p.deleted_at IS NULL
+                UNION ALL
+                SELECT q_vs.video_id FROM video_studios q_vs JOIN studios q_s ON q_s.id = q_vs.studio_id WHERE q_s.name ILIKE $2 AND q_s.deleted_at IS NULL
+                UNION ALL
+                SELECT q_vc.video_id FROM video_categories q_vc JOIN categories q_c ON q_c.id = q_vc.category_id WHERE q_c.name ILIKE $2 AND q_c.deleted_at IS NULL
+            ) matches
+        """
+        async with pool.acquire() as conn:
+            total = await conn.fetchval(sql, q, q_like)
+        return {"total": int(total or 0)}
+
     where_sql, joins, params = build_video_filters(
         site=site,
         q=q,
@@ -547,9 +564,8 @@ async def count_videos(
         source=source,
         health=health,
     )
-    pool = await get_pool()
     sql = f"""
-        SELECT COUNT(DISTINCT videos.id) AS total
+        SELECT COUNT(videos.id) AS total
         FROM videos
         {joins}
         WHERE {where_sql}
@@ -656,7 +672,7 @@ async def get_video(
 
 
 @router.post("/{slug}/view")
-async def increment_video_view(slug: str, site: Site = Query(...)) -> dict[str, int]:
+async def increment_video_view(slug: str, site: Site | None = Query(None)) -> dict[str, int]:
     """Bump the view counter by 1.
 
     Called from the tube apps' video detail SSR (one bump per page load).
@@ -670,10 +686,9 @@ async def increment_video_view(slug: str, site: Site = Query(...)) -> dict[str, 
             UPDATE videos
                SET views = views + 1,
                    updated_at = now()
-             WHERE slug = $2
+             WHERE slug = $1
          RETURNING views
             """,
-            site,
             slug,
         )
     if row is None:

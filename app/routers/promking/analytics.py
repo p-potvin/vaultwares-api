@@ -49,17 +49,19 @@ async def log_ad_click(payload: AdClickRequest):
 async def get_video_reaction_stats(video_id: int):
     pool = await get_pool()
     async with pool.acquire() as conn:
-        likes = await conn.fetchval(
-            "SELECT COUNT(*) FROM video_reactions WHERE video_id = $1 AND reaction_type = 'like'",
-            video_id,
-        )
-        dislikes = await conn.fetchval(
-            "SELECT COUNT(*) FROM video_reactions WHERE video_id = $1 AND reaction_type = 'dislike'",
+        row = await conn.fetchrow(
+            """
+            SELECT 
+                COUNT(*) FILTER (WHERE reaction_type = 'like') AS likes,
+                COUNT(*) FILTER (WHERE reaction_type = 'dislike') AS dislikes
+            FROM video_reactions
+            WHERE video_id = $1
+            """,
             video_id,
         )
     return {
-        "likes": int(likes or 0),
-        "dislikes": int(dislikes or 0),
+        "likes": int(row["likes"] or 0) if row else 0,
+        "dislikes": int(row["dislikes"] or 0) if row else 0,
     }
 
 
