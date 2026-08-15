@@ -322,16 +322,21 @@ def api_upscaler_status():
 def api_open_downloaded(payload: OpenPayload):
     try:
         import subprocess
-        if payload.folder or not payload.filename:
-            if os.path.exists(ZIPPER_DEST_DIR):
-                subprocess.Popen(f'explorer.exe "{ZIPPER_DEST_DIR}"', shell=True)
-                return {"status": "success", "message": "Opened downloaded folder"}
-            return {"status": "error", "message": "Folder does not exist"}
-        file_path = os.path.join(ZIPPER_DEST_DIR, payload.filename)
+        target_dir = os.path.normpath(ZIPPER_DEST_DIR)
+        os.makedirs(target_dir, exist_ok=True)
+        
+        target_file = payload.path or payload.filename
+        if payload.folder or not target_file:
+            subprocess.Popen(f'explorer.exe "{target_dir}"', shell=True)
+            return {"status": "success", "message": "Opened downloaded folder"}
+            
+        file_path = os.path.normpath(target_file if os.path.isabs(target_file) else os.path.join(target_dir, target_file))
         if os.path.exists(file_path):
             subprocess.Popen(f'explorer.exe /select,"{file_path}"', shell=True)
-            return {"status": "success", "message": f"Opened file {payload.filename}"}
-        return {"status": "error", "message": "File does not exist"}
+            return {"status": "success", "message": f"Opened file {os.path.basename(file_path)}"}
+            
+        subprocess.Popen(f'explorer.exe "{target_dir}"', shell=True)
+        return {"status": "success", "message": "Target file not found; opened downloaded folder"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 

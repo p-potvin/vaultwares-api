@@ -237,7 +237,9 @@ class FaceswapCompleteRequest(BaseModel):
 
 class OpenPayload(BaseModel):
     filename: Optional[str] = None
+    path: Optional[str] = None
     folder: Optional[bool] = False
+    which: Optional[str] = None
 
 class ScrapePayload(BaseModel):
     url: str

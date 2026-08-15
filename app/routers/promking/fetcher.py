@@ -753,7 +753,7 @@ async def _drive_subprocess(state: RunState) -> None:
         total_pages_fetched = 0
         
         while pages_counted < state.pages and total_pages_fetched < MAX_SAFETY_PAGES:
-            await _broadcast(state, json.dumps({"event": "log", "line": f"--- Fetching Page {current_page} ({pages_counted + 1}/{state.pages}) ---"}))
+            await _broadcast(state, json.dumps({"event": "log", "line": f"--- Fetching Page {current_page} (Counted: {pages_counted}/{state.pages} pages, Scanned: {total_pages_fetched}) ---"}))
             try:
                 page_videos, _meta = await _run_subprocess_for_page(state, current_page)
             except Exception as e:
@@ -762,7 +762,6 @@ async def _drive_subprocess(state: RunState) -> None:
                 break
                 
             total_pages_fetched += 1
-            pages_counted += 1
             if not page_videos:
                 await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page} returned 0 videos. Stopping."}))
                 break
@@ -811,7 +810,8 @@ async def _drive_subprocess(state: RunState) -> None:
                 )
 
                 if added_this_page > 0:
-                    await _broadcast(state, json.dumps({"event": "log", "line": f"✨ Page {current_page}: +{added_this_page} active videos added to DB ({disabled_this_page} disabled)."}))
+                    pages_counted += 1
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"✨ Page {current_page}: +{added_this_page} active videos added to DB ({disabled_this_page} disabled). ({pages_counted}/{state.pages} counted pages)"}))
                 else:
                     await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page}: 0 active videos added (filtered out as duplicates or disabled terms)."}))
 
