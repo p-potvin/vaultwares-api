@@ -124,7 +124,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="VaultWares API",
     description="Central API for VaultWares auth, DB-backed telemetry, monitor reads, logging, workflows, and media services.",
-    version="0.2.17",
+    version="0.2.18",
     lifespan=lifespan,
     docs_url=None,  # served below via a self-hosted Swagger UI (default /docs pulls assets from a CDN, which our CSP blocks)
 )
@@ -183,7 +183,7 @@ _SWAGGER_UI_HTML = """<!DOCTYPE html>
 
 @app.get("/", include_in_schema=False)
 async def root_ping():
-    return {"status": "ok", "service": "vaultwares-api", "version": "0.2.17"}
+    return {"status": "ok", "service": "vaultwares-api", "version": "0.2.18"}
 
 
 @app.get("/healthz", include_in_schema=False)

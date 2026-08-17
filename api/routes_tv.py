@@ -35,8 +35,15 @@ logger = logging.getLogger("vaultwares.api")
 TMDB_BASE = "https://api.themoviedb.org/3"
 KINOCHECK_BASE = "https://api.kinocheck.com"
 
-ACCESS_DIR = Path("C:/Users/Administrator/Desktop/Github Repos/.access")
-TMDB_TOKEN_PATH = ACCESS_DIR / "tmdb_bearer.txt"
+# The token is looked up rather than pinned to one path: this module runs both on
+# the Windows workstation and on the Linux VPS, and a single hardcoded path is
+# simply absent on the other. Env var first, so deployment never depends on a
+# file landing in the right place.
+TMDB_TOKEN_PATHS = (
+    Path("/opt/vaultwares-api/.access/tmdb_bearer.txt"),
+    Path("/etc/vaultwares/tmdb_bearer.txt"),
+    Path("C:/Users/Administrator/Desktop/Github Repos/.access/tmdb_bearer.txt"),
+)
 
 UPSTREAM_TIMEOUT_SECONDS = 20.0
 
@@ -79,8 +86,15 @@ def _tmdb_token() -> str:
     if _tmdb_token_cache:
         return _tmdb_token_cache
     token = os.getenv("TMDB_BEARER_TOKEN", "").strip()
-    if not token and TMDB_TOKEN_PATH.exists():
-        token = TMDB_TOKEN_PATH.read_text(encoding="utf-8").strip()
+    if not token:
+        for candidate in TMDB_TOKEN_PATHS:
+            try:
+                if candidate.exists():
+                    token = candidate.read_text(encoding="utf-8").strip()
+                    if token:
+                        break
+            except OSError:
+                continue
     if not token:
         raise HTTPException(
             status_code=503,
