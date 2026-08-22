@@ -104,6 +104,10 @@ PUBLIC_SURFACE_FIELDS = frozenset({
     "cost_usd", "priced_exactly", "cost_state", "is_free", "role",
     "prompt_chars", "completion_chars", "image_count", "audio_seconds",
     "steps", "width", "height",
+    # ZeroGPU bills wall-clock against a separate daily allowance, so this
+    # is what answers "how close are we to the cap". Neither it nor
+    # lora_count says anything about a visitor.
+    "gpu_seconds", "lora_count",
 })
 
 
