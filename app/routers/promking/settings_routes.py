@@ -21,6 +21,11 @@ router = APIRouter(prefix="/settings", tags=["promking:settings"])
 AFFILIATE_MAX_BYTES = 32 * 1024  # Layout.astro inlines it all in <head> — cap.
 _TAG_PAIRS = (("script", "/script"), ("style", "/style"), ("noscript", "/noscript"))
 _FORBIDDEN_CLOSERS = ("</head>", "</body>")
+_MANAGED_GOOGLE_TAG = re.compile(
+    r"(?:googletagmanager\.com/(?:gtm|gtag|ns)\.|(?:^|[^\w])gtag\s*\(|GTM-[A-Z0-9-]+)",
+    re.IGNORECASE,
+)
+_STYLE_TAG = re.compile(r"<style\b", re.IGNORECASE)
 
 
 def _iter_head_body_snippets(cfg: Dict[str, Any]):
@@ -73,6 +78,12 @@ def validate_affiliate_settings(cfg: Any) -> Tuple[List[dict], List[dict]]:
         if not code:
             continue
         low = code.lower()
+        if _MANAGED_GOOGLE_TAG.search(code):
+            errors.append({**loc, "rule": "managed_google_tag",
+                           "message": f"{label}: Google tags are managed by the site layout; remove this duplicate GTM/GA snippet."})
+        if kind == "body_tags" and _STYLE_TAG.search(code):
+            errors.append({**loc, "rule": "body_style",
+                           "message": f"{label}: <style> belongs in head_tags, not body_tags."})
         for closer in _FORBIDDEN_CLOSERS:
             if closer in low:
                 errors.append({**loc, "rule": "forbidden_closer",

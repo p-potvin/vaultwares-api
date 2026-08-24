@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +42,8 @@ router = APIRouter(tags=["promking:rebuild"])
 
 DEFAULT_DEPLOY_SCRIPT = "/var/www/deploy-scripts/deploy-shared-tube.sh"
 DEFAULT_REPO_PATH = "/srv/repos/Prom-King/shared-tube"
+DEFAULT_DEPLOY_HOST = "100.73.93.84"
+DEFAULT_DEPLOY_USER = "root"
 DEFAULT_STATUS_DIR = "/var/lib/vw-deploy/status"
 
 
@@ -124,17 +127,8 @@ async def rebuild(req: RebuildRequest) -> RebuildResponse:
     """
     script = os.environ.get("SHARED_TUBE_DEPLOY_SCRIPT", DEFAULT_DEPLOY_SCRIPT)
     repo_path = os.environ.get("PROMKING_SHARED_TUBE_PATH", DEFAULT_REPO_PATH)
-
-    if not Path(script).exists():
-        return RebuildResponse(
-            triggered=False,
-            message=f"Deploy script not found at {script}. Configure SHARED_TUBE_DEPLOY_SCRIPT or install the deploy hooks.",
-        )
-    if not os.access(script, os.X_OK):
-        return RebuildResponse(
-            triggered=False,
-            message=f"Deploy script {script} is not executable by the API process user.",
-        )
+    deploy_host = os.environ.get("SHARED_TUBE_DEPLOY_HOST", DEFAULT_DEPLOY_HOST)
+    deploy_user = os.environ.get("SHARED_TUBE_DEPLOY_USER", DEFAULT_DEPLOY_USER)
 
     sha = _resolve_head_sha(repo_path)
     if not sha:
@@ -151,9 +145,26 @@ async def rebuild(req: RebuildRequest) -> RebuildResponse:
     env["SHA"] = sha
     env["VW_AFTER"] = sha
 
-    args = [script]
+    # The public shared-tube services live on GreenCloud. The API itself runs
+    # on OVH, where this repo is only a fetcher-CLI mirror; launching the local
+    # script there produced a false "ok" status without restarting production.
+    # Tailscale SSH is the established host-to-host dispatch channel.
+    remote_args = [script]
     if site:
-        args.append(f"--site={site}")
+        remote_args.append(f"--site={site}")
+    remote_command = (
+        f"SHA={shlex.quote(sha)} VW_AFTER={shlex.quote(sha)} "
+        f"nohup {' '.join(shlex.quote(arg) for arg in remote_args)} "
+        ">/dev/null 2>&1 &"
+    )
+    args = [
+        "ssh",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ConnectTimeout=15",
+        f"{deploy_user}@{deploy_host}",
+        remote_command,
+    ]
 
     # Detach: parent-agnostic, no PIPE (script logs to /var/log directly).
     # This means we don't wait for or watch stdout — that's by design; the
@@ -178,7 +189,7 @@ async def rebuild(req: RebuildRequest) -> RebuildResponse:
     scope = f"site={site}" if site else "all sites"
     return RebuildResponse(
         triggered=True,
-        message=f"Spawned {Path(script).name} (SHA={sha[:7]}, {scope}). Poll GET /api/monitor/deploys?project=shared-tube for progress.",
+        message=f"Dispatched {Path(script).name} on GreenCloud (SHA={sha[:7]}, {scope}). Poll GET /api/monitor/deploys?project=shared-tube for progress.",
         sha=sha,
         site=site,
     )
