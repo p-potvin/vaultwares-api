@@ -255,3 +255,11 @@ try:
     _TELEMETRY_LOADED = True
 except Exception as err:
     logger.warning("Telemetry router not loaded: %s", err)
+
+_ZIPPER_LOADED = False
+try:
+    from app.routers.zipper import router as zipper_router
+    app.include_router(zipper_router)
+    _ZIPPER_LOADED = True
+except Exception as err:
+    logger.warning("Zipper router not loaded: %s", err)
