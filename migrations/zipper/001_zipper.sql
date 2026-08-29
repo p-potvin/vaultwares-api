@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS zipper.jobs (
 
     archives        JSONB NOT NULL DEFAULT '[]'::jsonb,
     save_dir        TEXT,
+    -- Which rclone remotes actually took the files. Empty means they are still
+    -- on the worker's own disk, which is a normal outcome and not a failure --
+    -- but it is a different one, and a bare "complete" could not tell them
+    -- apart. This is the first thing anyone asks when going to look for a file.
+    rclone_remotes  JSONB NOT NULL DEFAULT '[]'::jsonb,
     error           TEXT,
 
     -- Claim bookkeeping. claimed_at lets a stalled claim be reaped rather than
@@ -196,3 +201,45 @@ CREATE TRIGGER zipper_jobs_touch BEFORE UPDATE ON zipper.jobs
 DROP TRIGGER IF EXISTS zipper_profile_touch ON zipper.site_profile;
 CREATE TRIGGER zipper_profile_touch BEFORE UPDATE ON zipper.site_profile
     FOR EACH ROW EXECUTE FUNCTION zipper.touch_updated_at();
+
+-- Additive columns for tables that already exist in a deployed database.
+-- CREATE TABLE IF NOT EXISTS is a no-op there, so new columns need their own
+-- statement. Each is IF NOT EXISTS, so this whole file stays re-runnable.
+ALTER TABLE zipper.jobs ADD COLUMN IF NOT EXISTS rclone_remotes JSONB NOT NULL DEFAULT '[]'::jsonb;
+-- Where a job returns an ANSWER rather than files. A stream probe is the case:
+-- the caller needs the format list back before it can choose a quality, so the
+-- worker writes yt-dlp's metadata here and the extension reads it off the job.
+-- Kept generic rather than a formats column -- the next question a worker
+-- answers should not need a migration.
+ALTER TABLE zipper.jobs ADD COLUMN IF NOT EXISTS result JSONB;
+
+-- ------------------------------------------------------------- workers -----
+-- What each worker is, and how much room it has left.
+--
+-- Storage is reported *inward* rather than scraped outward, which is the same
+-- reason jobs are claimed rather than pushed: a worker may be behind NAT,
+-- asleep, or on a tailnet the browser cannot reach, and requiring the API to
+-- dial it would make "how full is that disk" work only when everything is up.
+-- A worker that has been off for a week still has a last-known report here, and
+-- `seen_at` says how much to trust it.
+--
+-- `rclone_desired` is the other direction: the extension writes the remote
+-- priority it wants, the worker picks it up on its next heartbeat and applies
+-- it locally. Nothing has to reach into the worker to reconfigure it.
+
+CREATE TABLE IF NOT EXISTS zipper.worker (
+    name            TEXT PRIMARY KEY,           -- e.g. zipper@CLOPEUX-DESKTOP
+    host            TEXT,
+    platform        TEXT,
+    version         TEXT,
+    dest_dir        TEXT,
+    -- Last storage_report(): disk totals, what is still staged locally, and
+    -- each configured rclone remote with the provider's own free-space numbers.
+    storage         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- Remote priority the operator has asked for, applied by the worker.
+    rclone_desired  JSONB,
+    first_seen      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    seen_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS zipper_worker_seen_idx ON zipper.worker (seen_at DESC);

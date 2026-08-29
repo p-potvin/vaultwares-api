@@ -47,6 +47,32 @@ class JobCreate(BaseModel):
     options: Dict[str, Any] = Field(default_factory=dict)
 
 
+class WorkerHeartbeat(BaseModel):
+    """What a worker says about itself on every poll.
+
+    `storage` is passed through as-is rather than being modelled column by
+    column. The shape belongs to the worker's own storage_report(), and pinning
+    it here would mean an API deploy every time a worker learns to report one
+    more thing about a disk it owns.
+    """
+    worker: str
+    host: Optional[str] = None
+    platform: Optional[str] = None
+    version: Optional[str] = None
+    dest_dir: Optional[str] = None
+    storage: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RcloneDesired(BaseModel):
+    """Remote priority the operator wants a worker to use.
+
+    Order is the whole payload: the first remote that accepts a file wins, so
+    the list *is* the policy.
+    """
+    remotes: Optional[List[str]] = None
+    enabled: Optional[bool] = None
+
+
 class JobProgress(BaseModel):
     status: Optional[str] = None
     processed_links: Optional[int] = None
@@ -58,6 +84,9 @@ class JobProgress(BaseModel):
     eta: Optional[int] = None
     archives: Optional[List[str]] = None
     save_dir: Optional[str] = None
+    rclone_remotes: Optional[List[str]] = None
+    # Answer-shaped jobs (a stream probe) report their payload here.
+    result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
 
 
@@ -211,6 +240,10 @@ async def update_progress(job_id: str, body: JobProgress, principal=Depends(requ
             put(col, val)
     if body.archives is not None:
         put("archives", body.archives)
+    if body.rclone_remotes is not None:
+        put("rclone_remotes", body.rclone_remotes)
+    if body.result is not None:
+        put("result", body.result)
 
     # Any progress report is also a heartbeat — that is what stops a long but
     # healthy job from being reclaimed out from under its worker.
@@ -229,6 +262,96 @@ async def update_progress(job_id: str, body: JobProgress, principal=Depends(requ
 async def delete_job(job_id: str, principal=Depends(require_auth)):
     await db.execute("DELETE FROM zipper.jobs WHERE id = $1", job_id)
     return {"ok": True}
+
+
+# --------------------------------------------------------------- workers ----
+
+@router.post("/workers/heartbeat")
+async def worker_heartbeat(body: WorkerHeartbeat, principal=Depends(require_auth)):
+    """Record a worker's storage, and hand back the config it should apply.
+
+    One round trip in both directions on purpose. The worker is already polling
+    for jobs, so folding the storage report and the config pull into that poll
+    costs nothing extra and means there is no separate schedule to get wrong.
+
+    The response carries `rclone`, which is how remote priority set from the
+    extension reaches a worker that nothing can dial into.
+    """
+    row = await db.fetchrow(
+        """
+        INSERT INTO zipper.worker (name, host, platform, version, dest_dir, storage, seen_at)
+        VALUES ($1, $2, $3, $4, $5, $6, now())
+        ON CONFLICT (name) DO UPDATE SET
+            host     = COALESCE(EXCLUDED.host, zipper.worker.host),
+            platform = COALESCE(EXCLUDED.platform, zipper.worker.platform),
+            version  = COALESCE(EXCLUDED.version, zipper.worker.version),
+            dest_dir = COALESCE(EXCLUDED.dest_dir, zipper.worker.dest_dir),
+            storage  = EXCLUDED.storage,
+            seen_at  = now()
+        RETURNING rclone_desired
+        """,
+        body.worker, body.host, body.platform, body.version, body.dest_dir,
+        body.storage,
+    )
+    return {"ok": True, "rclone": (row or {}).get("rclone_desired")}
+
+
+@router.get("/storage")
+async def storage(
+    stale_after: int = Query(300, ge=30, le=86_400),
+    principal=Depends(require_auth),
+):
+    """Every worker's disk, newest report first.
+
+    Workers that have gone quiet are returned rather than filtered out, flagged
+    `stale`. A machine that stopped reporting is exactly the one worth looking
+    at, and dropping it from the list would make a dead worker indistinguishable
+    from one that never existed.
+    """
+    rows = await db.fetch(
+        """
+        SELECT name, host, platform, version, dest_dir, storage,
+               rclone_desired, first_seen, seen_at,
+               EXTRACT(EPOCH FROM (now() - seen_at))::bigint AS age_seconds
+        FROM zipper.worker
+        ORDER BY seen_at DESC
+        """
+    )
+    workers = []
+    for r in rows:
+        d = db.row_to_dict(r)
+        d["stale"] = (d.get("age_seconds") or 0) > stale_after
+        workers.append(d)
+    return {"ok": True, "workers": workers, "stale_after": stale_after}
+
+
+@router.patch("/workers/{name}/rclone")
+async def set_worker_rclone(name: str, body: RcloneDesired, principal=Depends(require_auth)):
+    """Ask a worker to change its rclone remote priority.
+
+    Stored, not applied — the worker applies it on its next heartbeat. So a
+    change made while the workstation is off is not lost, it simply takes effect
+    when it comes back, which is the same contract as the job queue.
+    """
+    row = await db.fetchrow("SELECT rclone_desired FROM zipper.worker WHERE name = $1", name)
+    if row is None:
+        raise HTTPException(status_code=404, detail="unknown worker")
+
+    desired: Dict[str, Any] = dict((row.get("rclone_desired") or {}))
+    if body.remotes is not None:
+        clean = [r.strip() for r in body.remotes if r and r.strip()]
+        # An empty list would silently disable the handoff while still reading
+        # as "configured". Refuse it rather than store it.
+        if not clean:
+            raise HTTPException(status_code=400, detail="remotes cannot be empty")
+        desired["remotes"] = clean
+    if body.enabled is not None:
+        desired["enabled"] = body.enabled
+
+    await db.execute(
+        "UPDATE zipper.worker SET rclone_desired = $1 WHERE name = $2", desired, name,
+    )
+    return {"ok": True, "rclone": desired, "applies": "on the worker's next heartbeat"}
 
 
 # --------------------------------------------------------------- history ----
