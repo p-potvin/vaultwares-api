@@ -12,30 +12,89 @@ router = APIRouter(prefix="/api/identities", tags=["identities"])
 # Path to SQLite gallery DB (can be set via env var GALLERY_DB_PATH)
 def get_gallery_db_path() -> str:
     env_path = os.environ.get("GALLERY_DB_PATH")
-    if env_path and os.path.isfile(env_path):
-        return env_path
+    if env_path:
+        return os.path.abspath(env_path)
     
-    candidates = [
-        r"F:\amd\gallery\gallery.db",
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "gallery.db"),
-        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "ColONEL-KFC", "gallery.db"),
-        os.path.join(os.path.expanduser("~"), "Desktop", "Github Repos", "ColONEL-KFC", "gallery.db")
-    ]
+    # Check default paths based on OS
+    if os.name == "nt":
+        candidates = [
+            r"F:\amd\gallery\gallery.db",
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "gallery.db"),
+            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "ColONEL-KFC", "gallery.db"),
+        ]
+    else:
+        candidates = [
+            "/var/lib/vaultwares/gallery.db",
+            "/opt/vaultwares-api/data/gallery.db",
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "gallery.db"),
+            os.path.join(os.path.expanduser("~"), "gallery.db")
+        ]
+
     for c in candidates:
         if os.path.isfile(c):
-            return c
-    return r"F:\amd\gallery\gallery.db"
+            return os.path.abspath(c)
+
+    # Fallback to local data/gallery.db
+    default_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+    return os.path.abspath(os.path.join(default_dir, "gallery.db"))
 
 
 def get_db_conn():
     db_path = get_gallery_db_path()
-    if not os.path.exists(db_path):
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    parent_dir = os.path.dirname(db_path)
+    if parent_dir and not os.path.exists(parent_dir):
+        os.makedirs(parent_dir, exist_ok=True)
+
     conn = sqlite3.connect(db_path, timeout=15.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     conn.execute("PRAGMA journal_mode = WAL;")
     conn.execute("PRAGMA synchronous = NORMAL;")
+
+    # Ensure tables exist
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS identities (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        status TEXT NOT NULL DEFAULT 'soft',
+        threshold REAL DEFAULT 0.50,
+        sample_count INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL,
+        validated_at TEXT,
+        notes TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS face_crops (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        identity_id INTEGER REFERENCES identities(id) ON DELETE CASCADE,
+        model_name TEXT NOT NULL,
+        image_path TEXT NOT NULL,
+        rel_path TEXT NOT NULL,
+        bbox TEXT,
+        landmarks_5pts TEXT,
+        embedding BLOB NOT NULL,
+        feature_norm REAL NOT NULL DEFAULT 1.0,
+        quality_score REAL DEFAULT 1.0,
+        is_exemplar INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS task_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_type TEXT NOT NULL,
+        target_model TEXT,
+        status TEXT NOT NULL,
+        duration_ms INTEGER DEFAULT 0,
+        images_scanned INTEGER DEFAULT 0,
+        matched_count INTEGER DEFAULT 0,
+        outliers_count INTEGER DEFAULT 0,
+        no_face_count INTEGER DEFAULT 0,
+        quarantined_count INTEGER DEFAULT 0,
+        details_json TEXT,
+        created_at TEXT NOT NULL
+    );
+    """)
+    conn.commit()
     return conn
 
 
