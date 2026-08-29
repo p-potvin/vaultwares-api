@@ -341,6 +341,63 @@ async def delete_identity(name: str):
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
 
+class FaceCropCreateRequest(BaseModel):
+    image_path: str
+    rel_path: str
+    embedding_b64: Optional[str] = None
+    embedding_floats: Optional[List[float]] = None
+    bbox: Optional[List[float]] = None
+    landmarks_5pts: Optional[List[List[float]]] = None
+    feature_norm: float = 1.0
+    quality_score: float = 1.0
+    is_exemplar: bool = False
+
+
+@router.post("/{name}/crops", status_code=status.HTTP_201_CREATED)
+async def add_identity_crop(name: str, req: FaceCropCreateRequest):
+    """Add a face crop with 512-dim ArcFace embedding to an identity."""
+    try:
+        import base64
+        import numpy as np
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM identities WHERE name = ?", (name.strip().lower(),))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Identity '{name}' not found")
+            ident_id = row["id"]
+
+            if req.embedding_b64:
+                blob = base64.b64decode(req.embedding_b64)
+            elif req.embedding_floats:
+                blob = np.array(req.embedding_floats, dtype=np.float32).tobytes()
+            else:
+                raise HTTPException(status_code=400, detail="Must provide embedding_b64 or embedding_floats")
+
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            bbox_str = json.dumps(req.bbox) if req.bbox else None
+            lm_str = json.dumps(req.landmarks_5pts) if req.landmarks_5pts else None
+
+            cur.execute("""
+                INSERT INTO face_crops (
+                    identity_id, model_name, image_path, rel_path, bbox,
+                    landmarks_5pts, embedding, feature_norm, quality_score,
+                    is_exemplar, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                ident_id, name.strip().lower(), req.image_path, req.rel_path,
+                bbox_str, lm_str, blob, float(req.feature_norm),
+                float(req.quality_score), 1 if req.is_exemplar else 0, now
+            ))
+            conn.commit()
+            return {"status": "created", "crop_id": cur.lastrowid}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 3D Dimensionality Reduced Embeddings Projection
 # ─────────────────────────────────────────────────────────────────────────────
