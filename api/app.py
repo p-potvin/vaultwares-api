@@ -31,6 +31,7 @@ from api.routes_llm import router as llm_router
 from api.routes_linksharing import router as linksharing_router
 from api.routes_projects import router as projects_router
 from api.routes_vault import router as vault_router
+from api.routes_identities import router as identities_router
 
 from api.routes_media import ZIPPER_DEST_DIR
 
@@ -183,7 +184,7 @@ _SWAGGER_UI_HTML = """<!DOCTYPE html>
 
 @app.get("/", include_in_schema=False)
 async def root_ping():
-    return {"status": "ok", "service": "vaultwares-api", "version": "0.2.18"}
+    return {"status": "ok", "service": "vaultwares-api", "version": "0.2.19"}
 
 
 @app.get("/healthz", include_in_schema=False)
@@ -230,6 +231,7 @@ app.include_router(llm_router)
 app.include_router(linksharing_router)
 app.include_router(projects_router)
 app.include_router(vault_router)
+app.include_router(identities_router)
 
 # Resiliency router imports
 _PROMKING_LOADED = False
