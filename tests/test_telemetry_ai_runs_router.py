@@ -454,8 +454,9 @@ def test_day_window_does_not_use_string_concatenation():
 
     assert "|| ' days'" not in sql
     assert "make_interval" in sql
-    assert params == [7]
-    assert all(isinstance(p, int) for p in params)
+    # params[0] is the residency exclusion list; the day window follows.
+    assert params[-1] == 7
+    assert isinstance(params[-1], int)
 
 
 def test_filters_are_parameterised_not_interpolated():
@@ -466,8 +467,8 @@ def test_filters_are_parameterised_not_interpolated():
     # Values must arrive as bind parameters; only $n placeholders in the SQL.
     assert "huggingface" not in sql
     assert "vault-inference" not in sql
-    assert params == [30, "huggingface", "vault-inference"]
-    assert "$1" in sql and "$2" in sql and "$3" in sql
+    assert params[-3:] == [30, "huggingface", "vault-inference"]
+    assert "$2" in sql and "$3" in sql and "$4" in sql
 
 
 def test_unknown_filter_keys_are_ignored():
@@ -477,7 +478,7 @@ def test_unknown_filter_keys_are_ignored():
     sql, params = _where(None, {"provider": "hf", "; DROP TABLE ai_runs;--": "x"})
 
     assert "DROP TABLE" not in sql
-    assert params == ["hf"]
+    assert params[-1:] == ["hf"]
 
 
 def test_timeline_bucket_is_whitelisted():
@@ -573,3 +574,35 @@ def test_backfill_of_last_resort_still_produces_a_start():
 
     assert run["started_at"] is not None
     assert run["ended_at"] is not None
+
+
+# ── residency samples are observations, not invocations ────────────────────
+
+def test_residency_is_excluded_from_aggregates_by_default():
+    # The Ollama poller samples /api/ps to report which models are resident.
+    # That is real data, but a loaded model is not a run: counting it inflates
+    # every volume, latency and failure figure with work nothing did.
+    from app.routers.telemetry.ai_runs_db import _where
+
+    sql, params = _where(7, {})
+
+    assert "task IS NULL OR task <> ALL" in sql
+    assert ["residency"] in params
+
+
+def test_asking_for_residency_explicitly_returns_it():
+    from app.routers.telemetry.ai_runs_db import _where
+
+    sql, params = _where(7, {"task": "residency"})
+
+    # The default exclusion must not fight an explicit request for it.
+    assert "<> ALL" not in sql
+    assert params == [7, "residency"]
+
+
+def test_a_normal_task_filter_still_excludes_observations():
+    from app.routers.telemetry.ai_runs_db import _where
+
+    sql, params = _where(7, {"task": "chat"})
+
+    assert params == [7, "chat"]

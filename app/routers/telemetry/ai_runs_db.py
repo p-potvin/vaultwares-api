@@ -250,9 +250,21 @@ _FILTERS = {
 }
 
 
+# Observations, not invocations. The Ollama poller samples /api/ps to report
+# which models are resident and how much VRAM they hold; that is real data, but
+# a loaded model is not a run. Counting it as one inflates every volume,
+# latency and failure figure with work nothing actually did. Excluded from the
+# aggregates by default; ask for task=residency explicitly to see it.
+OBSERVATION_TASKS = ("residency",)
+
+
 def _where(days: Optional[int], filters: Optional[Dict[str, Any]] = None) -> Tuple[str, List[Any]]:
     clauses: List[str] = []
     params: List[Any] = []
+
+    if not (filters or {}).get("task"):
+        params.append(list(OBSERVATION_TASKS))
+        clauses.append(f"(task IS NULL OR task <> ALL(${len(params)}::text[]))")
     if days:
         params.append(int(days))
         # make_interval rather than ($n || ' days')::interval: the concatenation
