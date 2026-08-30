@@ -523,3 +523,53 @@ def test_timeline_bucket_is_whitelisted():
 
     assert "DROP TABLE" not in captured["sql"]
     assert "date_trunc('day'" in captured["sql"]  # fell back to the default
+
+
+# ── ingest backfills started_at for senders that are not the ADK ────────────
+
+def test_backfill_derives_start_from_end_and_duration():
+    from datetime import datetime, timezone
+
+    from app.routers.telemetry.ai_runs_db import _backfill_times
+
+    run = {"ended_at": "2026-08-30T04:00:10Z", "duration_ms": 10000.0}
+    _backfill_times(run, None)
+
+    assert run["started_at"] == datetime(2026, 8, 30, 4, 0, 0, tzinfo=timezone.utc)
+
+
+def test_backfill_uses_collected_at_when_only_a_duration_is_known():
+    # This is the public HF Space case: its reporter is deliberately
+    # self-contained and older versions sent only a duration. A row with no
+    # started_at is invisible to every time-windowed query while the hourly
+    # rollup still counts it, so the two grains disagree.
+    from datetime import datetime, timezone
+
+    from app.routers.telemetry.ai_runs_db import _backfill_times
+
+    collected = datetime(2026, 8, 30, 4, 30, 0, tzinfo=timezone.utc)
+    run = {"duration_ms": 8000.0}
+    _backfill_times(run, collected)
+
+    assert run["started_at"] == datetime(2026, 8, 30, 4, 29, 52, tzinfo=timezone.utc)
+    assert run["ended_at"] == collected
+
+
+def test_backfill_never_overwrites_what_the_sender_said():
+    from app.routers.telemetry.ai_runs_db import _backfill_times
+
+    run = {"started_at": "2026-08-30T01:00:00Z", "ended_at": "2026-08-30T01:00:05Z",
+           "duration_ms": 5000.0}
+    _backfill_times(run, None)
+
+    assert run["started_at"] == "2026-08-30T01:00:00Z"
+
+
+def test_backfill_of_last_resort_still_produces_a_start():
+    from app.routers.telemetry.ai_runs_db import _backfill_times
+
+    run = {}
+    _backfill_times(run, None)
+
+    assert run["started_at"] is not None
+    assert run["ended_at"] is not None
