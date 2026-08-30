@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -105,6 +105,45 @@ def batch_id_for(host: str, collected_at: Any, batch_index: Any) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
 
+def _backfill_times(run: Dict[str, Any], collected_at: Optional[datetime]) -> None:
+    """Guarantee started_at, whatever the sender left out.
+
+    Every time-windowed query filters on started_at, so a row without one is
+    invisible in the summary, the timeline and the recent-runs table while the
+    hourly rollup still counts it -- the two grains then disagree about how
+    much ran.
+
+    The ADK recorder already derives this, but not every sender is the ADK: a
+    public HF Space ships a deliberately self-contained reporter, and reports
+    only a duration. Doing it here makes the guarantee hold for any client,
+    including ones that do not exist yet.
+
+    Preference order, most to least truthful: what the sender said, the end
+    time minus the measured duration, the end time, when the batch was
+    collected, and finally now.
+    """
+    started = _coerce_dt(run.get("started_at"))
+    if started is not None:
+        return
+
+    ended = _coerce_dt(run.get("ended_at"))
+    duration = _as_float(run.get("duration_ms"))
+
+    if ended is not None and duration:
+        run["started_at"] = ended - timedelta(milliseconds=duration)
+    elif ended is not None:
+        run["started_at"] = ended
+    elif collected_at is not None:
+        # Ingest time, not event time -- but a batch is collected within the
+        # hour it describes, so the rollup bucket still lands correctly.
+        run["started_at"] = collected_at - timedelta(milliseconds=duration or 0)
+    else:
+        run["started_at"] = datetime.now(timezone.utc)
+
+    if run.get("ended_at") is None:
+        run["ended_at"] = _coerce_dt(run["started_at"]) + timedelta(milliseconds=duration or 0)
+
+
 async def store_run_batch(batch: Dict[str, Any]) -> Dict[str, Any]:
     await ensure_schema()
 
@@ -141,6 +180,7 @@ async def store_run_batch(batch: Dict[str, Any]) -> Dict[str, Any]:
             for run in runs:
                 if not run.get("run_id"):
                     continue  # unidentifiable; cannot dedupe it, so drop it
+                _backfill_times(run, collected_at)
                 values: List[Any] = []
                 for column in _COLUMNS:
                     raw = run.get(column)
