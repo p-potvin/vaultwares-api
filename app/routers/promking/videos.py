@@ -4,6 +4,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 import json
+import re
+from typing import Any
 from .db import get_pool
 from ._models import (
     BatchAddTaxonomyRequest,
@@ -25,6 +27,7 @@ router = APIRouter(prefix="/videos", tags=["promking:videos"])
 
 _METADATA_COLUMNS = {
     "title": "title",
+    "slug": "slug",
     "source_url": "source_url",
     "embed_url": "embed_url",
     "embed_type": "embed_type",
@@ -32,6 +35,7 @@ _METADATA_COLUMNS = {
     "preview_url": "preview_url",
     "duration_seconds": "duration_seconds",
     "views": "views",
+    "description": "description",
     "qualities": "qualities",
 }
 
@@ -94,7 +98,7 @@ def build_video_filters(
     category: str | None = None,
     related_to: str | None = None,
     exclude_slug: str | None = None,
-    disabled: bool | None = None,
+    disabled: str | bool | None = None,
     source: str | None = None,
     health: str | None = None,
 ) -> tuple[str, str, list]:
@@ -103,11 +107,31 @@ def build_video_filters(
     The helper is intentionally pure so frontend-facing filter contracts can be
     unit-tested without requiring Postgres.
     """
+    # Normalise disabled flag:
+    #   "all" / None -> do not filter by disabled status at all
+    #   True / "true" / "disabled" -> disabled only
+    #   False / "false" / "enabled" -> enabled only
+    is_disabled_filter: str | bool | None = disabled
+    if isinstance(disabled, str):
+        d_lower = disabled.strip().lower()
+        if d_lower in ("all", "none", ""):
+            is_disabled_filter = "all"
+        elif d_lower in ("true", "1", "disabled"):
+            is_disabled_filter = True
+        elif d_lower in ("false", "0", "enabled"):
+            is_disabled_filter = False
+        else:
+            is_disabled_filter = None
+    elif disabled is False:
+        is_disabled_filter = False
+    elif disabled is True:
+        is_disabled_filter = True
+
     joins: list[str] = []
     where = ["1=1"]
     params: list = []
 
-    def add_param(value: str) -> str:
+    def add_param(value: Any) -> str:
         params.append(value)
         return f"${len(params)}"
 
@@ -116,43 +140,48 @@ def build_video_filters(
         where.append(f"video_sites.site = {add_param(site)}")
     if q:
         # Match the title *and* the names of anything linked to the video.
-        #
-        # Title-only FTS made the most common tube queries return nothing: a
-        # search for "brazzers" found 0 videos while the Brazzers studio had 17
-        # linked, and "Chloe Temple" found 30 of her 217. Real search_logs rows
-        # show users hitting exactly this ("brazzers" -> 1, "bangbros" -> 0).
-        #
-        # Subqueries, not JOINs: joining the taxonomy tables here would multiply
-        # a video row once per linked pornstar/studio/category and corrupt both
-        # the result set and /count.
-        #
-        # And deliberately non-correlated `IN (SELECT ...)` rather than
-        # `EXISTS (... WHERE x.video_id = videos.id)`. The correlated form makes
-        # Postgres re-run a 17k-row ILIKE scan of `pornstars` per candidate video:
-        # measured against a copy of prod (69k videos), counts took 24-33s. The
-        # non-correlated form is computed once and hashed — same rows (verified
-        # identical via EXCEPT both ways), 130-240ms. Don't "tidy" these into
-        # EXISTS.
-        #
-        # `deleted_at IS NULL` on each term: taxonomy deletion is a soft delete,
-        # so without it a search matches videos through a term the operator has
-        # already deleted.
         q_ts = add_param(q)
         q_like = add_param(f"%{q}%")
-        where.append(
-            "("
-            f"to_tsvector('english', videos.title) @@ plainto_tsquery('english', {q_ts})"
-            " OR videos.id IN (SELECT q_vp.video_id FROM video_pornstars q_vp"
+        search_clauses = [
+            f"to_tsvector('english', videos.title) @@ plainto_tsquery('english', {q_ts})",
+            "videos.id IN (SELECT q_vp.video_id FROM video_pornstars q_vp"
             "                    JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id"
-            f"                  WHERE q_p.name ILIKE {q_like} AND q_p.deleted_at IS NULL)"
-            " OR videos.id IN (SELECT q_vs.video_id FROM video_studios q_vs"
+            f"                  WHERE q_p.name ILIKE {q_like} AND q_p.deleted_at IS NULL)",
+            "videos.id IN (SELECT q_vs.video_id FROM video_studios q_vs"
             "                    JOIN studios q_s ON q_s.id = q_vs.studio_id"
-            f"                  WHERE q_s.name ILIKE {q_like} AND q_s.deleted_at IS NULL)"
-            " OR videos.id IN (SELECT q_vc.video_id FROM video_categories q_vc"
+            f"                  WHERE q_s.name ILIKE {q_like} AND q_s.deleted_at IS NULL)",
+            "videos.id IN (SELECT q_vc.video_id FROM video_categories q_vc"
             "                    JOIN categories q_c ON q_c.id = q_vc.category_id"
-            f"                  WHERE q_c.name ILIKE {q_like} AND q_c.deleted_at IS NULL)"
-            ")"
-        )
+            f"                  WHERE q_c.name ILIKE {q_like} AND q_c.deleted_at IS NULL)",
+        ]
+
+        # Multi-word fuzzy / cross-entity search: if query contains 2+ words, match across any word in title
+        # or across taxonomy tables via ILIKE ANY, so users never hit an empty screen on multi-word searches.
+        words = [re.sub(r'[^a-zA-Z0-9]', '', w) for w in q.split()]
+        words = [w for w in words if len(w) >= 3]
+        if len(words) >= 2:
+            or_terms = " | ".join(words)
+            p_or_ts = add_param(or_terms)
+            search_clauses.append(f"to_tsvector('english', videos.title) @@ to_tsquery('english', {p_or_ts})")
+            word_patterns = [f"%{w}%" for w in words]
+            p_patterns = add_param(word_patterns)
+            search_clauses.append(
+                "videos.id IN (SELECT q_vp.video_id FROM video_pornstars q_vp"
+                "                    JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id"
+                f"                  WHERE q_p.name ILIKE ANY({p_patterns}::text[]) AND q_p.deleted_at IS NULL)"
+            )
+            search_clauses.append(
+                "videos.id IN (SELECT q_vs.video_id FROM video_studios q_vs"
+                "                    JOIN studios q_s ON q_s.id = q_vs.studio_id"
+                f"                  WHERE q_s.name ILIKE ANY({p_patterns}::text[]) AND q_s.deleted_at IS NULL)"
+            )
+            search_clauses.append(
+                "videos.id IN (SELECT q_vc.video_id FROM video_categories q_vc"
+                "                    JOIN categories q_c ON q_c.id = q_vc.category_id"
+                f"                  WHERE q_c.name ILIKE ANY({p_patterns}::text[]) AND q_c.deleted_at IS NULL)"
+            )
+
+        where.append("(" + " OR ".join(search_clauses) + ")")
     if pornstar:
         joins.extend(
             [
@@ -160,12 +189,9 @@ def build_video_filters(
                 "JOIN pornstars pornstar_terms ON pornstar_terms.id = pornstar_filter.pornstar_id",
             ]
         )
-        # deleted_at: taxonomy deletion is soft, so without this a deleted
-        # pornstar's page kept serving her whole catalogue (verified:
-        # /pornstar/angel-youngs, deleted 2026-07-07, still returned 281 videos).
         where.append(f"pornstar_terms.slug = {add_param(pornstar)}")
         where.append("pornstar_terms.deleted_at IS NULL")
-        if disabled is False:
+        if is_disabled_filter is False:
             where.append("pornstar_terms.disabled = false")
     if studio:
         joins.extend(
@@ -176,7 +202,7 @@ def build_video_filters(
         )
         where.append(f"studio_terms.slug = {add_param(studio)}")
         where.append("studio_terms.deleted_at IS NULL")
-        if disabled is False:
+        if is_disabled_filter is False:
             where.append("studio_terms.disabled = false")
     if category:
         joins.extend(
@@ -187,7 +213,7 @@ def build_video_filters(
         )
         where.append(f"category_terms.slug = {add_param(category)}")
         where.append("category_terms.deleted_at IS NULL")
-        if disabled is False:
+        if is_disabled_filter is False:
             where.append("category_terms.disabled = false")
     if related_to:
         joins.extend(
@@ -212,9 +238,16 @@ def build_video_filters(
         )
     if exclude_slug:
         where.append(f"videos.slug <> {add_param(exclude_slug)}")
-    if disabled is not None:
-        if disabled:
-            where.append("videos.disabled_at IS NOT NULL")
+    if is_disabled_filter is not None and is_disabled_filter != "all":
+        if is_disabled_filter is True:
+            where.append(
+                "("
+                "videos.disabled_at IS NOT NULL OR "
+                "EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND s.disabled = true) OR "
+                "EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = true) OR "
+                "EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = true)"
+                ")"
+            )
         else:
             where.append("videos.disabled_at IS NULL")
             where.append("NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = true)")
@@ -412,7 +445,7 @@ async def list_videos(
             "embedded pornstar pills are filtered."
         ),
     ),
-    disabled: bool | None = Query(False, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
+    disabled: str | None = Query("false", description="Filter by disabled status. 'false'/'enabled' = enabled, 'true'/'disabled' = disabled, 'all'/'none' = all."),
     source: str | None = Query(None, description="Filter by video source."),
     health: str | None = Query(None, description="Filter by catalog health issue."),
     sort: str = Query("default", description="Sort order: 'default', 'title_asc', 'title_desc', 'views_desc', 'views_asc', 'duration_desc', 'duration_asc', 'date_desc', 'date_asc'"),
@@ -531,14 +564,20 @@ async def count_videos(
     pornstar: str | None = Query(None),
     studio: str | None = Query(None),
     category: str | None = Query(None),
-    disabled: bool | None = Query(False, description="Filter by disabled status. True = disabled, False = enabled, None = all."),
+    disabled: str | None = Query("false", description="Filter by disabled status. 'false'/'enabled' = enabled, 'true'/'disabled' = disabled, 'all'/'none' = all."),
     source: str | None = Query(None, description="Filter by video source."),
     health: str | None = Query(None, description="Filter by catalog health issue."),
 ) -> dict:
     pool = await get_pool()
     if q and not (pornstar or studio or category or source or health):
         q_like = f"%{q}%"
-        extra_filters = "AND disabled_at IS NULL" if disabled is False else ("AND disabled_at IS NOT NULL" if disabled is True else "")
+        is_dis = str(disabled).strip().lower() if disabled is not None else "false"
+        if is_dis in ("all", "none"):
+            extra_filters = ""
+        elif is_dis in ("true", "1", "disabled"):
+            extra_filters = "AND disabled_at IS NOT NULL"
+        else:
+            extra_filters = "AND disabled_at IS NULL"
         sql = f"""
             SELECT count(DISTINCT id) FROM (
                 SELECT id FROM videos WHERE to_tsvector('english', title) @@ plainto_tsquery('english', $1) {extra_filters}
@@ -586,24 +625,22 @@ async def get_video(
             "Same syntax as the list endpoint."
         ),
     ),
+    include_disabled: bool = Query(False, description="If true, allows viewing disabled videos (for admin)."),
 ) -> VideoDetail | None:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # `disabled_at IS NULL` is the whole point of disabling. Without it a
-        # video "deleted" in the admin stayed fully served and playable at its
-        # own URL — only unlinked from listings and the sitemap. 307 videos were
-        # in that state, the oldest disabled 9 days, including anything pulled
-        # for a takedown. Callers that need disabled rows (the admin) use the
-        # list endpoint's explicit `disabled` param.
-        where_clause = """
-            WHERE slug = $1 AND disabled_at IS NULL
-              AND NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = true)
-              AND NOT EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND s.disabled = true)
-              AND NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = true)
-        """
+        if not include_disabled:
+            where_clause = """
+                WHERE slug = $1 AND disabled_at IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = true)
+                  AND NOT EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND s.disabled = true)
+                  AND NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = true)
+            """
+        else:
+            where_clause = "WHERE slug = $1"
         params = [slug]
         if site:
-            where_clause += " AND EXISTS (SELECT 1 FROM video_sites WHERE video_id = videos.id AND site = $2)"
+            where_clause += f" AND EXISTS (SELECT 1 FROM video_sites WHERE video_id = videos.id AND site = ${len(params) + 1})"
             params.append(site)
 
         row = await conn.fetchrow(

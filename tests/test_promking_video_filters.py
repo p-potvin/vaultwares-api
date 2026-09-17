@@ -22,17 +22,18 @@ def test_build_video_filters_adds_taxonomy_and_related_clauses():
     assert "related_studios" in joins_sql
     assert "related_categories" in joins_sql
     assert "to_tsvector('english', videos.title)" in where_sql
-    # q now binds twice: the tsquery term and the ILIKE term, so the taxonomy
-    # slug params shift up by one.
-    assert "pornstar_terms.slug = $4" in where_sql
-    assert "studio_terms.slug = $5" in where_sql
-    assert "category_terms.slug = $6" in where_sql
-    assert "related_video.slug = $7" in where_sql
-    assert "videos.slug <> $8" in where_sql
+    # Multi-word queries now include fuzzy OR tsquery and ANY pattern matching for cross-entity search
+    assert "pornstar_terms.slug = $6" in where_sql
+    assert "studio_terms.slug = $7" in where_sql
+    assert "category_terms.slug = $8" in where_sql
+    assert "related_video.slug = $9" in where_sql
+    assert "videos.slug <> $10" in where_sql
     assert params == [
         "pkt",
         "studio search",
         "%studio search%",
+        "studio | search",
+        ["%studio%", "%search%"],
         "jane-star",
         "sample-studio",
         "trending-hd",
@@ -118,6 +119,9 @@ def test_build_video_filters_disabled_and_source():
     )
     assert "video_sites.site = $1" in where_sql
     assert "videos.disabled_at IS NULL" in where_sql
+    assert "NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = true)" in where_sql
+    assert "NOT EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND s.disabled = true)" in where_sql
+    assert "NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = true)" in where_sql
     assert "videos.source = $2" in where_sql
     assert params == ["fxv", "pornxp"]
 
@@ -127,9 +131,31 @@ def test_build_video_filters_disabled_and_source():
         disabled=True
     )
     assert "video_sites.site = $1" in where_sql
-    assert "videos.disabled_at IS NOT NULL" in where_sql
+    assert "videos.disabled_at IS NOT NULL OR " in where_sql
+    assert "EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND s.disabled = true)" in where_sql
+    assert "EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = true)" in where_sql
+    assert "EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = true)" in where_sql
     assert "videos.source" not in where_sql
     assert params == ["fxv"]
+
+    # Test disabled="all" (no disabled_at filter added)
+    where_sql, joins_sql, params = build_video_filters(
+        site="fxv",
+        disabled="all"
+    )
+    assert "video_sites.site = $1" in where_sql
+    assert "disabled_at" not in where_sql
+    assert "NOT EXISTS (SELECT 1 FROM video_studios" not in where_sql
+
+    # Test studio filter with disabled="all" does not enforce studio_terms.disabled = false
+    where_sql, joins_sql, params = build_video_filters(
+        site="fxv",
+        studio="mofos",
+        disabled="all"
+    )
+    assert "studio_terms.slug = $2" in where_sql
+    assert "studio_terms.disabled = false" not in where_sql
+    assert "disabled_at" not in where_sql
 
 
 def test_build_video_filters_health():

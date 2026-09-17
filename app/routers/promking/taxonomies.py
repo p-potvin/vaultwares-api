@@ -95,6 +95,7 @@ async def list_terms(
     ),
     sort: str = Query("default", description="Sort order: 'default', 'name_asc', 'name_desc', 'videos_asc', 'videos_desc', 'id_asc', 'id_desc', 'hot' (alias 'trending')"),
     include_disabled: bool = Query(False, description="If true, includes disabled terms"),
+    disabled: str | None = Query(None, description="Filter by disabled status: 'all', 'true'/'disabled', 'false'/'enabled'"),
     letter: str | None = Query(None, description="Filter by first letter (A-Z or 0-9)"),
 ) -> list[TermRef]:
     table_config = get_table_config(kind)
@@ -130,7 +131,15 @@ async def list_terms(
         elif len(let) == 1 and let.isalpha():
             extra_where.append(f"UPPER(LEFT({table}.name, 1)) = {add_param(let)}")
 
-    if not include_disabled:
+    if disabled is not None:
+        d_str = str(disabled).strip().lower()
+        if d_str in ("true", "1", "disabled"):
+            extra_where.append(f"{table}.disabled = true")
+        elif d_str in ("false", "0", "enabled"):
+            extra_where.append(f"{table}.disabled = false")
+        elif d_str in ("all", "none"):
+            pass
+    elif not include_disabled:
         extra_where.append(f"{table}.disabled = false")
 
     if gender and table_config.has_gender and gender.lower() != "all":
@@ -278,7 +287,7 @@ async def get_term_by_slug(
     request: Request,
     kind: TaxonomyKind = Path(...),
     slug: str = Path(...),
-    include_disabled: bool = Query(False),
+    include_disabled: bool = Query(True),
 ) -> TermRef:
     """
     Resolve exactly one term by slug. 404 when it doesn't exist or is deleted.
@@ -322,6 +331,7 @@ async def count_terms(
     q: str | None = Query(None),
     gender: str | None = Query(None),
     include_disabled: bool = Query(False),
+    disabled: str | None = Query(None, description="Filter by disabled status: 'all', 'true'/'disabled', 'false'/'enabled'"),
     letter: str | None = Query(None, description="Filter by first letter (A-Z or 0-9)"),
 ) -> dict:
     """
@@ -355,7 +365,15 @@ async def count_terms(
             extra_where.append(f"{table}.name ~ '^[0-9]'")
         elif len(let) == 1 and let.isalpha():
             extra_where.append(f"UPPER(LEFT({table}.name, 1)) = {add_param(let)}")
-    if not include_disabled:
+    if disabled is not None:
+        d_str = str(disabled).strip().lower()
+        if d_str in ("true", "1", "disabled"):
+            extra_where.append(f"{table}.disabled = true")
+        elif d_str in ("false", "0", "enabled"):
+            extra_where.append(f"{table}.disabled = false")
+        elif d_str in ("all", "none"):
+            pass
+    elif not include_disabled:
         extra_where.append(f"{table}.disabled = false")
     if gender and table_config.has_gender and gender.lower() != "all":
         token = gender.lower()

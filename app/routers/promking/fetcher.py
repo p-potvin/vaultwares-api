@@ -36,6 +36,7 @@ from fastapi.responses import StreamingResponse
 from .db import get_pool
 from ._models import FetchRunHandle, FetchRunRequest, Site
 from .tpdb import fetch_tpdb_tags
+from .taxonomy.classifier import TaxonomyClassifier
 
 router = APIRouter(prefix="/fetcher", tags=["promking:fetcher"])
 
@@ -466,56 +467,51 @@ async def _validate_video_terms(
     raw_studios = [str(n).strip() for n in (v.get("studios") or []) if str(n).strip()]
     raw_categories = [str(n).strip() for n in (v.get("categories") or []) if str(n).strip()]
 
-    source_pornstars: list[str] = []
-    source_studios: list[str] = list(raw_studios)
-
-    # Sub-studio check: if a scraped "pornstar" pill matches an existing studio in DB, treat as studio
-    for name in raw_pornstars:
-        name_k = _name_key(name)
-        if name_k in studio_matches:
-            source_studios.append(name)
-        else:
-            source_pornstars.append(name)
-
-    exact_pornstars = _merge_validated_term_names(source_pornstars, pornstar_matches, [])
-    exact_studios = _merge_validated_term_names(source_studios, studio_matches, [])
-    needs_tpdb = (
-        len(exact_pornstars) < len(_unique_names(source_pornstars))
-        or len(exact_studios) < len(_unique_names(source_studios))
-        or (not source_pornstars and not source_studios)
+    # Use offline taxonomy classifier to sort all incoming terms into proper buckets
+    classifier = TaxonomyClassifier(
+        db_pornstars=set(pornstar_matches.keys()),
+        db_studios=set(studio_matches.keys()),
+        db_categories=set(category_matches.keys()),
+    )
+    classified_cats, classified_porn, classified_studios = classifier.classify_video_tags(
+        title=v.get("title", ""),
+        categories=raw_categories,
+        pornstars=raw_pornstars,
+        studios=raw_studios,
     )
 
-    tpdb_data = await fetch_tpdb_tags(v.get("title")) if needs_tpdb else None
-    tpdb_pornstars = tpdb_data["performers"] if tpdb_data else []
-    tpdb_studios = tpdb_data["studios"] if tpdb_data else []
+    needs_tpdb = (
+        not classified_cats
+        or not classified_porn
+        or not classified_studios
+    )
 
-    v["pornstars"] = _merge_validated_term_names(source_pornstars, pornstar_matches, tpdb_pornstars)
-    v["studios"] = _merge_validated_term_names(source_studios, studio_matches, tpdb_studios)
+    tpdb_data = await fetch_tpdb_tags(v.get("title"), performer_hints=classified_porn) if needs_tpdb else None
     if tpdb_data:
-        v["categories"] = _unique_names(tpdb_data["categories"])
         v["_scene"] = tpdb_data.get("_scene")
+        # Route TPDB terms through classifier
+        tpdb_cats = tpdb_data.get("categories", [])
+        tpdb_porn = tpdb_data.get("performers", [])
+        tpdb_stud = tpdb_data.get("studios", [])
+        c_cats, c_porn, c_stud = classifier.classify_video_tags(
+            title="",
+            categories=tpdb_cats,
+            pornstars=tpdb_porn,
+            studios=tpdb_stud,
+        )
+        for c in c_cats:
+            if c not in classified_cats:
+                classified_cats.append(c)
+        for p in c_porn:
+            if p not in classified_porn:
+                classified_porn.append(p)
+        for s in c_stud:
+            if s not in classified_studios:
+                classified_studios.append(s)
 
-    is_disabled = False
-    for name in _unique_names(source_pornstars):
-        match_data = pornstar_matches.get(_name_key(name))
-        if match_data and match_data.get("disabled"):
-            is_disabled = True
-            break
-    if not is_disabled:
-        for name in _unique_names(source_studios):
-            match_data = studio_matches.get(_name_key(name))
-            if match_data and match_data.get("disabled"):
-                is_disabled = True
-                break
-    if not is_disabled:
-        all_cat_names = _unique_names(raw_categories + (v.get("categories") or []))
-        for name in all_cat_names:
-            match_data = category_matches.get(_name_key(name))
-            if match_data and match_data.get("disabled"):
-                is_disabled = True
-                break
-    if is_disabled:
-        v["_disabled"] = True
+    v["categories"] = _unique_names(classified_cats)
+    v["pornstars"] = _unique_names(classified_porn)
+    v["studios"] = _unique_names(classified_studios)
 
 
 async def _run_subprocess_for_page(
@@ -997,14 +993,11 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
                 continue
                 
             video_id = int(row["id"])
-            if row["inserted"]:
-                if not is_video_disabled:
-                    added += 1
-                else:
-                    disabled_skipped += 1
+            is_newly_inserted = bool(row["inserted"])
+            is_site_added = False
 
             # Insert into video_sites to track many-to-many relationship
-            await conn.execute(
+            site_res = await conn.execute(
                 """
                 INSERT INTO video_sites (video_id, site)
                 VALUES ($1, $2)
@@ -1013,6 +1006,14 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
                 video_id,
                 site,
             )
+            if site_res and "INSERT 0 1" in str(site_res):
+                is_site_added = True
+
+            if is_newly_inserted or is_site_added:
+                if not is_video_disabled:
+                    added += 1
+                else:
+                    disabled_skipped += 1
             
             # TPDB enrichment is now done concurrently before this loop
             
