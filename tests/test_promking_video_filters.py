@@ -176,3 +176,28 @@ def test_build_video_filters_health():
     where_sql, _, params = build_video_filters(site="fxv", health="untagged_categories")
     assert "NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = false)" in where_sql
 
+
+def test_build_video_filters_onlyfans():
+    # Default: onlyfans='false' excludes onlyfans videos
+    where_sql, _, _ = build_video_filters(site="fxv")
+    assert "videos.is_onlyfans = false" in where_sql
+
+    # Explicit 'false' or False
+    where_sql, _, _ = build_video_filters(site="fxv", onlyfans=False)
+    assert "videos.is_onlyfans = false" in where_sql
+
+    where_sql, _, _ = build_video_filters(site="fxv", onlyfans="false")
+    assert "videos.is_onlyfans = false" in where_sql
+
+    # 'true' or True
+    where_sql, _, _ = build_video_filters(site="fxv", onlyfans=True)
+    assert "videos.is_onlyfans = true" in where_sql
+
+    where_sql, _, _ = build_video_filters(site="fxv", onlyfans="true")
+    assert "videos.is_onlyfans = true" in where_sql
+
+    # 'all'
+    where_sql, _, _ = build_video_filters(site="fxv", onlyfans="all")
+    assert "is_onlyfans" not in where_sql
+
+

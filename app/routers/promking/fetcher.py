@@ -323,15 +323,38 @@ async def update_manual_cursor(site: str, source: str, page: int) -> None:
         )
 
 
+def _expand_link_aliases(links: list[str]) -> list[str]:
+    expanded = set(links)
+    for l in links:
+        if "fullvideos.to" in l:
+            expanded.add(l.replace("fullvideos.to", "fullvideos.xxx"))
+        elif "fullvideos.xxx" in l:
+            expanded.add(l.replace("fullvideos.xxx", "fullvideos.to"))
+        if "pxp.cool" in l:
+            expanded.add(l.replace("pxp.cool", "pornxp.bz"))
+            expanded.add(l.replace("pxp.cool", "pornxp.fo"))
+            expanded.add(l.replace("pxp.cool", "pornxp.com"))
+        elif "pornxp.bz" in l or "pornxp.fo" in l or "pornxp.com" in l:
+            expanded.add(re.sub(r"pornxp\.(?:bz|fo|com)", "pxp.cool", l))
+        if "www.1porn.tv" in l:
+            expanded.add(l.replace("www.1porn.tv", "1porn.tv"))
+        elif "1porn.tv" in l and "www.1porn.tv" not in l:
+            expanded.add(l.replace("1porn.tv", "www.1porn.tv"))
+    return list(expanded)
+
+
 async def check_existing_links(site: str, links: list[str]) -> set[str]:
     """
     Which of `links` are already known to us on this site? Since the schema
     migration on 2026-07-04 videos are catalogued once and joined onto sites
     via `video_sites`, so we JOIN through that instead of filtering on a
     (now-removed) `videos.site` column.
+    Expands known domain aliases (fullvideos.xxx <-> fullvideos.to, pornxp.bz <-> pxp.cool)
+    to match legacy rows.
     """
     if not links:
         return set()
+    search_links = _expand_link_aliases(links)
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -342,13 +365,41 @@ async def check_existing_links(site: str, links: list[str]) -> set[str]:
              WHERE vs.site = $1 AND v.source_url = ANY($2)
             """,
             site,
-            links,
+            search_links,
         )
-    return {r["source_url"] for r in rows}
+    matched = {r["source_url"] for r in rows}
+    result = set()
+    for l in links:
+        if l in matched:
+            result.add(l)
+        else:
+            aliases = _expand_link_aliases([l])
+            if any(a in matched for a in aliases):
+                result.add(l)
+    return result
+
+
+async def check_existing_site_slugs(site: str, slugs: list[str]) -> set[str]:
+    """Check which of candidate slugs already exist in videos linked to THIS site."""
+    if not slugs:
+        return set()
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT v.slug
+              FROM videos v
+              JOIN video_sites vs ON vs.video_id = v.id
+             WHERE vs.site = $1 AND v.slug = ANY($2)
+            """,
+            site,
+            slugs,
+        )
+    return {r["slug"] for r in rows}
 
 
 async def check_existing_slugs(slugs: list[str]) -> set[str]:
-    """Check which of candidate slugs already exist in videos table."""
+    """Check which of candidate slugs already exist in videos table globally."""
     if not slugs:
         return set()
     pool = await get_pool()
@@ -365,7 +416,7 @@ def filter_duplicate_candidates(
     existing_urls: set[str],
     existing_slugs: set[str],
 ) -> list[dict]:
-    """Filter candidates that are already in DB by sourceUrl or slug, or duplicate on the page."""
+    """Filter candidates that are already on this site by sourceUrl or slug, or duplicate on the page."""
     unique_candidates = []
     seen_urls = set(existing_urls)
     seen_slugs = set(existing_slugs)
@@ -703,7 +754,7 @@ async def _drive_term_run(state: RunState) -> None:
                 consecutive_all_known_pages = 0
                 candidates_to_persist = [v for v in page_candidates if v.get("sourceUrl") not in existing_on_page]
                 candidate_slugs = [_slugify(v.get("title") or "") for v in candidates_to_persist if v.get("title")]
-                existing_slugs = await check_existing_slugs(candidate_slugs)
+                existing_slugs = await check_existing_site_slugs(state.site, candidate_slugs)
                 filtered_candidates = filter_duplicate_candidates(candidates_to_persist, existing_on_page, existing_slugs)
                 
                 added_this_page, disabled_this_page = await _persist_videos(state.site, filtered_candidates)
@@ -741,6 +792,7 @@ async def _drive_subprocess(state: RunState) -> None:
         await _broadcast(state, json.dumps({"event": "log", "line": f"▶ Fetching {state.source} on {state.site} starting at page {current_page} (target: {state.pages} page(s))"}))
         
         pages_counted = 0
+        consecutive_all_known_pages = 0
         fetched_urls = set()
         
         state.summary = {"fetched": 0, "added": 0, "skipped": 0, "errors": 0}
@@ -774,7 +826,11 @@ async def _drive_subprocess(state: RunState) -> None:
             if not unique_page_videos:
                 state.summary["skipped"] += len(page_videos)
                 await _broadcast(state, json.dumps({"event": "log", "line": f"All videos on page {current_page} were already processed in this run."}))
+                consecutive_all_known_pages += 1
                 current_page += 1
+                if consecutive_all_known_pages >= 3:
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ 3 consecutive duplicate/empty pages — stopping run."}))
+                    break
                 continue
 
             urls_to_check = [v["sourceUrl"] for v in unique_page_videos if v.get("sourceUrl")]
@@ -785,9 +841,14 @@ async def _drive_subprocess(state: RunState) -> None:
             if not new_candidates:
                 state.summary["skipped"] += len(page_videos)
                 await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page}: all {len(unique_page_videos)} videos already in DB."}))
+                consecutive_all_known_pages += 1
+                if consecutive_all_known_pages >= 3:
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ 3 consecutive duplicate/empty pages — stopping run."}))
+                    break
             else:
+                consecutive_all_known_pages = 0
                 candidate_slugs = [_slugify(v.get("title") or "") for v in new_candidates if v.get("title")]
-                existing_slugs = await check_existing_slugs(candidate_slugs)
+                existing_slugs = await check_existing_site_slugs(state.site, candidate_slugs)
                 filtered_candidates = filter_duplicate_candidates(new_candidates, existing_urls, existing_slugs)
                 
                 added_this_page, disabled_this_page = await _persist_videos(state.site, filtered_candidates)
@@ -925,6 +986,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
                 description = str(description)
 
             is_video_disabled = bool(v.get("_disabled"))
+            is_onlyfans = bool(v.get("isOnlyfans") or v.get("is_onlyfans"))
 
             try:
                 row = await conn.fetchrow(
@@ -932,10 +994,10 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
                     INSERT INTO videos (
                         source, source_url, embed_url, embed_type,
                         title, slug, thumbnail_url, preview_url, duration_seconds,
-                        views, description, qualities, disabled_at
+                        views, description, qualities, disabled_at, is_onlyfans
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-                    ON CONFLICT (source_url) DO UPDATE SET updated_at = now()
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                    ON CONFLICT (source_url) DO UPDATE SET updated_at = now(), is_onlyfans = EXCLUDED.is_onlyfans
                     RETURNING id, (xmax = 0) AS inserted
                     """,
                     v.get("source"),
@@ -951,6 +1013,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
                     description,
                     qualities,
                     "now" if is_video_disabled else None,
+                    is_onlyfans,
                 )
             except Exception as e:
                 if "videos_slug_uniq" in str(e) or "slug" in str(e).lower():
@@ -961,10 +1024,10 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
                             INSERT INTO videos (
                                 source, source_url, embed_url, embed_type,
                                 title, slug, thumbnail_url, preview_url, duration_seconds,
-                                views, description, qualities, disabled_at
+                                views, description, qualities, disabled_at, is_onlyfans
                             )
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-                            ON CONFLICT (source_url) DO UPDATE SET updated_at = now()
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                            ON CONFLICT (source_url) DO UPDATE SET updated_at = now(), is_onlyfans = EXCLUDED.is_onlyfans
                             RETURNING id, (xmax = 0) AS inserted
                             """,
                             v.get("source"),
@@ -980,6 +1043,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
                             description,
                             qualities,
                             "now" if is_video_disabled else None,
+                            is_onlyfans,
                         )
                     except Exception:
                         skipped_bad += 1

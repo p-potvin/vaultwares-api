@@ -143,6 +143,7 @@ class VideoListItem(BaseModel):
     pornstars: list[TermRef] = Field(default_factory=list)
     studios: list[TermRef] = Field(default_factory=list)
     qualities: Optional[list[dict]] = None
+    is_onlyfans: bool = False
 
 
 class VideoDetail(VideoListItem):

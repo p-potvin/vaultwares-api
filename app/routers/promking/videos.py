@@ -101,6 +101,7 @@ def build_video_filters(
     disabled: str | bool | None = None,
     source: str | None = None,
     health: str | None = None,
+    onlyfans: str | bool | None = "false",
 ) -> tuple[str, str, list]:
     """Build taxonomy/related filters for list_videos.
 
@@ -127,9 +128,34 @@ def build_video_filters(
     elif disabled is True:
         is_disabled_filter = True
 
+    # Normalise onlyfans flag:
+    #   "all" -> do not filter by onlyfans at all
+    #   True / "true" / "1" -> onlyfans videos only
+    #   False / "false" / "0" / None -> regular videos only (default)
+    is_onlyfans_filter: str | bool | None = onlyfans
+    if isinstance(onlyfans, str):
+        of_lower = onlyfans.strip().lower()
+        if of_lower in ("all", "both"):
+            is_onlyfans_filter = "all"
+        elif of_lower in ("true", "1"):
+            is_onlyfans_filter = True
+        elif of_lower in ("false", "0", "none"):
+            is_onlyfans_filter = False
+        else:
+            is_onlyfans_filter = False
+    elif onlyfans is True:
+        is_onlyfans_filter = True
+    elif onlyfans is False or onlyfans is None:
+        is_onlyfans_filter = False
+
     joins: list[str] = []
     where = ["1=1"]
     params: list = []
+
+    if is_onlyfans_filter is True:
+        where.append("videos.is_onlyfans = true")
+    elif is_onlyfans_filter is False:
+        where.append("videos.is_onlyfans = false")
 
     def add_param(value: Any) -> str:
         params.append(value)
@@ -448,6 +474,7 @@ async def list_videos(
     disabled: str | None = Query("false", description="Filter by disabled status. 'false'/'enabled' = enabled, 'true'/'disabled' = disabled, 'all'/'none' = all."),
     source: str | None = Query(None, description="Filter by video source."),
     health: str | None = Query(None, description="Filter by catalog health issue."),
+    onlyfans: str | None = Query("false", description="Filter by OnlyFans status: 'false' (default, excludes OnlyFans), 'true' (OnlyFans only), 'all' (both)."),
     sort: str = Query("default", description="Sort order: 'default', 'title_asc', 'title_desc', 'views_desc', 'views_asc', 'duration_desc', 'duration_asc', 'date_desc', 'date_asc'"),
 ) -> list[VideoListItem]:
     pool = await get_pool()
@@ -462,6 +489,7 @@ async def list_videos(
         disabled=disabled,
         source=source,
         health=health,
+        onlyfans=onlyfans,
     )
     # Optional gender filter on the embedded pornstars_json subquery.
     gender_fragment, gender_params = build_gender_clause(
@@ -497,6 +525,7 @@ async def list_videos(
         SELECT videos.id, videos.source, videos.title, videos.slug,
                videos.thumbnail_url, videos.preview_url, videos.duration_seconds,
                videos.views, videos.created_at, videos.disabled_at, videos.qualities,
+               videos.is_onlyfans,
                (
                  SELECT coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'name', a.name, 'slug', a.slug)), '[]'::jsonb)
                  FROM video_pornstars va
@@ -567,6 +596,7 @@ async def count_videos(
     disabled: str | None = Query("false", description="Filter by disabled status. 'false'/'enabled' = enabled, 'true'/'disabled' = disabled, 'all'/'none' = all."),
     source: str | None = Query(None, description="Filter by video source."),
     health: str | None = Query(None, description="Filter by catalog health issue."),
+    onlyfans: str | None = Query("false", description="Filter by OnlyFans status: 'false' (default, excludes OnlyFans), 'true' (OnlyFans only), 'all' (both)."),
 ) -> dict:
     pool = await get_pool()
     if q and not (pornstar or studio or category or source or health):
@@ -575,18 +605,27 @@ async def count_videos(
         if is_dis in ("all", "none"):
             extra_filters = ""
         elif is_dis in ("true", "1", "disabled"):
-            extra_filters = "AND disabled_at IS NOT NULL"
+            extra_filters = "AND v.disabled_at IS NOT NULL"
         else:
-            extra_filters = "AND disabled_at IS NULL"
+            extra_filters = "AND v.disabled_at IS NULL"
+
+        is_of = str(onlyfans).strip().lower() if onlyfans is not None else "false"
+        if is_of in ("all", "both"):
+            of_filter = ""
+        elif is_of in ("true", "1"):
+            of_filter = "AND v.is_onlyfans = true"
+        else:
+            of_filter = "AND v.is_onlyfans = false"
+
         sql = f"""
             SELECT count(DISTINCT id) FROM (
-                SELECT id FROM videos WHERE to_tsvector('english', title) @@ plainto_tsquery('english', $1) {extra_filters}
+                SELECT v.id FROM videos v WHERE to_tsvector('english', v.title) @@ plainto_tsquery('english', $1) {extra_filters} {of_filter}
                 UNION ALL
-                SELECT q_vp.video_id FROM video_pornstars q_vp JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id WHERE q_p.name ILIKE $2 AND q_p.deleted_at IS NULL
+                SELECT q_vp.video_id FROM video_pornstars q_vp JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id JOIN videos v ON v.id = q_vp.video_id WHERE q_p.name ILIKE $2 AND q_p.deleted_at IS NULL {extra_filters} {of_filter}
                 UNION ALL
-                SELECT q_vs.video_id FROM video_studios q_vs JOIN studios q_s ON q_s.id = q_vs.studio_id WHERE q_s.name ILIKE $2 AND q_s.deleted_at IS NULL
+                SELECT q_vs.video_id FROM video_studios q_vs JOIN studios q_s ON q_s.id = q_vs.studio_id JOIN videos v ON v.id = q_vs.video_id WHERE q_s.name ILIKE $2 AND q_s.deleted_at IS NULL {extra_filters} {of_filter}
                 UNION ALL
-                SELECT q_vc.video_id FROM video_categories q_vc JOIN categories q_c ON q_c.id = q_vc.category_id WHERE q_c.name ILIKE $2 AND q_c.deleted_at IS NULL
+                SELECT q_vc.video_id FROM video_categories q_vc JOIN categories q_c ON q_c.id = q_vc.category_id JOIN videos v ON v.id = q_vc.video_id WHERE q_c.name ILIKE $2 AND q_c.deleted_at IS NULL {extra_filters} {of_filter}
             ) matches
         """
         async with pool.acquire() as conn:
@@ -602,6 +641,7 @@ async def count_videos(
         disabled=disabled,
         source=source,
         health=health,
+        onlyfans=onlyfans,
     )
     sql = f"""
         SELECT COUNT(videos.id) AS total
@@ -648,7 +688,7 @@ async def get_video(
             SELECT id, title, slug, thumbnail_url, preview_url,
                    duration_seconds, views, created_at, updated_at,
                    source, source_url, embed_url, embed_type, qualities,
-                   description
+                   is_onlyfans, description
             FROM videos
             {where_clause}
             """,
