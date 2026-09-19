@@ -18,15 +18,19 @@ load_dotenv()
 from app.routers.promking.db import get_pool
 from app.routers.promking.media import process_onlyfans_media
 
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger("backfill_onlyfans_media")
 
 
-async def backfill_onlyfans_videos(concurrency: int = 3, force: bool = False):
+async def backfill_onlyfans_videos(concurrency: int = 2, force: bool = False):
     pool = await get_pool()
     async with pool.acquire() as conn:
         if force:
@@ -35,7 +39,7 @@ async def backfill_onlyfans_videos(concurrency: int = 3, force: bool = False):
                        thumbnail_url, preview_url, duration_seconds, is_onlyfans
                 FROM videos
                 WHERE is_onlyfans = true
-                ORDER BY id ASC
+                ORDER BY id DESC
             """
         else:
             sql = """
@@ -45,7 +49,7 @@ async def backfill_onlyfans_videos(concurrency: int = 3, force: bool = False):
                 LEFT JOIN onlyfans_media om ON om.video_id = v.id
                 WHERE v.is_onlyfans = true
                   AND (om.sprite_url IS NULL OR om.sprite_url = '')
-                ORDER BY v.id ASC
+                ORDER BY v.id DESC
             """
         rows = await conn.fetch(sql)
 

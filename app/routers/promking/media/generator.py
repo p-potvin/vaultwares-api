@@ -165,7 +165,10 @@ async def generate_sprite_sheet(
         cmd = [
             ffmpeg_bin,
             "-y",
+            "-threads", "2",
             "-headers", FFMPEG_HEADERS,
+            "-ss", "00:00:00",
+            "-skip_frame", "nokey",
             "-i", video_url,
             "-vf", vf_filter,
             "-frames:v", "1",
@@ -173,13 +176,14 @@ async def generate_sprite_sheet(
             "-q:v", "3",
             str(sprite_file),
         ]
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=90.0)
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=max(120.0, duration * 0.15))
             if proc.returncode == 0 and sprite_file.exists() and sprite_file.stat().st_size > 1000:
                 sprite_created = True
                 logger.info("Generated sprite.jpg for video %s (%s bytes)", video_id, sprite_file.stat().st_size)
@@ -190,7 +194,21 @@ async def generate_sprite_sheet(
                     proc.returncode,
                     stderr.decode(errors="replace")[-300:],
                 )
+        except asyncio.TimeoutError:
+            if proc:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+            logger.warning("ffmpeg sprite generation timed out for video %s", video_id)
         except Exception as exc:
+            if proc:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
             logger.error("Exception generating sprite for video %s: %s", video_id, exc)
 
     sprite_url = get_media_url(video_id, "sprite.jpg") if sprite_created else None
