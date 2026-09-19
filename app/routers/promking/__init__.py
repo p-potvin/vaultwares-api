@@ -41,6 +41,7 @@ from .viewers import router as viewers_router
 from .tpdb import router as tpdb_router
 from .analytics import router as analytics_router
 from .search import router as search_router
+from .media import router as media_router
 
 router = APIRouter(prefix="/api/promking", tags=["promking"])
 router.include_router(videos_router)
@@ -56,5 +57,6 @@ router.include_router(viewers_router)
 router.include_router(tpdb_router)
 router.include_router(analytics_router)
 router.include_router(search_router)
+router.include_router(media_router)
 
 __all__ = ["router"]

@@ -653,6 +653,8 @@ async def _run_subprocess_for_page(
         if event == "log":
             log_line = f"[Page {page_num}] {payload.get('line', '')}"
             await _broadcast(state, json.dumps({"event": "log", "line": log_line}))
+        elif event == "start":
+            await _broadcast(state, json.dumps({"event": "log", "line": f"[Page {page_num}] ▶ Scrape started for {payload.get('source')} (pages={payload.get('pages')})"}))
         elif event == "videos":
             chunk = payload.get("videos")
             if isinstance(chunk, list):
@@ -757,6 +759,8 @@ async def _drive_term_run(state: RunState) -> None:
                 existing_slugs = await check_existing_site_slugs(state.site, candidate_slugs)
                 filtered_candidates = filter_duplicate_candidates(candidates_to_persist, existing_on_page, existing_slugs)
                 
+                if filtered_candidates:
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"Persisting {len(filtered_candidates)} candidate videos to database..."}))
                 added_this_page, disabled_this_page = await _persist_videos(state.site, filtered_candidates)
                 skipped_this_page = len(page_videos) - added_this_page
 
@@ -851,6 +855,8 @@ async def _drive_subprocess(state: RunState) -> None:
                 existing_slugs = await check_existing_site_slugs(state.site, candidate_slugs)
                 filtered_candidates = filter_duplicate_candidates(new_candidates, existing_urls, existing_slugs)
                 
+                if filtered_candidates:
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"Persisting {len(filtered_candidates)} candidate videos to database..."}))
                 added_this_page, disabled_this_page = await _persist_videos(state.site, filtered_candidates)
                 
                 skipped_this_page = len(page_videos) - added_this_page
@@ -1112,6 +1118,15 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
                 except Exception as e:
                     import logging as _log
                     _log.getLogger(__name__).warning("Failed to persist TPDB scene for video %d: %s", video_id, e)
+
+            # If this is an OnlyFans video, asynchronously process and generate its media assets
+            if is_onlyfans:
+                try:
+                    from .media import process_onlyfans_media
+                    asyncio.create_task(process_onlyfans_media(video_id, v, pool=pool))
+                except Exception as media_err:
+                    import logging as _log
+                    _log.getLogger(__name__).warning("Failed to schedule OnlyFans media processing for %d: %s", video_id, media_err)
     if skipped_bad:
         # Surface to logs so the operator can audit dropped rows.
         import logging

@@ -128,6 +128,18 @@ class BatchTaxonomyGenderUpdateResponse(BaseModel):
     errors: list[TaxonomyConflict] = Field(default_factory=list)
 
 
+class OnlyfansMediaOut(BaseModel):
+    thumbnail_url: Optional[str] = None
+    preview_video_url: Optional[str] = None
+    sprite_url: Optional[str] = None
+    sprite_vtt_url: Optional[str] = None
+    tile_width: int = 160
+    tile_height: int = 90
+    tile_count: int = 30
+    tiles_per_row: int = 6
+    interval_seconds: float = 0.0
+
+
 class VideoListItem(BaseModel):
     id: int
     site: Optional[Site] = None
@@ -144,6 +156,8 @@ class VideoListItem(BaseModel):
     studios: list[TermRef] = Field(default_factory=list)
     qualities: Optional[list[dict]] = None
     is_onlyfans: bool = False
+    onlyfans_media: Optional[OnlyfansMediaOut] = None
+    sprite_url: Optional[str] = None
 
 
 class VideoDetail(VideoListItem):

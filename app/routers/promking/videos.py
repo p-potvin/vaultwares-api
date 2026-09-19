@@ -526,6 +526,15 @@ async def list_videos(
                videos.thumbnail_url, videos.preview_url, videos.duration_seconds,
                videos.views, videos.created_at, videos.disabled_at, videos.qualities,
                videos.is_onlyfans,
+               onlyfans_media.thumbnail_url as of_thumb,
+               onlyfans_media.preview_video_url as of_preview,
+               onlyfans_media.sprite_url as of_sprite,
+               onlyfans_media.sprite_vtt_url as of_sprite_vtt,
+               onlyfans_media.tile_width as of_tile_width,
+               onlyfans_media.tile_height as of_tile_height,
+               onlyfans_media.tile_count as of_tile_count,
+               onlyfans_media.tiles_per_row as of_tiles_per_row,
+               onlyfans_media.interval_seconds as of_interval_seconds,
                (
                  SELECT coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'name', a.name, 'slug', a.slug)), '[]'::jsonb)
                  FROM video_pornstars va
@@ -539,6 +548,7 @@ async def list_videos(
                  WHERE vs.video_id = videos.id AND s.disabled = false AND s.deleted_at IS NULL
                ) as studios_json
         FROM videos
+        LEFT JOIN onlyfans_media ON onlyfans_media.video_id = videos.id
         {joins}
         WHERE {where_sql}
         ORDER BY {sort_order}
@@ -581,7 +591,32 @@ async def list_videos(
             d["studios"] = studios_val
         else:
             d["studios"] = []
- 
+
+        if d.get("is_onlyfans") and (d.get("of_sprite") or d.get("of_thumb")):
+            d["onlyfans_media"] = {
+                "thumbnail_url": d.get("of_thumb") or d.get("thumbnail_url"),
+                "preview_video_url": d.get("of_preview") or d.get("preview_url"),
+                "sprite_url": d.get("of_sprite"),
+                "sprite_vtt_url": d.get("of_sprite_vtt"),
+                "tile_width": d.get("of_tile_width") or 160,
+                "tile_height": d.get("of_tile_height") or 90,
+                "tile_count": d.get("of_tile_count") or 30,
+                "tiles_per_row": d.get("of_tiles_per_row") or 6,
+                "interval_seconds": float(d.get("of_interval_seconds") or 0.0),
+            }
+            d["sprite_url"] = d.get("of_sprite")
+            if d.get("of_thumb"):
+                d["thumbnail_url"] = d.get("of_thumb")
+            if d.get("of_preview"):
+                d["preview_url"] = d.get("of_preview")
+        else:
+            d["onlyfans_media"] = None
+            d["sprite_url"] = None
+
+        for k in list(d.keys()):
+            if k.startswith("of_"):
+                del d[k]
+
         results.append(VideoListItem(**d))
     return results
  
@@ -733,6 +768,12 @@ async def get_video(
             """,
             video_id,
         )
+        of_media_row = None
+        if row["is_onlyfans"]:
+            of_media_row = await conn.fetchrow(
+                "SELECT * FROM onlyfans_media WHERE video_id = $1",
+                video_id,
+            )
     payload = dict(row)
     
     # Deserialise qualities
@@ -741,6 +782,28 @@ async def get_video(
             payload["qualities"] = json.loads(payload["qualities"])
         except Exception:
             payload["qualities"] = None
+
+    if of_media_row:
+        of_d = dict(of_media_row)
+        payload["onlyfans_media"] = {
+            "thumbnail_url": of_d.get("thumbnail_url") or payload.get("thumbnail_url"),
+            "preview_video_url": of_d.get("preview_video_url") or payload.get("preview_url"),
+            "sprite_url": of_d.get("sprite_url"),
+            "sprite_vtt_url": of_d.get("sprite_vtt_url"),
+            "tile_width": of_d.get("tile_width") or 160,
+            "tile_height": of_d.get("tile_height") or 90,
+            "tile_count": of_d.get("tile_count") or 30,
+            "tiles_per_row": of_d.get("tiles_per_row") or 6,
+            "interval_seconds": float(of_d.get("interval_seconds") or 0.0),
+        }
+        payload["sprite_url"] = of_d.get("sprite_url")
+        if of_d.get("thumbnail_url"):
+            payload["thumbnail_url"] = of_d.get("thumbnail_url")
+        if of_d.get("preview_video_url"):
+            payload["preview_url"] = of_d.get("preview_video_url")
+    else:
+        payload["onlyfans_media"] = None
+        payload["sprite_url"] = None
 
     payload["pornstars"] = [TermRef(**dict(r)) for r in pornstars]
     payload["studios"] = [TermRef(**dict(r)) for r in studios]
