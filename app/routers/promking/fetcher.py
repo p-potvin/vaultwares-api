@@ -894,8 +894,8 @@ async def _broadcast(state: RunState, line: str) -> None:
 
 async def _finalize_run(state: RunState) -> None:
     state.finished = True
-    pool = await get_pool()
     if state.db_run_id is not None:
+        pool = await get_pool()
         log_blob = {
             "error": state.error,
             "stderr_tail": state.stderr_log,
@@ -920,6 +920,7 @@ async def _finalize_run(state: RunState) -> None:
                 state.summary.get("errors", 0) + (1 if state.error else 0),
                 log_blob,
             )
+    await _broadcast(state, json.dumps({"event": "done", "summary": dict(state.summary)}))
     await _broadcast(state, json.dumps({"event": "closed"}))
 
 

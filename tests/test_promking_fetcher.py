@@ -133,3 +133,73 @@ async def test_get_and_set_cursors():
         res = await set_cursor(update_req)
         assert res["ok"] is True
         assert res["page"] == 43
+
+
+@pytest.mark.anyio
+async def test_finalize_run_broadcasts_done_event_with_summary():
+    import asyncio
+    from app.routers.promking.fetcher import RunState, _finalize_run
+
+    state = RunState(
+        run_id="test-run-123",
+        site="sexyprn",
+        source="pornxp",
+        pages=1,
+        summary={"fetched": 10, "added": 0, "skipped": 10, "errors": 0},
+    )
+    q: asyncio.Queue[str] = asyncio.Queue()
+    state.queues.append(q)
+
+    # Run _finalize_run without db_run_id so it skips DB update and broadcasts
+    await _finalize_run(state)
+
+    # Queue should receive done event first, then closed
+    msg1 = await q.get()
+    data1 = json.loads(msg1)
+    assert data1["event"] == "done"
+    assert data1["summary"] == {"fetched": 10, "added": 0, "skipped": 10, "errors": 0}
+
+    msg2 = await q.get()
+    data2 = json.loads(msg2)
+    assert data2["event"] == "closed"
+
+
+@pytest.mark.anyio
+async def test_finalize_run_with_db_run_id_updates_db_and_broadcasts():
+    import asyncio
+    from app.routers.promking.fetcher import RunState, _finalize_run
+
+    state = RunState(
+        run_id="test-run-456",
+        db_run_id=99,
+        site="sexyprn",
+        source="pornxp",
+        pages=1,
+        summary={"fetched": 20, "added": 5, "skipped": 15, "errors": 0},
+    )
+    q: asyncio.Queue[str] = asyncio.Queue()
+    state.queues.append(q)
+
+    mock_conn = AsyncMock()
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+    with patch("app.routers.promking.fetcher.get_pool", return_value=mock_pool):
+        await _finalize_run(state)
+
+    mock_conn.execute.assert_called_once()
+    args = mock_conn.execute.call_args[0]
+    assert "UPDATE fetch_runs" in args[0]
+    assert args[1] == 99  # id
+    assert args[2] == 20  # fetched
+    assert args[3] == 5   # added
+    assert args[4] == 15  # skipped
+
+    msg1 = await q.get()
+    assert json.loads(msg1)["event"] == "done"
+    assert json.loads(msg1)["summary"] == {"fetched": 20, "added": 5, "skipped": 15, "errors": 0}
+
+    msg2 = await q.get()
+    assert json.loads(msg2)["event"] == "closed"
+
+
