@@ -43,9 +43,8 @@ def _enforce_register_rate_limit(client_ip: str) -> None:
 
 def _origin_allowed(origin: str) -> bool:
     if not origin: return False
-    from api.app import _cors_allow_origins
-    if origin in _cors_allow_origins: return True
-    return False
+    from api.app import origin_allowed as _app_origin_allowed
+    return _app_origin_allowed(origin)
 
 def _gateway_secret_valid(request: Request) -> bool:
     from api.config import GATEWAY_SHARED_SECRET, GATEWAY_HEADER_NAME

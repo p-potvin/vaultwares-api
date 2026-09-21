@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -141,9 +142,32 @@ _extra_dev_origins = {
     "http://localhost:8080", "http://127.0.0.1:8080"
 }
 _cors_allow_origins = sorted(set(CORS_ORIGINS) | ALLOWED_ORIGINS | _extra_dev_origins) if (CORS_ORIGINS or ALLOWED_ORIGINS) else list(_extra_dev_origins)
+
+# Trusted origins by pattern rather than by list: any vaultwares.ca host over
+# https, and any tailnet host (100.64.0.0/10) over http/https with an optional
+# port. A new subdomain works without editing this file or the deployed .env.
+CORS_ALLOW_ORIGIN_REGEX = (
+    r"^(?:"
+    r"https://(?:[A-Za-z0-9-]+\.)*vaultwares\.ca"
+    r"|https?://100\.(?:6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]{1,3}\.[0-9]{1,3}(?::[0-9]+)?"
+    r")$"
+)
+_cors_origin_pattern = re.compile(CORS_ALLOW_ORIGIN_REGEX)
+
+
+def origin_allowed(origin: str) -> bool:
+    """Single source of truth for origin trust (CORS and gateway checks)."""
+    if not origin:
+        return False
+    if origin in _cors_allow_origins:
+        return True
+    return bool(_cors_origin_pattern.match(origin))
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allow_origins,
+    allow_origin_regex=CORS_ALLOW_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

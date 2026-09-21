@@ -200,9 +200,8 @@ def _should_log_request(status_code: int, duration_ms: float) -> bool:
 def _origin_allowed(origin: str) -> bool:
     if not origin: return False
     if origin in ALLOWED_ORIGINS: return True
-    from api.app import _cors_allow_origins
-    if origin in _cors_allow_origins: return True
-    return False
+    from api.app import origin_allowed as _app_origin_allowed
+    return _app_origin_allowed(origin)
 
 def _gateway_secret_valid(request: Request) -> bool:
     if not GATEWAY_SHARED_SECRET: return False
