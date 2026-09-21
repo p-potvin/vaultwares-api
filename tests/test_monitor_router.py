@@ -367,7 +367,7 @@ services:
 
     assert response.status_code == 200
     body = response.json()
-    assert [item["status"] for item in body["items"]] == ["offline", "stale"]
+    assert [item["status"] for item in body["items"]] == ["offline", "degraded"]
     assert body["items"][0]["checkedAt"] == "2026-06-25T07:59:30Z"
     assert body["items"][0]["lastSuccessAt"] == "2026-06-25T07:55:00Z"
     assert body["items"][0]["lastFailureAt"] == "2026-06-25T07:59:30Z"
