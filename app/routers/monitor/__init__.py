@@ -84,7 +84,7 @@ async def ingest_probe_rollup(location_id: str, request: Request) -> Dict[str, A
     if location_id not in PROBE_LOCATIONS:
         raise HTTPException(status_code=404, detail="unknown probe location")
     body = await request.body()
-    if len(body) > 1024 * 1024:
+    if len(body) > 15 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="rollup too large")
     if not _valid_rollup_signature(
         body,
