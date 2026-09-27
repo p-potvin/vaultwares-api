@@ -60,9 +60,11 @@ SITE_ALIAS_PREFIX: dict[str, str] = {
     "sexyprn": "SPN",
 }
 
-# Conservative cap: AdLinkFly-style shorteners (exe.io, cuty.io) reject long
-# aliases. Prefix + "_" + PascalCase title is truncated to fit.
+# Alias length caps. cuty.io rejects anything over 12 characters ("The alias
+# must not be greater than 12 characters."); 30 is a conservative cap for
+# exe.io. Prefix + PascalCase title is truncated to fit.
 ALIAS_MAX_LEN = 30
+ALIAS_MAX_LEN_BY_PROVIDER: dict[str, int] = {"exeio": 30, "cuty": 12}
 PROVIDER_TIMEOUT_S = 5.0
 # Cap concurrent provider calls per process. While the pool is small every
 # page load wants a fresh link; under a burst the overflow is served an
@@ -90,8 +92,8 @@ _NON_ALNUM = re.compile(r"[^A-Za-z0-9]+")
 def make_alias(site: str, title: str, video_id: int | None = None, provider: str = "exeio") -> str:
     """`FXV_HotMilfGetsCaught` — ASCII PascalCase of the title, capped.
 
-    cuty.io only accepts letters and digits, so its aliases drop the
-    separator (`FXVHotMilfGetsCaught`). `video_id` is spliced in
+    cuty.io only accepts letters and digits (max 12), so its aliases drop
+    the separator and truncate hard (`FXVHotMilfGet`). `video_id` is spliced in
     (`FXV_1234_HotMilf…`) for the retry after the provider rejected the
     plain alias as taken.
     """
@@ -101,7 +103,7 @@ def make_alias(site: str, title: str, video_id: int | None = None, provider: str
     name = "".join(w[:1].upper() + w[1:].lower() for w in words) or "Video"
     prefix = SITE_ALIAS_PREFIX[site]
     head = f"{prefix}{sep}{video_id}{sep}" if video_id is not None else f"{prefix}{sep}"
-    return (head + name)[:ALIAS_MAX_LEN]
+    return (head + name)[:ALIAS_MAX_LEN_BY_PROVIDER.get(provider, ALIAS_MAX_LEN)]
 
 
 # ── Provider calls ──────────────────────────────────────────────────────────

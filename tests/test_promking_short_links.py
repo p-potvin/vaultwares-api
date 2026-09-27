@@ -32,8 +32,9 @@ def test_make_alias_prefix_and_pascal_case():
 
 
 def test_make_alias_cuty_is_alphanumeric_only():
-    assert make_alias("sexyprn", "hot milf gets caught", provider="cuty") == "SPNHotMilfGetsCaught"
+    assert make_alias("sexyprn", "hot milf gets caught", provider="cuty") == "SPNHotMilfGe"
     assert make_alias("fxv", "x y", 42, provider="cuty") == "FXV42XY"
+    assert make_alias("fxv", "alina gets fucked", 12345, provider="cuty") == "FXV12345Alin"
 
 
 def test_make_alias_is_capped_and_id_qualified():
