@@ -9,6 +9,7 @@ Sub-routes:
   /fetcher/runs       — GET: recent fetch_runs rows
   /settings/{site}    — GET/PUT: per-site JSONB settings
   /stats              — GET: videos per source / fetch-run history / dedupe ratio
+  /short-links        — homepage "Feeling Lucky"/"Pick For Me" exe.io/cuty.io links + stats
 
 Schema is owned by `Prom-King/shared-tube/shared/src/db/schema.ts` (Drizzle).
 This router treats the DB as a query target, not a model authority.
@@ -42,6 +43,7 @@ from .tpdb import router as tpdb_router
 from .analytics import router as analytics_router
 from .search import router as search_router
 from .media import router as media_router
+from .short_links import router as short_links_router
 
 router = APIRouter(prefix="/api/promking", tags=["promking"])
 router.include_router(videos_router)
@@ -58,5 +60,6 @@ router.include_router(tpdb_router)
 router.include_router(analytics_router)
 router.include_router(search_router)
 router.include_router(media_router)
+router.include_router(short_links_router)
 
 __all__ = ["router"]
