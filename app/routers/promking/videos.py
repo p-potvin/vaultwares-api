@@ -1,7 +1,7 @@
 """GET/PATCH/DELETE videos. Insertion happens via the fetcher persistence path."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 import json
 import re
@@ -16,6 +16,8 @@ from ._models import (
     BatchMetadataResponse,
     BatchMetadataUpdateRequest,
     BatchVideoIdsRequest,
+    BatchVideoMergeRequest,
+    BatchVideoMergeResponse,
     Site,
     TermRef,
     VideoDetail,
@@ -161,9 +163,7 @@ def build_video_filters(
         params.append(value)
         return f"${len(params)}"
 
-    if site:
-        joins.append("JOIN video_sites ON video_sites.video_id = videos.id")
-        where.append(f"video_sites.site = {add_param(site)}")
+    # Video catalog is unified across all sites; `site` argument is preserved for backwards compatibility but ignored.
     if q:
         # Match the title *and* the names of anything linked to the video.
         q_ts = add_param(q)
@@ -391,6 +391,226 @@ async def batch_update_metadata(payload: BatchMetadataUpdateRequest) -> BatchMet
     return BatchMetadataResponse(count=len(changed), errors=errors)
 
 
+@router.post("/batch/merge", response_model=BatchVideoMergeResponse)
+async def batch_merge_videos(payload: BatchVideoMergeRequest) -> BatchVideoMergeResponse:
+    """Merge one or more secondary videos into a primary video.
+    
+    Transfers views, taxonomy links (pornstars, studios, categories), short links,
+    and video_sites. Preserves audio previews (especially from /media/cache/) and
+    backfills any missing duration, thumbnail, description, or qualities.
+    Soft-disables merged secondary videos.
+    """
+    primary_id = payload.primary_id
+    merge_from = [vid for vid in payload.merge_from if vid != primary_id]
+    if not merge_from:
+        raise HTTPException(status_code=400, detail="No secondary videos provided to merge")
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            primary = await conn.fetchrow(
+                """
+                SELECT id, title, slug, thumbnail_url, preview_url, duration_seconds,
+                       views, qualities, description, source, source_url
+                  FROM videos
+                 WHERE id = $1
+                """,
+                primary_id,
+            )
+            if not primary:
+                raise HTTPException(status_code=404, detail=f"Primary video #{primary_id} not found")
+
+            secondaries = await conn.fetch(
+                """
+                SELECT id, title, slug, thumbnail_url, preview_url, duration_seconds,
+                       views, qualities, description, source, source_url
+                  FROM videos
+                 WHERE id = ANY($1::int[])
+                """,
+                merge_from,
+            )
+            if not secondaries:
+                raise HTTPException(status_code=404, detail="No valid secondary videos found")
+
+            found_ids = [s["id"] for s in secondaries]
+
+            # 1. Total Views
+            total_views = (primary["views"] or 0) + sum(s["views"] or 0 for s in secondaries)
+
+            # 2. Preview URL / Audio preview preservation
+            preview_url = primary["preview_url"]
+            if payload.preserve_audio_preview:
+                def is_audio_preview(url: str | None) -> bool:
+                    if not url:
+                        return False
+                    u = url.lower()
+                    return "/media/cache/" in u or "/generator/" in u
+
+                has_audio = is_audio_preview(preview_url)
+                if not has_audio:
+                    for s in secondaries:
+                        s_prev = s["preview_url"]
+                        if is_audio_preview(s_prev):
+                            preview_url = s_prev
+                            break
+                    if not preview_url:
+                        for s in secondaries:
+                            if s["preview_url"]:
+                                preview_url = s["preview_url"]
+                                break
+            elif not preview_url:
+                for s in secondaries:
+                    if s["preview_url"]:
+                        preview_url = s["preview_url"]
+                        break
+
+            # 3. Thumbnail URL
+            thumbnail_url = primary["thumbnail_url"]
+            if payload.prefer_secondary_thumbnail or not thumbnail_url:
+                for s in secondaries:
+                    if s["thumbnail_url"]:
+                        thumbnail_url = s["thumbnail_url"]
+                        break
+
+            # 4. Duration
+            duration = primary["duration_seconds"]
+            if not duration:
+                for s in secondaries:
+                    if s["duration_seconds"]:
+                        duration = s["duration_seconds"]
+                        break
+
+            # 5. Description
+            description = primary["description"]
+            if not description:
+                for s in secondaries:
+                    if s["description"]:
+                        description = s["description"]
+                        break
+
+            # 6. Qualities
+            qualities = primary["qualities"]
+            if not qualities:
+                for s in secondaries:
+                    if s["qualities"]:
+                        qualities = s["qualities"]
+                        break
+
+            # 7. Title & Slug overrides if supplied
+            title = payload.custom_title.strip() if payload.custom_title and payload.custom_title.strip() else primary["title"]
+            slug = payload.custom_slug.strip() if payload.custom_slug and payload.custom_slug.strip() else primary["slug"]
+
+            # 8. Transfer Taxonomy
+            await conn.execute(
+                """
+                INSERT INTO video_pornstars (video_id, pornstar_id)
+                SELECT $1, pornstar_id
+                  FROM video_pornstars
+                 WHERE video_id = ANY($2::int[])
+                ON CONFLICT (video_id, pornstar_id) DO NOTHING
+                """,
+                primary_id,
+                found_ids,
+            )
+            await conn.execute(
+                """
+                INSERT INTO video_studios (video_id, studio_id)
+                SELECT $1, studio_id
+                  FROM video_studios
+                 WHERE video_id = ANY($2::int[])
+                ON CONFLICT (video_id, studio_id) DO NOTHING
+                """,
+                primary_id,
+                found_ids,
+            )
+            await conn.execute(
+                """
+                INSERT INTO video_categories (video_id, category_id)
+                SELECT $1, category_id
+                  FROM video_categories
+                 WHERE video_id = ANY($2::int[])
+                ON CONFLICT (video_id, category_id) DO NOTHING
+                """,
+                primary_id,
+                found_ids,
+            )
+
+            # Clean up taxonomy on secondaries so they are cleanly detached
+            await conn.execute("DELETE FROM video_pornstars WHERE video_id = ANY($1::int[])", found_ids)
+            await conn.execute("DELETE FROM video_studios WHERE video_id = ANY($1::int[])", found_ids)
+            await conn.execute("DELETE FROM video_categories WHERE video_id = ANY($1::int[])", found_ids)
+
+            # Transfer short links to primary
+            await conn.execute(
+                "UPDATE short_links SET video_id = $1 WHERE video_id = ANY($2::int[])",
+                primary_id,
+                found_ids,
+            )
+
+            # Transfer video sites
+            await conn.execute(
+                """
+                INSERT INTO video_sites (video_id, site)
+                SELECT $1, site
+                  FROM video_sites
+                 WHERE video_id = ANY($2::int[])
+                ON CONFLICT (video_id, site) DO NOTHING
+                """,
+                primary_id,
+                found_ids,
+            )
+
+            # Update primary video
+            await conn.execute(
+                """
+                UPDATE videos
+                   SET title = $2,
+                       slug = $3,
+                       views = $4,
+                       preview_url = $5,
+                       thumbnail_url = $6,
+                       duration_seconds = $7,
+                       description = $8,
+                       qualities = $9,
+                       updated_at = now()
+                 WHERE id = $1
+                """,
+                primary_id,
+                title,
+                slug,
+                total_views,
+                preview_url,
+                thumbnail_url,
+                duration,
+                description,
+                qualities if isinstance(qualities, str) or qualities is None else json.dumps(qualities),
+            )
+
+            # Soft-disable secondaries
+            await conn.execute(
+                """
+                UPDATE videos
+                   SET disabled_at = now(),
+                       updated_at = now()
+                 WHERE id = ANY($1::int[])
+                """,
+                found_ids,
+            )
+
+    return BatchVideoMergeResponse(
+        primary_id=primary_id,
+        merged_ids=found_ids,
+        primary_slug=slug,
+        views=total_views,
+        transferred_pornstars=0,
+        transferred_studios=0,
+        transferred_categories=0,
+        preview_url=preview_url,
+        thumbnail_url=thumbnail_url,
+        message=f"Merged {len(found_ids)} video(s) into #{primary_id} ({slug}).",
+    )
+
+
 @router.post("/batch/add-taxonomy", response_model=BatchCountResponse)
 async def batch_add_taxonomy(payload: BatchAddTaxonomyRequest) -> BatchCountResponse:
     config = get_table_config(payload.kind)
@@ -518,6 +738,11 @@ async def list_videos(
     else:  # default
         sort_order = "videos.created_at DESC"
         
+    # When viewing all or disabled videos (admin mode), include disabled linked terms in chips
+    allow_disabled_tax = (disabled in ("all", "none", "true", "1", "disabled"))
+    tax_pornstar_disabled = "" if allow_disabled_tax else " AND a.disabled = false"
+    tax_studio_disabled = "" if allow_disabled_tax else " AND s.disabled = false"
+
     limit_param = f"${len(params) + 1}"
     offset_param = f"${len(params) + 2}"
     params.extend([limit, offset])
@@ -526,6 +751,12 @@ async def list_videos(
                videos.thumbnail_url, videos.preview_url, videos.duration_seconds,
                videos.views, videos.created_at, videos.disabled_at, videos.qualities,
                videos.is_onlyfans,
+               (
+                 videos.disabled_at IS NOT NULL OR
+                 EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND s.disabled = true) OR
+                 EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = true) OR
+                 EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = true)
+               ) as is_disabled,
                onlyfans_media.thumbnail_url as of_thumb,
                onlyfans_media.preview_video_url as of_preview,
                onlyfans_media.sprite_url as of_sprite,
@@ -536,16 +767,16 @@ async def list_videos(
                onlyfans_media.tiles_per_row as of_tiles_per_row,
                onlyfans_media.interval_seconds as of_interval_seconds,
                (
-                 SELECT coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'name', a.name, 'slug', a.slug)), '[]'::jsonb)
+                 SELECT coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'name', a.name, 'slug', a.slug, 'disabled', a.disabled)), '[]'::jsonb)
                  FROM video_pornstars va
                  JOIN pornstars a ON a.id = va.pornstar_id
-                 WHERE va.video_id = videos.id AND a.disabled = false AND a.deleted_at IS NULL{pornstar_gender_clause}
+                 WHERE va.video_id = videos.id AND a.deleted_at IS NULL{tax_pornstar_disabled}{pornstar_gender_clause}
                ) as pornstars_json,
                (
-                 SELECT coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name, 'slug', s.slug)), '[]'::jsonb)
+                 SELECT coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name, 'slug', s.slug, 'disabled', s.disabled)), '[]'::jsonb)
                  FROM video_studios vs
                  JOIN studios s ON s.id = vs.studio_id
-                 WHERE vs.video_id = videos.id AND s.disabled = false AND s.deleted_at IS NULL
+                 WHERE vs.video_id = videos.id AND s.deleted_at IS NULL{tax_studio_disabled}
                ) as studios_json
         FROM videos
         LEFT JOIN onlyfans_media ON onlyfans_media.video_id = videos.id
@@ -714,9 +945,7 @@ async def get_video(
         else:
             where_clause = "WHERE slug = $1"
         params = [slug]
-        if site:
-            where_clause += f" AND EXISTS (SELECT 1 FROM video_sites WHERE video_id = videos.id AND site = ${len(params) + 1})"
-            params.append(site)
+        # Video catalog is unified across all sites; any video slug resolves on any site.
 
         row = await conn.fetchrow(
             f"""

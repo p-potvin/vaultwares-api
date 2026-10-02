@@ -114,8 +114,9 @@ async def process_onlyfans_media(
         "interval_seconds": 0.0,
     }
 
-    # 4. Generate 30-frame sprite sheet for hover animation and timeline scrubbing
+    # 4. Generate 10-second audio preview and 30-frame sprite sheet
     if mp4_url:
+        preview_video_url = await generate_animated_preview(video_id, mp4_url, duration, clip_seconds=10.0)
         sprite_url, sprite_vtt_url, sprite_meta = await generate_sprite_sheet(
             video_id,
             mp4_url,
@@ -125,20 +126,23 @@ async def process_onlyfans_media(
             tile_width=160,
             tile_height=90,
         )
-        if not sprite_url:
+        if not sprite_url or not preview_video_url:
             # Token might have expired, attempt refresh
             fresh_url = await _refresh_notfans_mp4_url(source_url)
             if fresh_url and fresh_url != mp4_url:
                 mp4_url = fresh_url
-                sprite_url, sprite_vtt_url, sprite_meta = await generate_sprite_sheet(
-                    video_id,
-                    mp4_url,
-                    duration,
-                    tile_count=30,
-                    tiles_per_row=6,
-                    tile_width=160,
-                    tile_height=90,
-                )
+                if not preview_video_url:
+                    preview_video_url = await generate_animated_preview(video_id, mp4_url, duration, clip_seconds=10.0)
+                if not sprite_url:
+                    sprite_url, sprite_vtt_url, sprite_meta = await generate_sprite_sheet(
+                        video_id,
+                        mp4_url,
+                        duration,
+                        tile_count=30,
+                        tiles_per_row=6,
+                        tile_width=160,
+                        tile_height=90,
+                    )
 
     # 5. Persist to onlyfans_media association table
     async with pool.acquire() as conn:

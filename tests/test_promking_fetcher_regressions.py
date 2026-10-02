@@ -104,3 +104,62 @@ async def test_check_existing_links_matches_alias_domains():
         # Scraper provides canonical fullvideos.to URL
         found = await check_existing_links("fxv", ["https://www.fullvideos.to/videos/123/"])
         assert "https://www.fullvideos.to/videos/123/" in found
+
+
+@pytest.mark.anyio
+async def test_check_existing_site_slugs_checks_slugs_globally():
+    from app.routers.promking.fetcher import check_existing_site_slugs
+
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = [{"slug": "eva-nexus-scene"}]
+
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+    with patch("app.routers.promking.fetcher.get_pool", return_value=mock_pool):
+        found = await check_existing_site_slugs("fxv", ["eva-nexus-scene"])
+        assert "eva-nexus-scene" in found
+
+
+@pytest.mark.anyio
+async def test_persist_videos_links_existing_on_slug_conflict_without_hash():
+    from app.routers.promking.fetcher import _persist_videos
+
+    mock_conn = AsyncMock()
+    # First INSERT raises unique constraint on slug
+    mock_conn.fetchrow.side_effect = [
+        Exception("duplicate key value violates unique constraint \"videos_slug_uniq\""),
+        {"id": 42, "is_disabled": False, "inserted": False},
+    ]
+    # INSERT INTO video_sites returns 3 rows inserted for all sites
+    mock_conn.execute.return_value = "INSERT 0 3"
+
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+    video = {
+        "source": "pornxp",
+        "sourceUrl": "https://pxp.cool/videos/999",
+        "embedUrl": "https://pxp.cool/embed/999",
+        "title": "Duplicate Video Title",
+    }
+
+    with patch("app.routers.promking.fetcher.get_pool", return_value=mock_pool), \
+         patch("app.routers.promking.fetcher._fetch_local_term_matches", return_value={}), \
+         patch("app.routers.promking.fetcher._validate_video_terms", return_value=None), \
+         patch("app.routers.promking.fetcher._attach_terms", return_value=None):
+        added, disabled = await _persist_videos("sexyprn", [video])
+
+    assert added == 1
+    assert disabled == 0
+
+    # Ensure fetchrow was called to find existing slug
+    second_fetchrow_call = mock_conn.fetchrow.call_args_list[1]
+    assert "SELECT id" in second_fetchrow_call.args[0]
+    assert second_fetchrow_call.args[1] == "duplicate-video-title"
+
+    # Ensure video_sites was linked with existing ID 42
+    site_exec_call = mock_conn.execute.call_args_list[0]
+    assert "INSERT INTO video_sites" in site_exec_call.args[0]
+    assert site_exec_call.args[1] == 42
+

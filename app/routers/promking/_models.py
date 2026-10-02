@@ -58,6 +58,28 @@ class BatchMetadataResponse(BaseModel):
     errors: list[BatchError] = Field(default_factory=list)
 
 
+class BatchVideoMergeRequest(BaseModel):
+    primary_id: int
+    merge_from: list[int] = Field(min_length=1)
+    preserve_audio_preview: bool = True
+    prefer_secondary_thumbnail: bool = False
+    custom_title: Optional[str] = None
+    custom_slug: Optional[str] = None
+
+
+class BatchVideoMergeResponse(BaseModel):
+    primary_id: int
+    merged_ids: list[int]
+    primary_slug: str
+    views: int
+    transferred_pornstars: int = 0
+    transferred_studios: int = 0
+    transferred_categories: int = 0
+    preview_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    message: str
+
+
 class TaxonomyRename(BaseModel):
     term_id: int
     new_name: str = Field(min_length=1, max_length=160)
@@ -152,6 +174,7 @@ class VideoListItem(BaseModel):
     views: int = 0
     created_at: datetime
     disabled_at: Optional[datetime] = None
+    is_disabled: bool = False
     pornstars: list[TermRef] = Field(default_factory=list)
     studios: list[TermRef] = Field(default_factory=list)
     qualities: Optional[list[dict]] = None

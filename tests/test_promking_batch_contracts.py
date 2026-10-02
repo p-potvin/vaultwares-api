@@ -80,3 +80,56 @@ async def test_batch_merge_keeps_merged_term_names_as_aliases():
     assert response.merged_count == 2
     update_sql = mock_conn.fetch.call_args.args[0]
     assert "merged_into_id = $2" in update_sql
+
+
+@pytest.mark.anyio
+async def test_batch_merge_videos_preserves_audio_preview_and_sums_views():
+    from app.routers.promking._models import BatchVideoMergeRequest
+    from app.routers.promking.videos import batch_merge_videos
+
+    payload = BatchVideoMergeRequest(primary_id=1, merge_from=[2], preserve_audio_preview=True)
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow.return_value = {
+        "id": 1,
+        "title": "Primary Title",
+        "slug": "primary-slug",
+        "thumbnail_url": "https://img.com/1.jpg",
+        "preview_url": "https://img.com/silent.mp4",
+        "duration_seconds": 120,
+        "views": 100,
+        "qualities": None,
+        "description": None,
+        "source": "pornxp",
+        "source_url": "https://pxp.cool/1",
+    }
+    mock_conn.fetch.return_value = [
+        {
+            "id": 2,
+            "title": "Secondary Title",
+            "slug": "secondary-slug",
+            "thumbnail_url": "https://img.com/2.jpg",
+            "preview_url": "/api/promking/media/cache/abc123audio.mp4",
+            "duration_seconds": 130,
+            "views": 50,
+            "qualities": ["1080p"],
+            "description": "Secondary description",
+            "source": "1porn",
+            "source_url": "https://1porn.tv/2",
+        }
+    ]
+    mock_tx = MagicMock()
+    mock_tx.__aenter__ = AsyncMock(return_value=None)
+    mock_tx.__aexit__ = AsyncMock(return_value=None)
+    mock_conn.transaction = MagicMock(return_value=mock_tx)
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+    with patch("app.routers.promking.videos.get_pool", return_value=mock_pool):
+        res = await batch_merge_videos(payload)
+
+    assert res.primary_id == 1
+    assert res.merged_ids == [2]
+    assert res.views == 150
+    # Secondary preview is preserved because it has audio cache!
+    assert res.preview_url == "/api/promking/media/cache/abc123audio.mp4"
+
