@@ -952,7 +952,7 @@ async def get_video(
             SELECT id, title, slug, thumbnail_url, preview_url,
                    duration_seconds, views, created_at, updated_at,
                    source, source_url, embed_url, embed_type, qualities,
-                   is_onlyfans, description
+                   is_onlyfans, description, disabled_at
             FROM videos
             {where_clause}
             """,
@@ -1004,6 +1004,7 @@ async def get_video(
                 video_id,
             )
     payload = dict(row)
+    payload["is_disabled"] = row["disabled_at"] is not None
     
     # Deserialise qualities
     if isinstance(payload.get("qualities"), str):
