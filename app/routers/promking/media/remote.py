@@ -64,45 +64,52 @@ def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
+    # One row per video: several videos may share a clip, and each has its own original preview.
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS fallbacks ("
-        " hash TEXT PRIMARY KEY, video_id INTEGER NOT NULL, fallback_url TEXT, updated_at REAL NOT NULL)"
+        "CREATE TABLE IF NOT EXISTS previews ("
+        " video_id INTEGER PRIMARY KEY, hash TEXT NOT NULL, fallback_url TEXT, updated_at REAL NOT NULL)"
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS fallbacks_video ON fallbacks (video_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS previews_hash ON previews (hash)")
     return conn
 
 
 def save_fallbacks(rows: list[tuple[str, int, str | None]]) -> None:
-    """Upserts (hash, video_id, fallback_url). A NULL fallback never overwrites a known one."""
+    """Records (hash, video_id, original preview). A NULL original never overwrites a known one."""
     now = time.time()
     with _db_lock:
         conn = _connect()
         try:
             with conn:
                 conn.executemany(
-                    "INSERT INTO fallbacks (hash, video_id, fallback_url, updated_at) VALUES (?, ?, ?, ?)"
-                    " ON CONFLICT (hash) DO UPDATE SET video_id = excluded.video_id,"
-                    " fallback_url = COALESCE(excluded.fallback_url, fallbacks.fallback_url),"
+                    "INSERT INTO previews (video_id, hash, fallback_url, updated_at) VALUES (?, ?, ?, ?)"
+                    " ON CONFLICT (video_id) DO UPDATE SET hash = excluded.hash,"
+                    " fallback_url = COALESCE(excluded.fallback_url, previews.fallback_url),"
                     " updated_at = excluded.updated_at",
-                    [(h, v, f, now) for h, v, f in rows],
+                    [(v, h, f, now) for h, v, f in rows],
                 )
         finally:
             conn.close()
 
 
 def fallback_for_hash(media_hash: str) -> str | None:
+    """An original preview of a video using this clip (any of them will do for serving)."""
     if not _db_path().exists():
         return None
     with _db_lock:
         conn = _connect()
         try:
-            row = conn.execute("SELECT fallback_url FROM fallbacks WHERE hash = ?", (media_hash,)).fetchone()
+            row = conn.execute(
+                "SELECT fallback_url FROM previews WHERE hash = ? AND fallback_url IS NOT NULL"
+                " ORDER BY updated_at DESC LIMIT 1",
+                (media_hash,),
+            ).fetchone()
         finally:
             conn.close()
-    return row[0] if row and row[0] else None
+    return row[0] if row else None
 
 
-def fallbacks_for_videos(video_ids: list[int]) -> dict[int, str]:
+def records_for_videos(video_ids: list[int]) -> dict[int, tuple[str, str | None]]:
+    """video_id -> (hash it was switched to, its original preview)."""
     if not video_ids or not _db_path().exists():
         return {}
     with _db_lock:
@@ -110,10 +117,8 @@ def fallbacks_for_videos(video_ids: list[int]) -> dict[int, str]:
         try:
             q = ",".join("?" * len(video_ids))
             rows = conn.execute(
-                f"SELECT video_id, fallback_url FROM fallbacks WHERE video_id IN ({q}) AND fallback_url IS NOT NULL"
-                " ORDER BY updated_at",
-                video_ids,
+                f"SELECT video_id, hash, fallback_url FROM previews WHERE video_id IN ({q})", video_ids
             ).fetchall()
         finally:
             conn.close()
-    return {int(v): f for v, f in rows}
+    return {int(v): (h, f) for v, h, f in rows}

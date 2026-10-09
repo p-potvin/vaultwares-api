@@ -37,9 +37,30 @@ def test_compute_staggered_capture_offsets():
     assert offsets_60[0] == 3.0
     assert offsets_60[-1] == 55.5
 
-    # Short video fallback
+    # Short video: every capture starts inside the video
     offsets_short = compute_staggered_capture_offsets(8.0, captures_count=7, capture_duration=1.5)
     assert len(offsets_short) == 7
+    assert offsets_short[0] == 0.0
+    assert offsets_short[-1] == 6.5
+    assert all(0.0 <= o <= 6.5 for o in offsets_short)
+
+    # Unknown duration keeps the default start
+    assert compute_staggered_capture_offsets(None)[0] == 15.0
+
+
+@pytest.mark.anyio
+async def test_timed_out_subprocess_is_killed():
+    import asyncio
+    import sys
+    from app.routers.promking.media.generator import _communicate
+
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", "import time; time.sleep(30)",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    with pytest.raises(asyncio.TimeoutError):
+        await _communicate(proc, 0.5)
+    assert proc.returncode is not None
 
 
 def test_find_best_mp4_url():

@@ -226,6 +226,18 @@ _PASS_HEADERS = (
 )
 
 
+async def _relay(upstream: httpx.Response, media_hash: str):
+    """Relays the workstation's body. Headers are already sent, so a drop mid-stream can only end the
+    response early; it starts the cooldown so the next requests go straight to the fallback."""
+    try:
+        async for chunk in upstream.aiter_raw():
+            yield chunk
+    except httpx.HTTPError as exc:
+        logger.warning("Workstation preview stream for %s broke mid-way: %s", media_hash, exc)
+        remote.mark_down()
+        raise
+
+
 async def _serve_remote_media(media_hash: str, request: Request):
     """Streams a generated preview from the workstation, else redirects to the original preview."""
     if remote.remote_available():
@@ -249,7 +261,7 @@ async def _serve_remote_media(media_hash: str, request: Request):
                     await upstream.aclose()
                     return Response(status_code=upstream.status_code, headers=out)
                 return StreamingResponse(
-                    upstream.aiter_raw(),
+                    _relay(upstream, media_hash),
                     status_code=upstream.status_code,
                     headers=out,
                     background=BackgroundTask(upstream.aclose),

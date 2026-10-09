@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.routers.promking._models import BatchRemotePreviewsRequest
 from app.routers.promking.media import remote
 from app.routers.promking.media.routes import router as media_router
-from app.routers.promking.videos import batch_set_remote_previews
+from app.routers.promking._models import BatchRevertPreviewsRequest
+from app.routers.promking.videos import (
+    batch_revert_remote_previews,
+    batch_set_remote_previews,
+    router as videos_router,
+)
 
 HASH = "a" * 64
 OTHER = "b" * 64
@@ -95,7 +100,58 @@ def test_fallback_store_keeps_a_known_url_when_a_later_upsert_has_none(shared_tu
     remote.save_fallbacks([(HASH, 7, None)])
 
     assert remote.fallback_for_hash(HASH) == "https://cdn.example/a.mp4"
-    assert remote.fallbacks_for_videos([7, 8]) == {7: "https://cdn.example/a.mp4"}
+    assert remote.records_for_videos([7, 8]) == {7: (HASH, "https://cdn.example/a.mp4")}
+
+
+def test_videos_sharing_a_clip_keep_their_own_originals(shared_tube):
+    remote.save_fallbacks([(HASH, 1, "https://site1.example/p.mp4"), (HASH, 2, None)])
+
+    assert remote.records_for_videos([1, 2]) == {1: (HASH, "https://site1.example/p.mp4"), 2: (HASH, None)}
+    assert remote.fallback_for_hash(HASH) == "https://site1.example/p.mp4"
+
+
+def test_stream_dropping_mid_way_starts_the_cooldown(shared_tube, monkeypatch, client):
+    class Breaks(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"01"
+            raise httpx.ReadError("gone")
+
+    lab(monkeypatch, lambda req: httpx.Response(200, stream=Breaks(), headers={"content-type": "video/mp4"}))
+
+    with pytest.raises(httpx.ReadError):
+        client.get(f"/api/promking/media/cache/{HASH}.mp4")
+    assert not remote.remote_available()
+
+
+def test_preview_switch_endpoints_require_an_admin(shared_tube):
+    app = FastAPI()
+    app.include_router(videos_router, prefix="/api/promking")
+    c = TestClient(app)
+    body = {"items": [{"video_id": 1, "media_hash": HASH}]}
+
+    assert c.post("/api/promking/videos/batch/remote-previews", json=body).status_code == 401
+    assert c.post("/api/promking/videos/batch/remote-previews/revert", json={"video_ids": [1]}).status_code == 401
+
+
+@pytest.mark.anyio
+async def test_revert_only_touches_videos_still_on_their_clip(shared_tube):
+    remote.save_fallbacks([(HASH, 1, "https://cdn.example/1.mp4"), (OTHER, 2, None)])
+    conn = AsyncMock()
+    conn.fetch.return_value = []  # video 1's preview_url was edited since the switch
+    pool = MagicMock()
+    pool.acquire.return_value.__aenter__.return_value = conn
+
+    with patch("app.routers.promking.videos.get_pool", AsyncMock(return_value=pool)):
+        res = await batch_revert_remote_previews(BatchRevertPreviewsRequest(video_ids=[1, 2, 3]), _admin={})
+
+    ids, urls, expected = conn.fetch.await_args.args[1:]
+    assert (ids, urls, expected) == ([1], ["https://cdn.example/1.mp4"], [f"/api/promking/media/cache/{HASH}.mp4"])
+    assert res.count == 0
+    assert {e.video_id: e.reason for e in res.errors} == {
+        1: "video not found or preview_url changed since the switch",
+        2: "no original preview recorded",
+        3: "never switched to a generated preview",
+    }
 
 
 @pytest.mark.anyio
@@ -115,7 +171,7 @@ async def test_batch_remote_previews_remembers_the_external_preview(shared_tube)
     pool.acquire.return_value.__aenter__.return_value = conn
 
     with patch("app.routers.promking.videos.get_pool", AsyncMock(return_value=pool)):
-        res = await batch_set_remote_previews(payload)
+        res = await batch_set_remote_previews(payload, _admin={})
 
     assert res.count == 2
     assert [e.video_id for e in res.errors] == [3]

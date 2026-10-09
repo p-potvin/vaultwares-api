@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import shutil
 from pathlib import Path
 
@@ -17,6 +18,24 @@ from .storage import get_video_media_dir, get_media_url
 logger = logging.getLogger("promking.media.generator")
 
 FFMPEG_HEADERS = "Referer: https://notfans.com/\r\nUser-Agent: Mozilla/5.0\r\n"
+
+
+async def _communicate(proc: asyncio.subprocess.Process, timeout: float) -> tuple[bytes, bytes]:
+    """`proc.communicate()` with a deadline that also kills the process.
+
+    `asyncio.wait_for` alone only stops waiting: the encoder would keep running (and writing its
+    output file) after a timeout or a cancelled request.
+    """
+    try:
+        return await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except BaseException:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+        raise
 
 
 def _format_vtt_time(seconds: float) -> str:
@@ -45,7 +64,7 @@ async def probe_video_duration(video_url: str) -> float | None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+        stdout, stderr = await _communicate(proc, 30.0)
         if proc.returncode == 0:
             text = stdout.decode().strip()
             val = float(text)
@@ -74,7 +93,7 @@ async def has_audio_stream(video_url: str) -> bool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+        stdout, _ = await _communicate(proc, 15.0)
         return proc.returncode == 0 and "audio" in stdout.decode().lower()
     except Exception:
         return False
@@ -88,9 +107,15 @@ def compute_staggered_capture_offsets(
 ) -> list[float]:
     """Calculates staggered start offsets evenly distributed throughout a video."""
     total_time = captures_count * capture_duration
-    if not duration or duration <= (total_time + 2):
+    if not duration or duration <= 0:
         base = max(0.0, default_start_offset)
         return [round(base + i * capture_duration, 2) for i in range(captures_count)]
+    if duration <= (total_time + 2):
+        # Short video: spread the starts over what exists (captures may overlap) instead of
+        # starting past the end.
+        last = max(0.0, duration - capture_duration)
+        step = last / (captures_count - 1) if captures_count > 1 else 0.0
+        return [round(i * step, 2) for i in range(captures_count)]
 
     start_margin = max(3.0, min(20.0, duration * 0.05))
     end_margin = max(3.0, min(20.0, duration * 0.05))
@@ -127,6 +152,16 @@ async def generate_animated_preview(
     ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
     audio_available = await has_audio_stream(video_url)
     offsets = compute_staggered_capture_offsets(duration, captures_count, capture_duration)
+    # Each attempt writes its own file; preview.mp4 only ever appears complete (os.replace).
+    splice_tmp = v_dir / "preview.splice.tmp.mp4"
+    single_tmp = v_dir / "preview.single.tmp.mp4"
+
+    def publish(tmp: Path) -> bool:
+        if tmp.exists() and tmp.stat().st_size > 1000:
+            os.replace(tmp, preview_file)
+            return True
+        tmp.unlink(missing_ok=True)
+        return False
 
     # Multi-input spliced command
     cmd = [ffmpeg_bin, "-y"]
@@ -162,7 +197,7 @@ async def generate_animated_preview(
         "-preset", "veryfast",
         "-crf", "28",
         "-movflags", "+faststart",
-        str(preview_file),
+        str(splice_tmp),
     ])
 
     try:
@@ -171,8 +206,8 @@ async def generate_animated_preview(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=90.0)
-        if proc.returncode == 0 and preview_file.exists() and preview_file.stat().st_size > 1000:
+        _, stderr = await _communicate(proc, 90.0)
+        if proc.returncode == 0 and publish(splice_tmp):
             logger.info("Generated spliced preview.mp4 for video %s (%s bytes)", video_id, preview_file.stat().st_size)
             return get_media_url(video_id, "preview.mp4")
         else:
@@ -184,11 +219,16 @@ async def generate_animated_preview(
             )
     except Exception as exc:
         logger.warning("Exception during multi-clip preview for video %s: %s, attempting fallback", video_id, exc)
+    splice_tmp.unlink(missing_ok=True)
 
     # Fallback to single continuous clip with volume reduction
     try:
         total_len = clip_seconds if clip_seconds is not None else (captures_count * capture_duration)
-        start_time = max(5.0, duration * 0.1) if duration > 20 else 5.0
+        if duration > 20:
+            start_time = max(5.0, duration * 0.1)
+        else:
+            # Short (or unknown-length) video: start early enough to get a whole clip when possible.
+            start_time = min(5.0, max(0.0, (duration or 0) - total_len))
         fallback_cmd = [
             ffmpeg_bin,
             "-y",
@@ -208,19 +248,20 @@ async def generate_animated_preview(
             fallback_cmd.extend(["-af", f"volume={volume}", "-c:a", "aac", "-b:a", "64k"])
         else:
             fallback_cmd.append("-an")
-        fallback_cmd.extend(["-movflags", "+faststart", str(preview_file)])
+        fallback_cmd.extend(["-movflags", "+faststart", str(single_tmp)])
 
         proc = await asyncio.create_subprocess_exec(
             *fallback_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=60.0)
-        if proc.returncode == 0 and preview_file.exists() and preview_file.stat().st_size > 1000:
+        _, stderr = await _communicate(proc, 60.0)
+        if proc.returncode == 0 and publish(single_tmp):
             logger.info("Generated fallback preview.mp4 for video %s (%s bytes)", video_id, preview_file.stat().st_size)
             return get_media_url(video_id, "preview.mp4")
     except Exception as exc:
         logger.error("Exception generating fallback preview for video %s: %s", video_id, exc)
+    single_tmp.unlink(missing_ok=True)
 
     return None
 
@@ -291,7 +332,7 @@ async def generate_sprite_sheet(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=max(120.0, duration * 0.15))
+            _, stderr = await _communicate(proc, max(120.0, duration * 0.15))
             if proc.returncode == 0 and sprite_file.exists() and sprite_file.stat().st_size > 1000:
                 sprite_created = True
                 logger.info("Generated sprite.jpg for video %s (%s bytes)", video_id, sprite_file.stat().st_size)
