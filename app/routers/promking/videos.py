@@ -1,8 +1,9 @@
 """GET/PATCH/DELETE videos. Insertion happens via the fetcher persistence path."""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -15,6 +16,8 @@ from ._models import (
     BatchError,
     BatchMetadataResponse,
     BatchMetadataUpdateRequest,
+    BatchRemotePreviewsRequest,
+    BatchRevertPreviewsRequest,
     BatchVideoIdsRequest,
     BatchVideoMergeRequest,
     BatchVideoMergeResponse,
@@ -24,6 +27,8 @@ from ._models import (
     VideoListItem,
 )
 from .taxonomies import get_table_config
+from .media import remote as remote_media
+from .viewers import require_admin
 
 router = APIRouter(prefix="/videos", tags=["promking:videos"])
 
@@ -388,6 +393,94 @@ async def batch_update_metadata(payload: BatchMetadataUpdateRequest) -> BatchMet
         for video_id in payload.video_ids
         if video_id not in changed
     ]
+    return BatchMetadataResponse(count=len(changed), errors=errors)
+
+
+def generated_preview_url(media_hash: str) -> str:
+    return f"/api/promking/media/cache/{media_hash}.mp4"
+
+
+@router.post("/batch/remote-previews", response_model=BatchMetadataResponse)
+async def batch_set_remote_previews(
+    payload: BatchRemotePreviewsRequest, _admin: dict = Depends(require_admin)
+) -> BatchMetadataResponse:
+    """Points videos at their generated preview (`/api/promking/media/cache/<hash>.mp4`).
+
+    The clip may live on the workstation rather than OVH (see `media/remote.py`). The video's
+    current external preview_url is remembered as the fallback, served when the clip can't be.
+    It is recorded before the Postgres update commits; revert checks Postgres, so a record left
+    by a failed batch is never acted on.
+    """
+    items = {item.video_id: item for item in payload.items}
+    ids = list(items)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            current = {
+                row["id"]: row["preview_url"]
+                for row in await conn.fetch(
+                    "SELECT id, preview_url FROM videos WHERE id = ANY($1::int[]) FOR UPDATE",
+                    ids,
+                )
+            }
+            found = [video_id for video_id in ids if video_id in current]
+            fallbacks = []
+            for video_id in found:
+                item = items[video_id]
+                old = current[video_id] or ""
+                fallback = item.fallback_url or (old if re.match(r"^https?://", old) else None)
+                fallbacks.append((item.media_hash, video_id, fallback))
+            await asyncio.to_thread(remote_media.save_fallbacks, fallbacks)
+            await conn.execute(
+                """
+                UPDATE videos AS v
+                SET preview_url = x.url, updated_at = now()
+                FROM unnest($1::int[], $2::text[]) AS x(id, url)
+                WHERE v.id = x.id AND v.preview_url IS DISTINCT FROM x.url
+                """,
+                found,
+                [generated_preview_url(items[video_id].media_hash) for video_id in found],
+            )
+    errors = [BatchError(video_id=video_id, reason="video not found") for video_id in ids if video_id not in current]
+    return BatchMetadataResponse(count=len(found), errors=errors)
+
+
+@router.post("/batch/remote-previews/revert", response_model=BatchMetadataResponse)
+async def batch_revert_remote_previews(
+    payload: BatchRevertPreviewsRequest, _admin: dict = Depends(require_admin)
+) -> BatchMetadataResponse:
+    """Puts the site's original preview back for videos switched by `/batch/remote-previews`.
+
+    Only videos still pointing at the clip they were switched to are touched: a preview edited
+    since (or a switch whose batch failed) is left alone.
+    """
+    records = await asyncio.to_thread(remote_media.records_for_videos, payload.video_ids)
+    revertible = {v: r for v, r in records.items() if r[1]}
+    ids = list(revertible)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            UPDATE videos AS v
+            SET preview_url = x.url, updated_at = now()
+            FROM unnest($1::int[], $2::text[], $3::text[]) AS x(id, url, expected)
+            WHERE v.id = x.id AND v.preview_url = x.expected
+            RETURNING v.id
+            """,
+            ids,
+            [revertible[video_id][1] for video_id in ids],
+            [generated_preview_url(revertible[video_id][0]) for video_id in ids],
+        )
+    changed = {row["id"] for row in rows}
+
+    def reason(video_id: int) -> str:
+        if video_id not in records:
+            return "never switched to a generated preview"
+        if video_id not in revertible:
+            return "no original preview recorded"
+        return "video not found or preview_url changed since the switch"
+
+    errors = [BatchError(video_id=v, reason=reason(v)) for v in payload.video_ids if v not in changed]
     return BatchMetadataResponse(count=len(changed), errors=errors)
 
 

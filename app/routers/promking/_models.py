@@ -58,6 +58,22 @@ class BatchMetadataResponse(BaseModel):
     errors: list[BatchError] = Field(default_factory=list)
 
 
+class RemotePreviewItem(BaseModel):
+    video_id: int
+    media_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    # The site's own preview, for when the generated clip can't be served. When omitted, the
+    # video's current preview_url is kept as the fallback (if it is an external URL).
+    fallback_url: Optional[str] = Field(default=None, max_length=2048, pattern=r"^https?://")
+
+
+class BatchRemotePreviewsRequest(BaseModel):
+    items: list[RemotePreviewItem] = Field(min_length=1, max_length=1000)
+
+
+class BatchRevertPreviewsRequest(BatchVideoIdsRequest):
+    pass
+
+
 class BatchVideoMergeRequest(BaseModel):
     primary_id: int
     merge_from: list[int] = Field(min_length=1)

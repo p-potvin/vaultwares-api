@@ -11,14 +11,18 @@ import mimetypes
 import os
 import re
 from pathlib import Path
+
+import httpx
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from starlette.background import BackgroundTask
 
 from ..db import get_pool
 from ..fetcher import _shared_tube_path
 from .storage import get_media_file_path
 from .processor import process_onlyfans_media
 from .db import get_onlyfans_media
+from . import remote
 
 logger = logging.getLogger("promking.media.routes")
 
@@ -144,6 +148,8 @@ async def serve_cached_media(
     """
     Serves cached media assets (such as audio-enabled preview clips) directly from OVH local storage.
     Supports HTTP Range requests for video streaming and sends 30-day immutable cache headers.
+    Clips that aren't on OVH are streamed from the workstation (see `remote.py`), or redirected to
+    the site's original preview when the workstation can't serve them.
     """
     clean_hash = media_hash.split(".")[0].strip().lower()
     if not re.match(r"^[a-f0-9]{64}$", clean_hash):
@@ -151,11 +157,20 @@ async def serve_cached_media(
 
     shared_tube = _shared_tube_path()
     file_path = shared_tube / "data" / "media" / clean_hash
+    meta_path = shared_tube / "data" / "media" / f"{clean_hash}.meta"
+
     if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Cached media file not found")
+        # Fallback: check if the file was stored under sha256(clean_hash) due to legacy double-hashing
+        import hashlib
+        alt_hash = hashlib.sha256(clean_hash.encode("utf-8")).hexdigest()
+        alt_path = shared_tube / "data" / "media" / alt_hash
+        if alt_path.exists() and alt_path.is_file():
+            file_path = alt_path
+            meta_path = shared_tube / "data" / "media" / f"{alt_hash}.meta"
+        else:
+            return await _serve_remote_media(clean_hash, request)
 
     content_type = "video/mp4"
-    meta_path = shared_tube / "data" / "media" / f"{clean_hash}.meta"
     if meta_path.exists():
         try:
             with open(meta_path, "r", encoding="utf-8") as f:
@@ -204,3 +219,59 @@ async def serve_cached_media(
 
     headers["Content-Length"] = str(file_size)
     return FileResponse(file_path, media_type=content_type, headers=headers)
+
+
+_PASS_HEADERS = (
+    "content-type", "content-length", "content-range", "content-encoding", "accept-ranges", "last-modified", "etag",
+)
+
+
+async def _relay(upstream: httpx.Response, media_hash: str):
+    """Relays the workstation's body. Headers are already sent, so a drop mid-stream can only end the
+    response early; it starts the cooldown so the next requests go straight to the fallback."""
+    try:
+        async for chunk in upstream.aiter_raw():
+            yield chunk
+    except httpx.HTTPError as exc:
+        logger.warning("Workstation preview stream for %s broke mid-way: %s", media_hash, exc)
+        remote.mark_down()
+        raise
+
+
+async def _serve_remote_media(media_hash: str, request: Request):
+    """Streams a generated preview from the workstation, else redirects to the original preview."""
+    if remote.remote_available():
+        headers = {}
+        if request.headers.get("range"):
+            headers["Range"] = request.headers["range"]
+        client = remote.client()
+        try:
+            upstream = await client.send(
+                client.build_request(request.method, remote.remote_url(media_hash), headers=headers),
+                stream=True,
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("Workstation preview store unreachable (%s); falling back for %s", exc, media_hash)
+            remote.mark_down()
+        else:
+            if upstream.status_code in (200, 206, 416):
+                out = {k: v for k, v in upstream.headers.items() if k.lower() in _PASS_HEADERS}
+                out["Cache-Control"] = "public, max-age=2592000, immutable"
+                if request.method == "HEAD":
+                    await upstream.aclose()
+                    return Response(status_code=upstream.status_code, headers=out)
+                return StreamingResponse(
+                    _relay(upstream, media_hash),
+                    status_code=upstream.status_code,
+                    headers=out,
+                    background=BackgroundTask(upstream.aclose),
+                )
+            await upstream.aclose()
+            if upstream.status_code >= 500:
+                remote.mark_down()
+
+    fallback = remote.fallback_for_hash(media_hash)
+    if fallback:
+        # Not cached: once the workstation is back, the generated clip is served again.
+        return RedirectResponse(fallback, status_code=302, headers={"Cache-Control": "no-store"})
+    raise HTTPException(status_code=404, detail="Cached media file not found")

@@ -1064,7 +1064,7 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
             site_res = await conn.execute(
                 """
                 INSERT INTO video_sites (video_id, site)
-                SELECT $1, s.site
+                SELECT $1, s.site::site
                   FROM (VALUES ('fxv'), ('oneporn'), ('sexyprn')) AS s(site)
                 ON CONFLICT (video_id, site) DO NOTHING
                 """,
