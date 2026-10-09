@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -15,6 +16,8 @@ from ._models import (
     BatchError,
     BatchMetadataResponse,
     BatchMetadataUpdateRequest,
+    BatchRemotePreviewsRequest,
+    BatchRevertPreviewsRequest,
     BatchVideoIdsRequest,
     BatchVideoMergeRequest,
     BatchVideoMergeResponse,
@@ -24,6 +27,7 @@ from ._models import (
     VideoListItem,
 )
 from .taxonomies import get_table_config
+from .media import remote as remote_media
 
 router = APIRouter(prefix="/videos", tags=["promking:videos"])
 
@@ -385,6 +389,77 @@ async def batch_update_metadata(payload: BatchMetadataUpdateRequest) -> BatchMet
     changed = {row["id"] for row in rows}
     errors = [
         BatchError(video_id=video_id, reason="video not found")
+        for video_id in payload.video_ids
+        if video_id not in changed
+    ]
+    return BatchMetadataResponse(count=len(changed), errors=errors)
+
+
+@router.post("/batch/remote-previews", response_model=BatchMetadataResponse)
+async def batch_set_remote_previews(payload: BatchRemotePreviewsRequest) -> BatchMetadataResponse:
+    """Points videos at their generated preview (`/api/promking/media/cache/<hash>.mp4`).
+
+    The clip may live on the workstation rather than OVH (see `media/remote.py`). The video's
+    current external preview_url is remembered as the fallback, served when the clip can't be.
+    """
+    items = {item.video_id: item for item in payload.items}
+    ids = list(items)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            current = {
+                row["id"]: row["preview_url"]
+                for row in await conn.fetch(
+                    "SELECT id, preview_url FROM videos WHERE id = ANY($1::int[]) FOR UPDATE",
+                    ids,
+                )
+            }
+            found = [video_id for video_id in ids if video_id in current]
+            fallbacks = []
+            for video_id in found:
+                item = items[video_id]
+                old = current[video_id] or ""
+                fallback = item.fallback_url or (old if re.match(r"^https?://", old) else None)
+                fallbacks.append((item.media_hash, video_id, fallback))
+            await asyncio.to_thread(remote_media.save_fallbacks, fallbacks)
+            await conn.execute(
+                """
+                UPDATE videos AS v
+                SET preview_url = x.url, updated_at = now()
+                FROM unnest($1::int[], $2::text[]) AS x(id, url)
+                WHERE v.id = x.id AND v.preview_url IS DISTINCT FROM x.url
+                """,
+                found,
+                [f"/api/promking/media/cache/{items[video_id].media_hash}.mp4" for video_id in found],
+            )
+    errors = [BatchError(video_id=video_id, reason="video not found") for video_id in ids if video_id not in current]
+    return BatchMetadataResponse(count=len(found), errors=errors)
+
+
+@router.post("/batch/remote-previews/revert", response_model=BatchMetadataResponse)
+async def batch_revert_remote_previews(payload: BatchRevertPreviewsRequest) -> BatchMetadataResponse:
+    """Puts the site's original preview back for videos switched by `/batch/remote-previews`."""
+    fallbacks = await asyncio.to_thread(remote_media.fallbacks_for_videos, payload.video_ids)
+    ids = list(fallbacks)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            UPDATE videos AS v
+            SET preview_url = x.url, updated_at = now()
+            FROM unnest($1::int[], $2::text[]) AS x(id, url)
+            WHERE v.id = x.id
+            RETURNING v.id
+            """,
+            ids,
+            [fallbacks[video_id] for video_id in ids],
+        )
+    changed = {row["id"] for row in rows}
+    errors = [
+        BatchError(
+            video_id=video_id,
+            reason="video not found" if video_id in fallbacks else "no original preview recorded",
+        )
         for video_id in payload.video_ids
         if video_id not in changed
     ]
