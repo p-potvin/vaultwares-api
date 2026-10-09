@@ -114,9 +114,11 @@ async def process_onlyfans_media(
         "interval_seconds": 0.0,
     }
 
-    # 4. Generate 10-second audio preview and 30-frame sprite sheet
+    # 4. Generate 10.5-second staggered audio preview (7x1.5s @ 0.5 volume) and 30-frame sprite sheet
     if mp4_url:
-        preview_video_url = await generate_animated_preview(video_id, mp4_url, duration, clip_seconds=10.0)
+        preview_video_url = await generate_animated_preview(
+            video_id, mp4_url, duration, captures_count=7, capture_duration=1.5, volume=0.5
+        )
         sprite_url, sprite_vtt_url, sprite_meta = await generate_sprite_sheet(
             video_id,
             mp4_url,
@@ -132,7 +134,9 @@ async def process_onlyfans_media(
             if fresh_url and fresh_url != mp4_url:
                 mp4_url = fresh_url
                 if not preview_video_url:
-                    preview_video_url = await generate_animated_preview(video_id, mp4_url, duration, clip_seconds=10.0)
+                    preview_video_url = await generate_animated_preview(
+                        video_id, mp4_url, duration, captures_count=7, capture_duration=1.5, volume=0.5
+                    )
                 if not sprite_url:
                     sprite_url, sprite_vtt_url, sprite_meta = await generate_sprite_sheet(
                         video_id,

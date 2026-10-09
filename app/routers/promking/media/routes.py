@@ -151,11 +151,20 @@ async def serve_cached_media(
 
     shared_tube = _shared_tube_path()
     file_path = shared_tube / "data" / "media" / clean_hash
+    meta_path = shared_tube / "data" / "media" / f"{clean_hash}.meta"
+
     if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Cached media file not found")
+        # Fallback: check if the file was stored under sha256(clean_hash) due to legacy double-hashing
+        import hashlib
+        alt_hash = hashlib.sha256(clean_hash.encode("utf-8")).hexdigest()
+        alt_path = shared_tube / "data" / "media" / alt_hash
+        if alt_path.exists() and alt_path.is_file():
+            file_path = alt_path
+            meta_path = shared_tube / "data" / "media" / f"{alt_hash}.meta"
+        else:
+            raise HTTPException(status_code=404, detail="Cached media file not found")
 
     content_type = "video/mp4"
-    meta_path = shared_tube / "data" / "media" / f"{clean_hash}.meta"
     if meta_path.exists():
         try:
             with open(meta_path, "r", encoding="utf-8") as f:

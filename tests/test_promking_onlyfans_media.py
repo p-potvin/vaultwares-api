@@ -8,7 +8,10 @@ from app.routers.promking.media.storage import (
     get_media_file_path,
     get_media_base_dir,
 )
-from app.routers.promking.media.generator import _format_vtt_time
+from app.routers.promking.media.generator import (
+    _format_vtt_time,
+    compute_staggered_capture_offsets,
+)
 from app.routers.promking.media.processor import _find_best_mp4_url, process_onlyfans_media
 from app.routers.promking._models import VideoListItem, OnlyfansMediaOut
 
@@ -17,6 +20,26 @@ def test_vtt_time_formatting():
     assert _format_vtt_time(0.0) == "00:00:00.000"
     assert _format_vtt_time(65.5) == "00:01:05.500"
     assert _format_vtt_time(3661.123) == "01:01:01.123"
+
+
+def test_compute_staggered_capture_offsets():
+    # 600s video: 7 captures of 1.5s
+    offsets = compute_staggered_capture_offsets(600.0, captures_count=7, capture_duration=1.5)
+    assert len(offsets) == 7
+    assert offsets[0] >= 3.0
+    assert offsets[-1] <= 598.5
+    for i in range(1, len(offsets)):
+        assert offsets[i] > offsets[i - 1]
+
+    # 60s video
+    offsets_60 = compute_staggered_capture_offsets(60.0, captures_count=7, capture_duration=1.5)
+    assert len(offsets_60) == 7
+    assert offsets_60[0] == 3.0
+    assert offsets_60[-1] == 55.5
+
+    # Short video fallback
+    offsets_short = compute_staggered_capture_offsets(8.0, captures_count=7, capture_duration=1.5)
+    assert len(offsets_short) == 7
 
 
 def test_find_best_mp4_url():
