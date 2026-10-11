@@ -42,6 +42,7 @@ class PromKingMeResponse(BaseModel):
     # minted against a pre-migration row can't 500 the profile screen.
     created_at: Optional[datetime] = None
     preferences: dict = Field(default_factory=dict)
+    token: Optional[str] = None
 
 class PromKingPreferencesUpdateRequest(BaseModel):
     preferences: dict
@@ -139,17 +140,25 @@ async def login(payload: PromKingLoginRequest):
         raise HTTPException(status_code=403, detail="This account has been disabled.")
 
     is_admin = user["role"] == "admin"
-    token = _create_access_token(user["id"], user["email"], is_admin, ttl_override=3600)
+    token = _create_access_token(user["id"], user["email"], is_admin, ttl_override=86400 if is_admin else 14400)
     return PromKingLoginResponse(access_token=token)
 
 @router.get("/me", response_model=PromKingMeResponse)
 async def me(current_user: dict = Depends(get_current_promking_user)):
+    is_admin = current_user.get("role") == "admin"
+    refreshed_token = _create_access_token(
+        current_user["id"],
+        current_user["email"],
+        is_admin,
+        ttl_override=86400 if is_admin else 14400,
+    )
     return PromKingMeResponse(
         id=current_user["id"],
         email=current_user["email"],
         role=current_user["role"],
         created_at=current_user.get("created_at"),
         preferences=current_user.get("preferences") or {},
+        token=refreshed_token,
     )
 
 @router.patch("/me/preferences", response_model=PromKingMeResponse)

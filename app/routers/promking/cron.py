@@ -89,13 +89,19 @@ async def _reload_jobs() -> None:
 
 
 async def _scheduled_run(site: str, source: str, pages: int) -> None:
-    """Kick off a fetch run with no SSE subscriber — pure background."""
-    cursor = await get_manual_cursor(site, source)
+    """Kick off a fetch run with no SSE subscriber — pure background.
+
+    Scheduled cron starts at page 1, stops after 5 consecutive duplicates
+    or 10 total duplicates, and leaves the manual cursor untouched.
+    """
     state, _started_at = await _create_fetch_run_state(
         site=site,
         source=source,
         pages=pages,
-        start_page=cursor,
+        start_page=1,
+        advance_cursor=False,
+        stop_consecutive_duplicates=5,
+        stop_total_duplicates=10,
     )
     await _drive_subprocess(state)
 
