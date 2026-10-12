@@ -1,13 +1,55 @@
 """GET/PATCH/DELETE videos. Insertion happens via the fetcher persistence path."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 import asyncio
 import json
 import re
+import secrets
 from typing import Any
 from .db import get_pool
+
+
+async def is_admin_request(request: Request) -> bool:
+    try:
+        from api.config import GATEWAY_SHARED_SECRET, GATEWAY_HEADER_NAME
+        if GATEWAY_SHARED_SECRET:
+            gw_hdr = request.headers.get(GATEWAY_HEADER_NAME)
+            if gw_hdr and secrets.compare_digest(gw_hdr, GATEWAY_SHARED_SECRET):
+                return True
+    except Exception:
+        pass
+
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+        try:
+            from api.auth import JWT_SECRET, JWT_AUDIENCE, JWT_ISSUER
+            from jose import jwt
+            payload = jwt.decode(
+                token,
+                JWT_SECRET,
+                algorithms=["HS256"],
+                audience=JWT_AUDIENCE,
+                issuer=JWT_ISSUER,
+            )
+            if payload.get("adm") is True:
+                return True
+            user_id = payload.get("uid")
+            if user_id:
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    user_role = await conn.fetchval(
+                        "SELECT role FROM users WHERE id = $1 AND disabled_at IS NULL",
+                        user_id,
+                    )
+                    if user_role == "admin":
+                        return True
+        except Exception:
+            pass
+
+    return False
 from ._models import (
     BatchAddTaxonomyRequest,
     BatchRemoveTaxonomyRequest,
@@ -754,9 +796,12 @@ async def batch_add_taxonomy(payload: BatchAddTaxonomyRequest) -> BatchCountResp
         rows = await conn.fetch(
             f"""
             INSERT INTO {config.join_table} (video_id, {config.term_column})
-            SELECT selected_video.video_id, selected_term.term_id
+            SELECT selected_video.video_id, t.id
             FROM unnest($1::int[]) AS selected_video(video_id)
-            CROSS JOIN unnest($2::int[]) AS selected_term(term_id)
+            CROSS JOIN {config.table} t
+            WHERE t.id = ANY($2::int[])
+              AND t.deleted_at IS NULL
+              AND t.undesirable = false
             ON CONFLICT DO NOTHING
             RETURNING video_id, {config.term_column} AS term_id
             """,
@@ -798,6 +843,7 @@ async def batch_remove_taxonomy(payload: BatchRemoveTaxonomyRequest) -> BatchCou
 
 @router.get("", response_model=list[VideoListItem])
 async def list_videos(
+    request: Request,
     site: Site | None = Query(None, description="Deprecated, ignored. Video catalog is now global."),
     limit: int = Query(50, ge=1, le=100000),
     offset: int = Query(0, ge=0),
@@ -823,6 +869,15 @@ async def list_videos(
     sort: str = Query("default", description="Sort order: 'default', 'title_asc', 'title_desc', 'views_desc', 'views_asc', 'duration_desc', 'duration_asc', 'date_desc', 'date_asc'"),
     admin: bool = Query(False, description="Admin search mode: strictly matches video title and ID, skips multi-entity OR matching."),
 ) -> list[VideoListItem]:
+    wants_admin = bool(admin)
+    wants_disabled = disabled is not None and str(disabled).strip().lower() not in ("false", "0", "enabled")
+    if wants_admin or wants_disabled:
+        if not await is_admin_request(request):
+            if wants_admin:
+                admin = False
+            if wants_disabled:
+                disabled = "false"
+
     pool = await get_pool()
     where_sql, joins, params = build_video_filters(
         site=site,
@@ -981,6 +1036,7 @@ async def list_videos(
  
 @router.get("/count")
 async def count_videos(
+    request: Request,
     site: Site | None = Query(None, description="Filter to videos belonging to the site."),
     q: str | None = Query(None),
     pornstar: str | None = Query(None),
@@ -992,6 +1048,15 @@ async def count_videos(
     onlyfans: str | None = Query("false", description="Filter by OnlyFans status: 'false' (default, excludes OnlyFans), 'true' (OnlyFans only), 'all' (both)."),
     admin: bool = Query(False, description="Admin search mode: strictly matches video title and ID."),
 ) -> dict:
+    wants_admin = bool(admin)
+    wants_disabled = disabled is not None and str(disabled).strip().lower() not in ("false", "0", "enabled")
+    if wants_admin or wants_disabled:
+        if not await is_admin_request(request):
+            if wants_admin:
+                admin = False
+            if wants_disabled:
+                disabled = "false"
+
     pool = await get_pool()
     where_sql, joins, params = build_video_filters(
         site=site,
@@ -1018,6 +1083,7 @@ async def count_videos(
 
 @router.get("/{slug}", response_model=VideoDetail | None)
 async def get_video(
+    request: Request,
     slug: str,
     site: Site | None = Query(None, description="Filter to ensure the video belongs to the site."),
     pornstar_gender: str | None = Query(
@@ -1029,14 +1095,17 @@ async def get_video(
     ),
     include_disabled: bool = Query(False, description="If true, allows viewing disabled videos (for admin)."),
 ) -> VideoDetail | None:
+    if include_disabled and not await is_admin_request(request):
+        include_disabled = False
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         if not include_disabled:
             where_clause = """
                 WHERE slug = $1 AND disabled_at IS NULL
-                  AND NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = true)
-                  AND NOT EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND s.disabled = true)
-                  AND NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = true)
+                  AND NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND (p.disabled = true OR p.undesirable = true))
+                  AND NOT EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND (s.disabled = true OR s.undesirable = true))
+                  AND NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND (c.disabled = true OR c.undesirable = true))
             """
         else:
             where_clause = "WHERE slug = $1"

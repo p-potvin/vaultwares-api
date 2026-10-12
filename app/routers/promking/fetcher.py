@@ -930,6 +930,10 @@ async def _drive_subprocess(state: RunState) -> None:
                 else:
                     await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page}: 0 active videos added (filtered out as duplicates or disabled terms)."}))
 
+                if state.stop_total_duplicates and total_duplicate_videos >= state.stop_total_duplicates:
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"🛑 Reached {total_duplicate_videos} total duplicates (limit: {state.stop_total_duplicates}) — stopping run."}))
+                    break
+
             current_page += 1
             
         if state.advance_cursor:

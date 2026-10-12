@@ -204,7 +204,7 @@ async def list_terms(
     cache_key = None
     if sort in ("hot", "trending") and not q:
         bucket_now = int(time.time() // HOT_ROTATE_SECONDS)
-        cache_key = f"{kind}:{limit}:{offset}:{gender}:{include_disabled}:{letter}:{bucket_now}"
+        cache_key = f"{kind}:{limit}:{offset}:{gender}:{include_disabled}:{disabled}:{letter}:{bucket_now}"
         cached = _hot_terms_cache.get(cache_key)
         if cached:
             cached_ts, cached_items = cached
@@ -569,11 +569,13 @@ async def batch_merge_terms(
     pool = await get_pool()
     async with pool.acquire() as conn:
         primary = await conn.fetchrow(
-            f"SELECT id FROM {config.table} WHERE id = $1 AND deleted_at IS NULL",
+            f"SELECT id, undesirable FROM {config.table} WHERE id = $1 AND deleted_at IS NULL",
             payload.primary_id,
         )
         if not primary:
             raise HTTPException(status_code=404, detail="primary term not found")
+        if primary.get("undesirable"):
+            raise HTTPException(status_code=400, detail="Cannot merge into an undesirable term.")
         video_recount = await conn.fetchval(
             f"SELECT COUNT(DISTINCT video_id) FROM {config.join_table} WHERE {config.term_column} = ANY($1::int[])",
             merge_from,
@@ -601,6 +603,7 @@ async def batch_merge_terms(
             merge_from,
             payload.primary_id,
         )
+    _hot_terms_cache.clear()
     return BatchTaxonomyMergeResponse(
         merged_count=len(deleted_rows),
         video_recount=int(video_recount or 0),
@@ -623,6 +626,7 @@ async def batch_delete_terms(
             f"UPDATE {config.table} SET deleted_at = now() WHERE id = ANY($1::int[]) AND deleted_at IS NULL RETURNING id",
             payload.term_ids,
         )
+    _hot_terms_cache.clear()
     return BatchTaxonomyDeleteResponse(deleted_count=len(rows), videos_orphaned=int(videos_orphaned or 0))
 
 
@@ -638,6 +642,7 @@ async def batch_disable_terms(
             f"UPDATE {config.table} SET disabled = true WHERE id = ANY($1::int[]) AND deleted_at IS NULL AND disabled = false RETURNING id",
             payload.term_ids,
         )
+    _hot_terms_cache.clear()
     return BatchTaxonomyDisableResponse(count=len(rows))
 
 
@@ -653,6 +658,7 @@ async def batch_enable_terms(
             f"UPDATE {config.table} SET disabled = false WHERE id = ANY($1::int[]) AND deleted_at IS NULL AND disabled = true RETURNING id",
             payload.term_ids,
         )
+    _hot_terms_cache.clear()
     return BatchTaxonomyDisableResponse(count=len(rows))
 
 
@@ -675,6 +681,7 @@ async def batch_undesirable_terms(
                     f"DELETE FROM {config.join_table} WHERE {config.term_column} = ANY($1::int[])",
                     payload.term_ids,
                 )
+    _hot_terms_cache.clear()
     return BatchTaxonomyDisableResponse(count=len(rows))
 
 

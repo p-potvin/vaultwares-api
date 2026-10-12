@@ -112,9 +112,9 @@ async def register(payload: PromKingRegisterRequest):
             email, hashed
         )
         
-    # Standard vaultwares JWT creation
-    token = _create_access_token(user_id, email, False, ttl_override=3600)
-    return PromKingRegisterResponse(email=email, access_token=token)
+    # Standard vaultwares JWT creation (4-hour viewer token)
+    token = _create_access_token(user_id, email, False, ttl_override=14400)
+    return PromKingRegisterResponse(email=email, access_token=token, expires_in=14400)
 
 @router.post("/login", response_model=PromKingLoginResponse)
 async def login(payload: PromKingLoginRequest):
@@ -140,8 +140,9 @@ async def login(payload: PromKingLoginRequest):
         raise HTTPException(status_code=403, detail="This account has been disabled.")
 
     is_admin = user["role"] == "admin"
-    token = _create_access_token(user["id"], user["email"], is_admin, ttl_override=86400 if is_admin else 14400)
-    return PromKingLoginResponse(access_token=token)
+    ttl = 86400 if is_admin else 14400
+    token = _create_access_token(user["id"], user["email"], is_admin, ttl_override=ttl)
+    return PromKingLoginResponse(access_token=token, expires_in=ttl)
 
 @router.get("/me", response_model=PromKingMeResponse)
 async def me(current_user: dict = Depends(get_current_promking_user)):

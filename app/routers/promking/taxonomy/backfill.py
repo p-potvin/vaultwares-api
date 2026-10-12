@@ -26,11 +26,12 @@ async def get_or_create_category_ids(conn: asyncpg.Connection, category_names: L
     keys = list(lower_map.keys())
 
     existing_rows = await conn.fetch(
-        "SELECT id, lower(name) AS l_name FROM categories WHERE lower(name) = ANY($1::text[])",
+        "SELECT id, lower(name) AS l_name, undesirable FROM categories WHERE lower(name) = ANY($1::text[])",
         keys,
     )
-    result = {r["l_name"]: r["id"] for r in existing_rows}
-    missing = [lower_map[k] for k in keys if k not in result]
+    result = {r["l_name"]: r["id"] for r in existing_rows if not r.get("undesirable")}
+    undesirable_names = {r["l_name"] for r in existing_rows if r.get("undesirable")}
+    missing = [lower_map[k] for k in keys if k not in result and k not in undesirable_names]
 
     if missing:
         for name in missing:
@@ -186,7 +187,10 @@ async def run_stage_2_title_categories(
             await conn.execute(
                 """
                 INSERT INTO video_categories (video_id, category_id)
-                SELECT * FROM UNNEST($1::bigint[], $2::int[])
+                SELECT v.video_id, c.id
+                FROM UNNEST($1::bigint[], $2::int[]) AS v(video_id, category_id)
+                JOIN categories c ON c.id = v.category_id
+                WHERE c.undesirable = false AND c.deleted_at IS NULL
                 ON CONFLICT DO NOTHING
                 """,
                 b_vids,

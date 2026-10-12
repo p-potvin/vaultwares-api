@@ -133,3 +133,41 @@ async def test_batch_merge_videos_preserves_audio_preview_and_sums_views():
     # Secondary preview is preserved because it has audio cache!
     assert res.preview_url == "/api/promking/media/cache/abc123audio.mp4"
 
+
+@pytest.mark.anyio
+async def test_batch_merge_rejects_undesirable_primary():
+    from fastapi import HTTPException
+    payload = BatchTaxonomyMergeRequest(primary_id=10, merge_from=[20])
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow.return_value = {"id": 10, "undesirable": True}
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+    with patch("app.routers.promking.taxonomies.get_pool", return_value=mock_pool):
+        with pytest.raises(HTTPException) as exc_info:
+            await batch_merge_terms(payload, "categories")
+        assert exc_info.value.status_code == 400
+        assert "undesirable" in str(exc_info.value.detail).lower()
+
+
+@pytest.mark.anyio
+async def test_batch_add_taxonomy_filters_undesirable_terms():
+    from app.routers.promking.videos import batch_add_taxonomy
+    payload = BatchAddTaxonomyRequest(video_ids=[1], kind="categories", term_ids=[5])
+    mock_conn = AsyncMock()
+    mock_conn.fetch.side_effect = [
+        [],  # existing_rows
+        [{"video_id": 1, "term_id": 5}],  # inserted_rows
+    ]
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+    with patch("app.routers.promking.videos.get_pool", return_value=mock_pool):
+        res = await batch_add_taxonomy(payload)
+
+    assert res.count == 1
+    insert_sql = mock_conn.fetch.call_args_list[1].args[0]
+    assert "t.undesirable = false" in insert_sql
+    assert "t.deleted_at IS NULL" in insert_sql
+
+
