@@ -1,13 +1,55 @@
 """GET/PATCH/DELETE videos. Insertion happens via the fetcher persistence path."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 import asyncio
 import json
 import re
+import secrets
 from typing import Any
 from .db import get_pool
+
+
+async def is_admin_request(request: Request) -> bool:
+    try:
+        from api.config import GATEWAY_SHARED_SECRET, GATEWAY_HEADER_NAME
+        if GATEWAY_SHARED_SECRET:
+            gw_hdr = request.headers.get(GATEWAY_HEADER_NAME)
+            if gw_hdr and secrets.compare_digest(gw_hdr, GATEWAY_SHARED_SECRET):
+                return True
+    except Exception:
+        pass
+
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header[7:].strip()
+        try:
+            from api.auth import JWT_SECRET, JWT_AUDIENCE, JWT_ISSUER
+            from jose import jwt
+            payload = jwt.decode(
+                token,
+                JWT_SECRET,
+                algorithms=["HS256"],
+                audience=JWT_AUDIENCE,
+                issuer=JWT_ISSUER,
+            )
+            if payload.get("adm") is True:
+                return True
+            user_id = payload.get("uid")
+            if user_id:
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    user_role = await conn.fetchval(
+                        "SELECT role FROM users WHERE id = $1 AND disabled_at IS NULL",
+                        user_id,
+                    )
+                    if user_role == "admin":
+                        return True
+        except Exception:
+            pass
+
+    return False
 from ._models import (
     BatchAddTaxonomyRequest,
     BatchRemoveTaxonomyRequest,
@@ -96,6 +138,12 @@ def build_gender_clause(
     return "(" + " OR ".join(clauses) + ")", extra_params
 
 
+STOP_WORDS = {
+    "the", "a", "an", "of", "in", "and", "on", "at", "for", "to",
+    "with", "by", "from", "is", "or", "it", "as", "be", "this", "that",
+}
+
+
 def build_video_filters(
     *,
     site: Site | None = None,
@@ -109,6 +157,7 @@ def build_video_filters(
     source: str | None = None,
     health: str | None = None,
     onlyfans: str | bool | None = "false",
+    admin: bool = False,
 ) -> tuple[str, str, list]:
     """Build taxonomy/related filters for list_videos.
 
@@ -170,49 +219,74 @@ def build_video_filters(
 
     # Video catalog is unified across all sites; `site` argument is preserved for backwards compatibility but ignored.
     if q:
-        # Match the title *and* the names of anything linked to the video.
-        q_ts = add_param(q)
-        q_like = add_param(f"%{q}%")
-        search_clauses = [
-            f"to_tsvector('english', videos.title) @@ plainto_tsquery('english', {q_ts})",
-            "videos.id IN (SELECT q_vp.video_id FROM video_pornstars q_vp"
-            "                    JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id"
-            f"                  WHERE q_p.name ILIKE {q_like} AND q_p.deleted_at IS NULL)",
-            "videos.id IN (SELECT q_vs.video_id FROM video_studios q_vs"
-            "                    JOIN studios q_s ON q_s.id = q_vs.studio_id"
-            f"                  WHERE q_s.name ILIKE {q_like} AND q_s.deleted_at IS NULL)",
-            "videos.id IN (SELECT q_vc.video_id FROM video_categories q_vc"
-            "                    JOIN categories q_c ON q_c.id = q_vc.category_id"
-            f"                  WHERE q_c.name ILIKE {q_like} AND q_c.deleted_at IS NULL)",
-        ]
+        clean_q = q.strip()
+        num_id = clean_q[1:] if clean_q.startswith("#") else clean_q
+        is_num = num_id.isdigit()
+        is_admin_mode = admin or (is_disabled_filter == "all") or (health is not None)
 
-        # Multi-word fuzzy / cross-entity search: if query contains 2+ words, match across any word in title
-        # or across taxonomy tables via ILIKE ANY, so users never hit an empty screen on multi-word searches.
-        words = [re.sub(r'[^a-zA-Z0-9]', '', w) for w in q.split()]
-        words = [w for w in words if len(w) >= 3]
-        if len(words) >= 2:
-            or_terms = " | ".join(words)
-            p_or_ts = add_param(or_terms)
-            search_clauses.append(f"to_tsvector('english', videos.title) @@ to_tsquery('english', {p_or_ts})")
-            word_patterns = [f"%{w}%" for w in words]
-            p_patterns = add_param(word_patterns)
-            search_clauses.append(
+        if is_admin_mode:
+            search_clauses = []
+            if is_num:
+                search_clauses.append(f"videos.id = {add_param(int(num_id))}")
+            q_like = add_param(f"%{clean_q}%")
+            search_clauses.append(f"videos.title ILIKE {q_like}")
+            q_ts = add_param(clean_q)
+            search_clauses.append(f"to_tsvector('english', videos.title) @@ plainto_tsquery('english', {q_ts})")
+
+            # Meaningful word matching across title (AND logic)
+            words = [re.sub(r'[^a-zA-Z0-9]', '', w) for w in clean_q.split()]
+            meaningful = [w for w in words if w.lower() not in STOP_WORDS and len(w) >= 2]
+            if len(meaningful) >= 2:
+                and_title = [f"videos.title ILIKE {add_param(f'%{w}%')}" for w in meaningful]
+                search_clauses.append("(" + " AND ".join(and_title) + ")")
+
+            where.append("(" + " OR ".join(search_clauses) + ")")
+        else:
+            search_clauses = []
+            if is_num:
+                search_clauses.append(f"videos.id = {add_param(int(num_id))}")
+            q_ts = add_param(clean_q)
+            q_like = add_param(f"%{clean_q}%")
+            search_clauses.extend([
+                f"to_tsvector('english', videos.title) @@ plainto_tsquery('english', {q_ts})",
+                f"videos.title ILIKE {q_like}",
                 "videos.id IN (SELECT q_vp.video_id FROM video_pornstars q_vp"
                 "                    JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id"
-                f"                  WHERE q_p.name ILIKE ANY({p_patterns}::text[]) AND q_p.deleted_at IS NULL)"
-            )
-            search_clauses.append(
+                f"                  WHERE q_p.name ILIKE {q_like} AND q_p.deleted_at IS NULL)",
                 "videos.id IN (SELECT q_vs.video_id FROM video_studios q_vs"
                 "                    JOIN studios q_s ON q_s.id = q_vs.studio_id"
-                f"                  WHERE q_s.name ILIKE ANY({p_patterns}::text[]) AND q_s.deleted_at IS NULL)"
-            )
-            search_clauses.append(
+                f"                  WHERE q_s.name ILIKE {q_like} AND q_s.deleted_at IS NULL)",
                 "videos.id IN (SELECT q_vc.video_id FROM video_categories q_vc"
                 "                    JOIN categories q_c ON q_c.id = q_vc.category_id"
-                f"                  WHERE q_c.name ILIKE ANY({p_patterns}::text[]) AND q_c.deleted_at IS NULL)"
-            )
+                f"                  WHERE q_c.name ILIKE {q_like} AND q_c.deleted_at IS NULL)",
+            ])
 
-        where.append("(" + " OR ".join(search_clauses) + ")")
+            # Multi-word fuzzy / cross-entity search for public client: filter out stop words
+            words = [re.sub(r'[^a-zA-Z0-9]', '', w) for w in clean_q.split()]
+            words = [w for w in words if w.lower() not in STOP_WORDS and len(w) >= 3]
+            if len(words) >= 2:
+                or_terms = " | ".join(words)
+                p_or_ts = add_param(or_terms)
+                search_clauses.append(f"to_tsvector('english', videos.title) @@ to_tsquery('english', {p_or_ts})")
+                word_patterns = [f"%{w}%" for w in words]
+                p_patterns = add_param(word_patterns)
+                search_clauses.append(
+                    "videos.id IN (SELECT q_vp.video_id FROM video_pornstars q_vp"
+                    "                    JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id"
+                    f"                  WHERE q_p.name ILIKE ANY({p_patterns}::text[]) AND q_p.deleted_at IS NULL)"
+                )
+                search_clauses.append(
+                    "videos.id IN (SELECT q_vs.video_id FROM video_studios q_vs"
+                    "                    JOIN studios q_s ON q_s.id = q_vs.studio_id"
+                    f"                  WHERE q_s.name ILIKE ANY({p_patterns}::text[]) AND q_s.deleted_at IS NULL)"
+                )
+                search_clauses.append(
+                    "videos.id IN (SELECT q_vc.video_id FROM video_categories q_vc"
+                    "                    JOIN categories q_c ON q_c.id = q_vc.category_id"
+                    f"                  WHERE q_c.name ILIKE ANY({p_patterns}::text[]) AND q_c.deleted_at IS NULL)"
+                )
+
+            where.append("(" + " OR ".join(search_clauses) + ")")
     if pornstar:
         joins.extend(
             [
@@ -722,9 +796,12 @@ async def batch_add_taxonomy(payload: BatchAddTaxonomyRequest) -> BatchCountResp
         rows = await conn.fetch(
             f"""
             INSERT INTO {config.join_table} (video_id, {config.term_column})
-            SELECT selected_video.video_id, selected_term.term_id
+            SELECT selected_video.video_id, t.id
             FROM unnest($1::int[]) AS selected_video(video_id)
-            CROSS JOIN unnest($2::int[]) AS selected_term(term_id)
+            CROSS JOIN {config.table} t
+            WHERE t.id = ANY($2::int[])
+              AND t.deleted_at IS NULL
+              AND t.undesirable = false
             ON CONFLICT DO NOTHING
             RETURNING video_id, {config.term_column} AS term_id
             """,
@@ -766,6 +843,7 @@ async def batch_remove_taxonomy(payload: BatchRemoveTaxonomyRequest) -> BatchCou
 
 @router.get("", response_model=list[VideoListItem])
 async def list_videos(
+    request: Request,
     site: Site | None = Query(None, description="Deprecated, ignored. Video catalog is now global."),
     limit: int = Query(50, ge=1, le=100000),
     offset: int = Query(0, ge=0),
@@ -789,7 +867,17 @@ async def list_videos(
     health: str | None = Query(None, description="Filter by catalog health issue."),
     onlyfans: str | None = Query("false", description="Filter by OnlyFans status: 'false' (default, excludes OnlyFans), 'true' (OnlyFans only), 'all' (both)."),
     sort: str = Query("default", description="Sort order: 'default', 'title_asc', 'title_desc', 'views_desc', 'views_asc', 'duration_desc', 'duration_asc', 'date_desc', 'date_asc'"),
+    admin: bool = Query(False, description="Admin search mode: strictly matches video title and ID, skips multi-entity OR matching."),
 ) -> list[VideoListItem]:
+    wants_admin = bool(admin)
+    wants_disabled = disabled is not None and str(disabled).strip().lower() not in ("false", "0", "enabled")
+    if wants_admin or wants_disabled:
+        if not await is_admin_request(request):
+            if wants_admin:
+                admin = False
+            if wants_disabled:
+                disabled = "false"
+
     pool = await get_pool()
     where_sql, joins, params = build_video_filters(
         site=site,
@@ -803,6 +891,7 @@ async def list_videos(
         source=source,
         health=health,
         onlyfans=onlyfans,
+        admin=admin,
     )
     # Optional gender filter on the embedded pornstars_json subquery.
     gender_fragment, gender_params = build_gender_clause(
@@ -947,6 +1036,7 @@ async def list_videos(
  
 @router.get("/count")
 async def count_videos(
+    request: Request,
     site: Site | None = Query(None, description="Filter to videos belonging to the site."),
     q: str | None = Query(None),
     pornstar: str | None = Query(None),
@@ -956,41 +1046,18 @@ async def count_videos(
     source: str | None = Query(None, description="Filter by video source."),
     health: str | None = Query(None, description="Filter by catalog health issue."),
     onlyfans: str | None = Query("false", description="Filter by OnlyFans status: 'false' (default, excludes OnlyFans), 'true' (OnlyFans only), 'all' (both)."),
+    admin: bool = Query(False, description="Admin search mode: strictly matches video title and ID."),
 ) -> dict:
+    wants_admin = bool(admin)
+    wants_disabled = disabled is not None and str(disabled).strip().lower() not in ("false", "0", "enabled")
+    if wants_admin or wants_disabled:
+        if not await is_admin_request(request):
+            if wants_admin:
+                admin = False
+            if wants_disabled:
+                disabled = "false"
+
     pool = await get_pool()
-    if q and not (pornstar or studio or category or source or health):
-        q_like = f"%{q}%"
-        is_dis = str(disabled).strip().lower() if disabled is not None else "false"
-        if is_dis in ("all", "none"):
-            extra_filters = ""
-        elif is_dis in ("true", "1", "disabled"):
-            extra_filters = "AND v.disabled_at IS NOT NULL"
-        else:
-            extra_filters = "AND v.disabled_at IS NULL"
-
-        is_of = str(onlyfans).strip().lower() if onlyfans is not None else "false"
-        if is_of in ("all", "both"):
-            of_filter = ""
-        elif is_of in ("true", "1"):
-            of_filter = "AND v.is_onlyfans = true"
-        else:
-            of_filter = "AND v.is_onlyfans = false"
-
-        sql = f"""
-            SELECT count(DISTINCT id) FROM (
-                SELECT v.id FROM videos v WHERE to_tsvector('english', v.title) @@ plainto_tsquery('english', $1) {extra_filters} {of_filter}
-                UNION ALL
-                SELECT q_vp.video_id FROM video_pornstars q_vp JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id JOIN videos v ON v.id = q_vp.video_id WHERE q_p.name ILIKE $2 AND q_p.deleted_at IS NULL {extra_filters} {of_filter}
-                UNION ALL
-                SELECT q_vs.video_id FROM video_studios q_vs JOIN studios q_s ON q_s.id = q_vs.studio_id JOIN videos v ON v.id = q_vs.video_id WHERE q_s.name ILIKE $2 AND q_s.deleted_at IS NULL {extra_filters} {of_filter}
-                UNION ALL
-                SELECT q_vc.video_id FROM video_categories q_vc JOIN categories q_c ON q_c.id = q_vc.category_id JOIN videos v ON v.id = q_vc.video_id WHERE q_c.name ILIKE $2 AND q_c.deleted_at IS NULL {extra_filters} {of_filter}
-            ) matches
-        """
-        async with pool.acquire() as conn:
-            total = await conn.fetchval(sql, q, q_like)
-        return {"total": int(total or 0)}
-
     where_sql, joins, params = build_video_filters(
         site=site,
         q=q,
@@ -1001,9 +1068,10 @@ async def count_videos(
         source=source,
         health=health,
         onlyfans=onlyfans,
+        admin=admin,
     )
     sql = f"""
-        SELECT COUNT(videos.id) AS total
+        SELECT COUNT(DISTINCT videos.id) AS total
         FROM videos
         {joins}
         WHERE {where_sql}
@@ -1015,6 +1083,7 @@ async def count_videos(
 
 @router.get("/{slug}", response_model=VideoDetail | None)
 async def get_video(
+    request: Request,
     slug: str,
     site: Site | None = Query(None, description="Filter to ensure the video belongs to the site."),
     pornstar_gender: str | None = Query(
@@ -1026,14 +1095,17 @@ async def get_video(
     ),
     include_disabled: bool = Query(False, description="If true, allows viewing disabled videos (for admin)."),
 ) -> VideoDetail | None:
+    if include_disabled and not await is_admin_request(request):
+        include_disabled = False
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         if not include_disabled:
             where_clause = """
                 WHERE slug = $1 AND disabled_at IS NULL
-                  AND NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = true)
-                  AND NOT EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND s.disabled = true)
-                  AND NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = true)
+                  AND NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND (p.disabled = true OR p.undesirable = true))
+                  AND NOT EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND (s.disabled = true OR s.undesirable = true))
+                  AND NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND (c.disabled = true OR c.undesirable = true))
             """
         else:
             where_clause = "WHERE slug = $1"
@@ -1045,7 +1117,13 @@ async def get_video(
             SELECT id, title, slug, thumbnail_url, preview_url,
                    duration_seconds, views, created_at, updated_at,
                    source, source_url, embed_url, embed_type, qualities,
-                   is_onlyfans, description, disabled_at
+                   is_onlyfans, description, disabled_at,
+                   (
+                     videos.disabled_at IS NOT NULL OR
+                     EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND s.disabled = true) OR
+                     EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = true) OR
+                     EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = true)
+                   ) as is_disabled
             FROM videos
             {where_clause}
             """,
@@ -1055,11 +1133,12 @@ async def get_video(
             return None
 
         video_id = row["id"]
-        pornstar_sql = """
-            SELECT pornstars.id, pornstars.name, pornstars.slug
+        tax_pornstar_filter = "" if include_disabled else " AND pornstars.disabled = false"
+        pornstar_sql = f"""
+            SELECT pornstars.id, pornstars.name, pornstars.slug, pornstars.disabled
             FROM pornstars
             JOIN video_pornstars ON video_pornstars.pornstar_id = pornstars.id
-            WHERE video_pornstars.video_id = $1 AND pornstars.disabled = false AND pornstars.deleted_at IS NULL
+            WHERE video_pornstars.video_id = $1 AND pornstars.deleted_at IS NULL{tax_pornstar_filter}
         """
         pornstar_params: list = [video_id]
         gender_fragment, gender_params = build_gender_clause(
@@ -1070,22 +1149,26 @@ async def get_video(
             pornstar_sql += f" AND {gender_fragment}"
         pornstar_sql += " ORDER BY pornstars.name ASC"
         pornstars = await conn.fetch(pornstar_sql, *pornstar_params)
+
+        tax_studio_filter = "" if include_disabled else " AND studios.disabled = false"
         studios = await conn.fetch(
-            """
-            SELECT studios.id, studios.name, studios.slug
+            f"""
+            SELECT studios.id, studios.name, studios.slug, studios.disabled
             FROM studios
             JOIN video_studios ON video_studios.studio_id = studios.id
-            WHERE video_studios.video_id = $1 AND studios.disabled = false AND studios.deleted_at IS NULL
+            WHERE video_studios.video_id = $1 AND studios.deleted_at IS NULL{tax_studio_filter}
             ORDER BY studios.name ASC
             """,
             video_id,
         )
+
+        tax_cat_filter = "" if include_disabled else " AND categories.disabled = false"
         categories = await conn.fetch(
-            """
-            SELECT categories.id, categories.name, categories.slug
+            f"""
+            SELECT categories.id, categories.name, categories.slug, categories.disabled
             FROM categories
             JOIN video_categories ON video_categories.category_id = categories.id
-            WHERE video_categories.video_id = $1 AND categories.disabled = false AND categories.deleted_at IS NULL
+            WHERE video_categories.video_id = $1 AND categories.deleted_at IS NULL{tax_cat_filter}
             ORDER BY categories.name ASC
             """,
             video_id,
@@ -1097,7 +1180,7 @@ async def get_video(
                 video_id,
             )
     payload = dict(row)
-    payload["is_disabled"] = row["disabled_at"] is not None
+    payload["is_disabled"] = bool(row["is_disabled"])
     
     # Deserialise qualities
     if isinstance(payload.get("qualities"), str):
@@ -1157,3 +1240,18 @@ async def increment_video_view(slug: str, site: Site | None = Query(None)) -> di
     if row is None:
         return {"views": 0}
     return {"views": int(row["views"])}
+
+
+@router.delete("/{video_id}")
+async def delete_video(
+    video_id: int,
+    _admin: None = Depends(require_admin),
+) -> dict:
+    """Permanently delete a single video and cascade-remove its join references."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            res = await conn.execute("DELETE FROM videos WHERE id = $1", video_id)
+            if res == "DELETE 0":
+                raise HTTPException(status_code=404, detail=f"Video #{video_id} not found")
+    return {"status": "ok", "deleted_id": video_id}

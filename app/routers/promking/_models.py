@@ -20,6 +20,7 @@ class TermRef(BaseModel):
     image_url: Optional[str] = None
     gender: Optional[str] = None
     disabled: bool = False
+    undesirable: bool = False
 
 
 class BatchVideoIdsRequest(BaseModel):
@@ -146,6 +147,11 @@ class BatchTaxonomyDeleteResponse(BaseModel):
 
 class BatchTaxonomyDisableRequest(BaseModel):
     term_ids: list[int] = Field(min_length=1)
+
+
+class BatchTaxonomyUndesirableRequest(BaseModel):
+    term_ids: list[int] = Field(min_length=1)
+    undesirable: bool = True
 
 
 class BatchTaxonomyDisableResponse(BaseModel):

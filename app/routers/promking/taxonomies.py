@@ -13,12 +13,14 @@ import urllib.parse
 import io
 from PIL import Image
 
+import asyncpg
 from .db import get_pool
 from ._models import (
     BatchTaxonomyDeleteRequest,
     BatchTaxonomyDeleteResponse,
     BatchTaxonomyDisableRequest,
     BatchTaxonomyDisableResponse,
+    BatchTaxonomyUndesirableRequest,
     BatchTaxonomyGenderUpdateRequest,
     BatchTaxonomyGenderUpdateResponse,
     BatchTaxonomyMergeRequest,
@@ -104,8 +106,8 @@ async def list_terms(
         table_config.join_table,
         table_config.term_column,
     )
-    select_cols = f"{table}.id, {table}.name, {table}.slug, {table}.disabled"
-    group_cols = f"{table}.id, {table}.name, {table}.slug, {table}.disabled"
+    select_cols = f"{table}.id, {table}.name, {table}.slug, {table}.disabled, {table}.undesirable"
+    group_cols = f"{table}.id, {table}.name, {table}.slug, {table}.disabled, {table}.undesirable"
     if table_config.has_gender:
         select_cols += f", {table}.gender"
         group_cols += f", {table}.gender"
@@ -134,13 +136,13 @@ async def list_terms(
     if disabled is not None:
         d_str = str(disabled).strip().lower()
         if d_str in ("true", "1", "disabled"):
-            extra_where.append(f"{table}.disabled = true")
+            extra_where.append(f"({table}.disabled = true OR {table}.undesirable = true)")
         elif d_str in ("false", "0", "enabled"):
-            extra_where.append(f"{table}.disabled = false")
+            extra_where.append(f"({table}.disabled = false AND {table}.undesirable = false)")
         elif d_str in ("all", "none"):
             pass
     elif not include_disabled:
-        extra_where.append(f"{table}.disabled = false")
+        extra_where.append(f"({table}.disabled = false AND {table}.undesirable = false)")
 
     if gender and table_config.has_gender and gender.lower() != "all":
         token = gender.lower()
@@ -202,7 +204,7 @@ async def list_terms(
     cache_key = None
     if sort in ("hot", "trending") and not q:
         bucket_now = int(time.time() // HOT_ROTATE_SECONDS)
-        cache_key = f"{kind}:{limit}:{offset}:{gender}:{include_disabled}:{letter}:{bucket_now}"
+        cache_key = f"{kind}:{limit}:{offset}:{gender}:{include_disabled}:{disabled}:{letter}:{bucket_now}"
         cached = _hot_terms_cache.get(cache_key)
         if cached:
             cached_ts, cached_items = cached
@@ -296,10 +298,10 @@ async def get_term_by_slug(
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            f"SELECT id, name, slug, disabled"
+            f"SELECT id, name, slug, disabled, undesirable"
             f"{', gender' if config.has_gender else ''}"
             f"{', image_url' if config.has_image else ''} "
-            f"FROM {config.table} WHERE slug = $1 AND deleted_at IS NULL{' AND disabled = false' if not include_disabled else ''}",
+            f"FROM {config.table} WHERE slug = $1 AND deleted_at IS NULL{' AND disabled = false AND undesirable = false' if not include_disabled else ''}",
             slug,
         )
     if row is None:
@@ -321,6 +323,7 @@ async def get_term_by_slug(
         gender=row["gender"] if config.has_gender else None,
         image_url=image_url,
         disabled=bool(row["disabled"]),
+        undesirable=bool(row["undesirable"]),
     )
 
 
@@ -368,13 +371,13 @@ async def count_terms(
     if disabled is not None:
         d_str = str(disabled).strip().lower()
         if d_str in ("true", "1", "disabled"):
-            extra_where.append(f"{table}.disabled = true")
+            extra_where.append(f"({table}.disabled = true OR {table}.undesirable = true)")
         elif d_str in ("false", "0", "enabled"):
-            extra_where.append(f"{table}.disabled = false")
+            extra_where.append(f"({table}.disabled = false AND {table}.undesirable = false)")
         elif d_str in ("all", "none"):
             pass
     elif not include_disabled:
-        extra_where.append(f"{table}.disabled = false")
+        extra_where.append(f"({table}.disabled = false AND {table}.undesirable = false)")
     if gender and table_config.has_gender and gender.lower() != "all":
         token = gender.lower()
         if token == "null":
@@ -446,7 +449,7 @@ async def create_term(
         # capitalisation of an existing term, return the existing row rather
         # than duplicating.
         existing = await conn.fetchrow(
-            f"SELECT id, name, slug, disabled{', gender' if config.has_gender else ''} "
+            f"SELECT id, name, slug, disabled, undesirable{', gender' if config.has_gender else ''} "
             f"FROM {config.table} WHERE slug = $1 AND deleted_at IS NULL",
             slug,
         )
@@ -457,16 +460,17 @@ async def create_term(
                 slug=existing["slug"],
                 gender=existing["gender"] if config.has_gender else None,
                 disabled=bool(existing["disabled"]),
+                undesirable=bool(existing["undesirable"]),
             )
         if config.has_gender:
             row = await conn.fetchrow(
                 f"INSERT INTO {config.table} (name, slug{gender_col}) "
-                f"VALUES ($1, $2, $3) RETURNING id, name, slug, disabled, gender",
+                f"VALUES ($1, $2, $3) RETURNING id, name, slug, disabled, undesirable, gender",
                 name, slug, gender_val,
             )
         else:
             row = await conn.fetchrow(
-                f"INSERT INTO {config.table} (name, slug) VALUES ($1, $2) RETURNING id, name, slug, disabled",
+                f"INSERT INTO {config.table} (name, slug) VALUES ($1, $2) RETURNING id, name, slug, disabled, undesirable",
                 name, slug,
             )
     return TermRef(
@@ -475,6 +479,7 @@ async def create_term(
         slug=row["slug"],
         gender=row["gender"] if config.has_gender else None,
         disabled=bool(row["disabled"]),
+        undesirable=bool(row.get("undesirable", False)),
     )
 
 
@@ -491,24 +496,28 @@ async def batch_rename_terms(
         for item in payload.renames:
             next_slug = slugify(item.new_name)
             existing = await conn.fetchrow(
-                f"SELECT id FROM {config.table} WHERE (lower(name) = lower($1) OR slug = $2) AND id <> $3 AND deleted_at IS NULL",
+                f"SELECT id, deleted_at FROM {config.table} WHERE (lower(name) = lower($1) OR slug = $2) AND id <> $3",
                 item.new_name,
                 next_slug,
                 item.term_id,
             )
             if existing:
-                conflicts.append(TaxonomyConflict(term_id=item.term_id, reason="name or slug already exists"))
+                reason = "name or slug already exists (archived)" if existing["deleted_at"] else "name or slug already exists"
+                conflicts.append(TaxonomyConflict(term_id=item.term_id, reason=reason))
                 continue
-            row = await conn.fetchrow(
-                f"UPDATE {config.table} SET name = $1, slug = $2 WHERE id = $3 AND deleted_at IS NULL RETURNING id",
-                item.new_name,
-                next_slug,
-                item.term_id,
-            )
-            if row:
-                count += 1
-            else:
-                conflicts.append(TaxonomyConflict(term_id=item.term_id, reason="term not found"))
+            try:
+                row = await conn.fetchrow(
+                    f"UPDATE {config.table} SET name = $1, slug = $2 WHERE id = $3 AND deleted_at IS NULL RETURNING id",
+                    item.new_name,
+                    next_slug,
+                    item.term_id,
+                )
+                if row:
+                    count += 1
+                else:
+                    conflicts.append(TaxonomyConflict(term_id=item.term_id, reason="term not found"))
+            except asyncpg.UniqueViolationError:
+                conflicts.append(TaxonomyConflict(term_id=item.term_id, reason="name or slug violates unique constraint"))
     return BatchTaxonomyUpdateResponse(count=count, conflicts=conflicts)
 
 
@@ -525,22 +534,26 @@ async def batch_update_slugs(
         for item in payload.updates:
             next_slug = slugify(item.new_slug)
             existing = await conn.fetchrow(
-                f"SELECT id FROM {config.table} WHERE slug = $1 AND id <> $2 AND deleted_at IS NULL",
+                f"SELECT id, deleted_at FROM {config.table} WHERE slug = $1 AND id <> $2",
                 next_slug,
                 item.term_id,
             )
             if existing:
-                errors.append(TaxonomyConflict(term_id=item.term_id, reason="slug already exists"))
+                reason = "slug already exists (archived)" if existing["deleted_at"] else "slug already exists"
+                errors.append(TaxonomyConflict(term_id=item.term_id, reason=reason))
                 continue
-            row = await conn.fetchrow(
-                f"UPDATE {config.table} SET slug = $1 WHERE id = $2 AND deleted_at IS NULL RETURNING id",
-                next_slug,
-                item.term_id,
-            )
-            if row:
-                count += 1
-            else:
-                errors.append(TaxonomyConflict(term_id=item.term_id, reason="term not found"))
+            try:
+                row = await conn.fetchrow(
+                    f"UPDATE {config.table} SET slug = $1 WHERE id = $2 AND deleted_at IS NULL RETURNING id",
+                    next_slug,
+                    item.term_id,
+                )
+                if row:
+                    count += 1
+                else:
+                    errors.append(TaxonomyConflict(term_id=item.term_id, reason="term not found"))
+            except asyncpg.UniqueViolationError:
+                errors.append(TaxonomyConflict(term_id=item.term_id, reason="slug violates unique constraint"))
     return BatchTaxonomyUpdateResponse(count=count, errors=errors)
 
 
@@ -556,11 +569,13 @@ async def batch_merge_terms(
     pool = await get_pool()
     async with pool.acquire() as conn:
         primary = await conn.fetchrow(
-            f"SELECT id FROM {config.table} WHERE id = $1 AND deleted_at IS NULL",
+            f"SELECT id, undesirable FROM {config.table} WHERE id = $1 AND deleted_at IS NULL",
             payload.primary_id,
         )
         if not primary:
             raise HTTPException(status_code=404, detail="primary term not found")
+        if primary.get("undesirable"):
+            raise HTTPException(status_code=400, detail="Cannot merge into an undesirable term.")
         video_recount = await conn.fetchval(
             f"SELECT COUNT(DISTINCT video_id) FROM {config.join_table} WHERE {config.term_column} = ANY($1::int[])",
             merge_from,
@@ -588,6 +603,7 @@ async def batch_merge_terms(
             merge_from,
             payload.primary_id,
         )
+    _hot_terms_cache.clear()
     return BatchTaxonomyMergeResponse(
         merged_count=len(deleted_rows),
         video_recount=int(video_recount or 0),
@@ -610,6 +626,7 @@ async def batch_delete_terms(
             f"UPDATE {config.table} SET deleted_at = now() WHERE id = ANY($1::int[]) AND deleted_at IS NULL RETURNING id",
             payload.term_ids,
         )
+    _hot_terms_cache.clear()
     return BatchTaxonomyDeleteResponse(deleted_count=len(rows), videos_orphaned=int(videos_orphaned or 0))
 
 
@@ -625,6 +642,7 @@ async def batch_disable_terms(
             f"UPDATE {config.table} SET disabled = true WHERE id = ANY($1::int[]) AND deleted_at IS NULL AND disabled = false RETURNING id",
             payload.term_ids,
         )
+    _hot_terms_cache.clear()
     return BatchTaxonomyDisableResponse(count=len(rows))
 
 
@@ -640,6 +658,30 @@ async def batch_enable_terms(
             f"UPDATE {config.table} SET disabled = false WHERE id = ANY($1::int[]) AND deleted_at IS NULL AND disabled = true RETURNING id",
             payload.term_ids,
         )
+    _hot_terms_cache.clear()
+    return BatchTaxonomyDisableResponse(count=len(rows))
+
+
+@router.post("/{kind}/batch/undesirable", response_model=BatchTaxonomyDisableResponse)
+async def batch_undesirable_terms(
+    payload: BatchTaxonomyUndesirableRequest,
+    kind: WriteTaxonomyKind = Path(...),
+) -> BatchTaxonomyDisableResponse:
+    config = get_table_config(kind)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                f"UPDATE {config.table} SET undesirable = $1 WHERE id = ANY($2::int[]) AND deleted_at IS NULL RETURNING id",
+                payload.undesirable,
+                payload.term_ids,
+            )
+            if payload.undesirable:
+                await conn.execute(
+                    f"DELETE FROM {config.join_table} WHERE {config.term_column} = ANY($1::int[])",
+                    payload.term_ids,
+                )
+    _hot_terms_cache.clear()
     return BatchTaxonomyDisableResponse(count=len(rows))
 
 

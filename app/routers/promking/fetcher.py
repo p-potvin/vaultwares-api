@@ -70,6 +70,9 @@ class RunState:
     finished: bool = False
     error: Optional[str] = None
     stderr_log: Optional[str] = None
+    advance_cursor: bool = True
+    stop_consecutive_duplicates: Optional[int] = None
+    stop_total_duplicates: Optional[int] = None
 
 
 _runs: dict[str, RunState] = {}
@@ -86,6 +89,9 @@ async def _create_fetch_run_state(
     term_name: Optional[str] = None,
     term_slug: Optional[str] = None,
     fetch_all: bool = False,
+    advance_cursor: bool = True,
+    stop_consecutive_duplicates: Optional[int] = None,
+    stop_total_duplicates: Optional[int] = None,
 ) -> tuple[RunState, datetime]:
     run_id = uuid.uuid4().hex
     state = RunState(
@@ -98,6 +104,9 @@ async def _create_fetch_run_state(
         term_name=term_name,
         term_slug=term_slug,
         fetch_all=fetch_all,
+        advance_cursor=advance_cursor,
+        stop_consecutive_duplicates=stop_consecutive_duplicates,
+        stop_total_duplicates=stop_total_duplicates,
     )
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -801,6 +810,8 @@ async def _drive_subprocess(state: RunState) -> None:
         
         pages_counted = 0
         consecutive_all_known_pages = 0
+        consecutive_duplicate_videos = 0
+        total_duplicate_videos = 0
         fetched_urls = set()
         
         state.summary = {"fetched": 0, "added": 0, "skipped": 0, "errors": 0}
@@ -835,9 +846,17 @@ async def _drive_subprocess(state: RunState) -> None:
                 state.summary["skipped"] += len(page_videos)
                 await _broadcast(state, json.dumps({"event": "log", "line": f"All videos on page {current_page} were already processed in this run."}))
                 consecutive_all_known_pages += 1
+                consecutive_duplicate_videos += len(page_videos)
+                total_duplicate_videos += len(page_videos)
                 current_page += 1
                 if consecutive_all_known_pages >= 3:
                     await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ 3 consecutive duplicate/empty pages — stopping run."}))
+                    break
+                if state.stop_consecutive_duplicates and consecutive_duplicate_videos >= state.stop_consecutive_duplicates:
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"🛑 Reached {consecutive_duplicate_videos} consecutive duplicates (limit: {state.stop_consecutive_duplicates}) — stopping run."}))
+                    break
+                if state.stop_total_duplicates and total_duplicate_videos >= state.stop_total_duplicates:
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"🛑 Reached {total_duplicate_videos} total duplicates (limit: {state.stop_total_duplicates}) — stopping run."}))
                     break
                 continue
 
@@ -850,8 +869,16 @@ async def _drive_subprocess(state: RunState) -> None:
                 state.summary["skipped"] += len(page_videos)
                 await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page}: all {len(unique_page_videos)} videos already in DB."}))
                 consecutive_all_known_pages += 1
+                consecutive_duplicate_videos += len(unique_page_videos)
+                total_duplicate_videos += len(unique_page_videos)
                 if consecutive_all_known_pages >= 3:
                     await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ 3 consecutive duplicate/empty pages — stopping run."}))
+                    break
+                if state.stop_consecutive_duplicates and consecutive_duplicate_videos >= state.stop_consecutive_duplicates:
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"🛑 Reached {consecutive_duplicate_videos} consecutive duplicates (limit: {state.stop_consecutive_duplicates}) — stopping run."}))
+                    break
+                if state.stop_total_duplicates and total_duplicate_videos >= state.stop_total_duplicates:
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"🛑 Reached {total_duplicate_videos} total duplicates (limit: {state.stop_total_duplicates}) — stopping run."}))
                     break
             else:
                 candidate_slugs = [_slugify(v.get("title") or "") for v in new_candidates if v.get("title")]
@@ -862,13 +889,24 @@ async def _drive_subprocess(state: RunState) -> None:
                     state.summary["skipped"] += len(page_videos)
                     await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page}: all videos already in DB (by slug or URL)."}))
                     consecutive_all_known_pages += 1
+                    consecutive_duplicate_videos += len(unique_page_videos)
+                    total_duplicate_videos += len(unique_page_videos)
                     if consecutive_all_known_pages >= 3:
                         await _broadcast(state, json.dumps({"event": "log", "line": f"⚠️ 3 consecutive duplicate/empty pages — stopping run."}))
+                        break
+                    if state.stop_consecutive_duplicates and consecutive_duplicate_videos >= state.stop_consecutive_duplicates:
+                        await _broadcast(state, json.dumps({"event": "log", "line": f"🛑 Reached {consecutive_duplicate_videos} consecutive duplicates (limit: {state.stop_consecutive_duplicates}) — stopping run."}))
+                        break
+                    if state.stop_total_duplicates and total_duplicate_videos >= state.stop_total_duplicates:
+                        await _broadcast(state, json.dumps({"event": "log", "line": f"🛑 Reached {total_duplicate_videos} total duplicates (limit: {state.stop_total_duplicates}) — stopping run."}))
                         break
                     current_page += 1
                     continue
 
                 consecutive_all_known_pages = 0
+                consecutive_duplicate_videos = 0
+                total_duplicate_videos += (len(unique_page_videos) - len(filtered_candidates))
+
                 if filtered_candidates:
                     await _broadcast(state, json.dumps({"event": "log", "line": f"Persisting {len(filtered_candidates)} candidate videos to database..."}))
                 added_this_page, disabled_this_page = await _persist_videos(state.site, filtered_candidates)
@@ -892,10 +930,17 @@ async def _drive_subprocess(state: RunState) -> None:
                 else:
                     await _broadcast(state, json.dumps({"event": "log", "line": f"Page {current_page}: 0 active videos added (filtered out as duplicates or disabled terms)."}))
 
+                if state.stop_total_duplicates and total_duplicate_videos >= state.stop_total_duplicates:
+                    await _broadcast(state, json.dumps({"event": "log", "line": f"🛑 Reached {total_duplicate_videos} total duplicates (limit: {state.stop_total_duplicates}) — stopping run."}))
+                    break
+
             current_page += 1
             
-        await update_manual_cursor(state.site, state.source, current_page)
-        await _broadcast(state, json.dumps({"event": "log", "line": f"💾 Saved next cursor page P = {current_page} in DB settings."}))
+        if state.advance_cursor:
+            await update_manual_cursor(state.site, state.source, current_page)
+            await _broadcast(state, json.dumps({"event": "log", "line": f"💾 Saved next cursor page P = {current_page} in DB settings."}))
+        else:
+            await _broadcast(state, json.dumps({"event": "log", "line": "💾 Manual cursor left untouched (scheduled run)."}))
         
     except Exception as e:
         state.error = f"Subprocess driver error: {e}"
@@ -1143,7 +1188,8 @@ async def _attach_terms(conn, video_id: int, v: dict) -> None:
                 continue
             term = await conn.fetchrow(
                 f"""
-                SELECT COALESCE(primary_term.id, {table}.id) AS id
+                SELECT COALESCE(primary_term.id, {table}.id) AS id,
+                       COALESCE(primary_term.undesirable, {table}.undesirable, false) AS undesirable
                   FROM {table}
                   LEFT JOIN {table} AS primary_term
                     ON primary_term.id = {table}.merged_into_id
@@ -1155,6 +1201,8 @@ async def _attach_terms(conn, video_id: int, v: dict) -> None:
                 slug,
                 name,
             )
+            if term and term.get("undesirable"):
+                continue
             if not term:
                 term = await conn.fetchrow(
                     f"""
@@ -1163,12 +1211,12 @@ async def _attach_terms(conn, video_id: int, v: dict) -> None:
                     ON CONFLICT (slug) DO UPDATE
                        SET name = EXCLUDED.name
                      WHERE {table}.deleted_at IS NULL
-                    RETURNING id
+                    RETURNING id, undesirable
                     """,
                     name,
                     slug,
                 )
-            if not term:
+            if not term or term.get("undesirable"):
                 continue
             await conn.execute(
                 f"INSERT INTO {join} (video_id, {term_column})"

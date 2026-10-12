@@ -42,6 +42,7 @@ class PromKingMeResponse(BaseModel):
     # minted against a pre-migration row can't 500 the profile screen.
     created_at: Optional[datetime] = None
     preferences: dict = Field(default_factory=dict)
+    token: Optional[str] = None
 
 class PromKingPreferencesUpdateRequest(BaseModel):
     preferences: dict
@@ -111,9 +112,9 @@ async def register(payload: PromKingRegisterRequest):
             email, hashed
         )
         
-    # Standard vaultwares JWT creation
-    token = _create_access_token(user_id, email, False, ttl_override=3600)
-    return PromKingRegisterResponse(email=email, access_token=token)
+    # Standard vaultwares JWT creation (4-hour viewer token)
+    token = _create_access_token(user_id, email, False, ttl_override=14400)
+    return PromKingRegisterResponse(email=email, access_token=token, expires_in=14400)
 
 @router.post("/login", response_model=PromKingLoginResponse)
 async def login(payload: PromKingLoginRequest):
@@ -139,17 +140,26 @@ async def login(payload: PromKingLoginRequest):
         raise HTTPException(status_code=403, detail="This account has been disabled.")
 
     is_admin = user["role"] == "admin"
-    token = _create_access_token(user["id"], user["email"], is_admin, ttl_override=3600)
-    return PromKingLoginResponse(access_token=token)
+    ttl = 86400 if is_admin else 14400
+    token = _create_access_token(user["id"], user["email"], is_admin, ttl_override=ttl)
+    return PromKingLoginResponse(access_token=token, expires_in=ttl)
 
 @router.get("/me", response_model=PromKingMeResponse)
 async def me(current_user: dict = Depends(get_current_promking_user)):
+    is_admin = current_user.get("role") == "admin"
+    refreshed_token = _create_access_token(
+        current_user["id"],
+        current_user["email"],
+        is_admin,
+        ttl_override=86400 if is_admin else 14400,
+    )
     return PromKingMeResponse(
         id=current_user["id"],
         email=current_user["email"],
         role=current_user["role"],
         created_at=current_user.get("created_at"),
         preferences=current_user.get("preferences") or {},
+        token=refreshed_token,
     )
 
 @router.patch("/me/preferences", response_model=PromKingMeResponse)
