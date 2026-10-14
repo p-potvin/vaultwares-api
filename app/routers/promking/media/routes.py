@@ -156,8 +156,15 @@ async def serve_cached_media(
         raise HTTPException(status_code=400, detail="Invalid media hash format")
 
     shared_tube = _shared_tube_path()
-    file_path = shared_tube / "data" / "media" / clean_hash
-    meta_path = shared_tube / "data" / "media" / f"{clean_hash}.meta"
+    media_root = (shared_tube / "data" / "media").resolve()
+    file_path = (media_root / clean_hash).resolve()
+    meta_path = (media_root / f"{clean_hash}.meta").resolve()
+
+    try:
+        file_path.relative_to(media_root)
+        meta_path.relative_to(media_root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid media hash path")
 
     if not file_path.exists() or not file_path.is_file():
         # Fallback: check if the file was stored under sha256(clean_hash) due to legacy double-hashing
