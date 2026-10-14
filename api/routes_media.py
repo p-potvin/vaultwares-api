@@ -321,21 +321,28 @@ def api_upscaler_status():
 @router.post("/api/open-downloaded")
 def api_open_downloaded(payload: OpenPayload):
     try:
-        import subprocess
         target_dir = os.path.normpath(ZIPPER_DEST_DIR)
         os.makedirs(target_dir, exist_ok=True)
-        
+        target_dir_real = os.path.realpath(target_dir)
+
         target_file = payload.path or payload.filename
         if payload.folder or not target_file:
-            subprocess.Popen(f'explorer.exe "{target_dir}"', shell=True)
+            subprocess.Popen(["explorer.exe", target_dir_real])
             return {"status": "success", "message": "Opened downloaded folder"}
-            
-        file_path = os.path.normpath(target_file if os.path.isabs(target_file) else os.path.join(target_dir, target_file))
-        if os.path.exists(file_path):
-            subprocess.Popen(f'explorer.exe /select,"{file_path}"', shell=True)
-            return {"status": "success", "message": f"Opened file {os.path.basename(file_path)}"}
-            
-        subprocess.Popen(f'explorer.exe "{target_dir}"', shell=True)
+
+        file_path = os.path.normpath(
+            target_file if os.path.isabs(target_file) else os.path.join(target_dir_real, target_file)
+        )
+        file_path_real = os.path.realpath(file_path)
+
+        if os.path.commonpath([target_dir_real, file_path_real]) != target_dir_real:
+            return {"status": "error", "message": "Invalid target path"}
+
+        if os.path.exists(file_path_real):
+            subprocess.Popen(["explorer.exe", f'/select,{file_path_real}'])
+            return {"status": "success", "message": f"Opened file {os.path.basename(file_path_real)}"}
+
+        subprocess.Popen(["explorer.exe", target_dir_real])
         return {"status": "success", "message": "Target file not found; opened downloaded folder"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
