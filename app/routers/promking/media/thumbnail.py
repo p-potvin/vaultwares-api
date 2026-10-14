@@ -25,11 +25,16 @@ async def download_and_save_thumbnail(video_id: int, remote_url: str) -> str | N
     if not remote_url or not remote_url.startswith("http"):
         return None
 
-    v_dir = get_video_media_dir(video_id)
-    thumb_path = v_dir / "thumb.jpg"
+    try:
+        v_dir = get_video_media_dir(video_id)
+        thumb_path = (v_dir / "thumb.jpg").resolve()
+        if not thumb_path.is_relative_to(v_dir):
+            return None
+    except ValueError:
+        return None
 
     # If already cached and valid size (> 500 bytes), skip re-download
-    if thumb_path.exists() and thumb_path.stat().st_size > 500:
+    if thumb_path.exists() and thumb_path.is_file() and thumb_path.stat().st_size > 500:
         return get_media_url(video_id, "thumb.jpg")
 
     headers = {

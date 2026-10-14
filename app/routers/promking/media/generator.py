@@ -143,18 +143,23 @@ async def generate_animated_preview(
     spliced together with audio volume reduced to ~0.5.
     Returns the public API URL (/api/promking/media/onlyfans/{video_id}/preview.mp4).
     """
-    v_dir = get_video_media_dir(video_id)
-    preview_file = v_dir / "preview.mp4"
+    try:
+        v_dir = get_video_media_dir(video_id)
+        preview_file = (v_dir / "preview.mp4").resolve()
+        splice_tmp = (v_dir / "preview.splice.tmp.mp4").resolve()
+        single_tmp = (v_dir / "preview.single.tmp.mp4").resolve()
+        if not preview_file.is_relative_to(v_dir) or not splice_tmp.is_relative_to(v_dir) or not single_tmp.is_relative_to(v_dir):
+            return None
+    except ValueError:
+        return None
 
-    if preview_file.exists() and preview_file.stat().st_size > 1000:
+    if preview_file.exists() and preview_file.is_file() and preview_file.stat().st_size > 1000:
         return get_media_url(video_id, "preview.mp4")
 
     ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
     audio_available = await has_audio_stream(video_url)
     offsets = compute_staggered_capture_offsets(duration, captures_count, capture_duration)
     # Each attempt writes its own file; preview.mp4 only ever appears complete (os.replace).
-    splice_tmp = v_dir / "preview.splice.tmp.mp4"
-    single_tmp = v_dir / "preview.single.tmp.mp4"
 
     def publish(tmp: Path) -> bool:
         if tmp.exists() and tmp.stat().st_size > 1000:
@@ -280,10 +285,6 @@ async def generate_sprite_sheet(
     Also produces a WebVTT file with frame time cues for timeline scrubbing.
     Returns: (sprite_url, sprite_vtt_url, metadata_dict).
     """
-    v_dir = get_video_media_dir(video_id)
-    sprite_file = v_dir / "sprite.jpg"
-    vtt_file = v_dir / "sprite.vtt"
-
     meta = {
         "tile_width": tile_width,
         "tile_height": tile_height,
@@ -291,6 +292,15 @@ async def generate_sprite_sheet(
         "tiles_per_row": tiles_per_row,
         "interval_seconds": 0.0,
     }
+
+    try:
+        v_dir = get_video_media_dir(video_id)
+        sprite_file = (v_dir / "sprite.jpg").resolve()
+        vtt_file = (v_dir / "sprite.vtt").resolve()
+        if not sprite_file.is_relative_to(v_dir) or not vtt_file.is_relative_to(v_dir):
+            return None, None, meta
+    except ValueError:
+        return None, None, meta
 
     if duration <= 0:
         duration = 180.0

@@ -44,19 +44,38 @@ def get_media_base_dir() -> Path:
     return local_base
 
 
-def get_video_media_dir(video_id: int) -> Path:
+def sanitize_video_id(video_id: int | str) -> int:
+    """Sanitizes and validates video_id, ensuring it is a positive integer."""
+    input_str = str(video_id).strip()
+    raw_str = os.path.basename(input_str)
+    if not input_str.isdigit() or raw_str != input_str:
+        raise ValueError(f"Invalid video_id: {video_id}")
+    val = int(raw_str)
+    if val <= 0:
+        raise ValueError(f"Invalid video_id: {video_id}")
+    return val
+
+
+def get_video_media_dir(video_id: int | str) -> Path:
     """Returns the dedicated directory for a specific video's media files."""
-    v_dir = get_media_base_dir() / str(video_id)
+    valid_id = sanitize_video_id(video_id)
+    safe_name = os.path.basename(str(valid_id))
+    base = get_media_base_dir().resolve()
+    v_dir = (base / safe_name).resolve()
+    if not v_dir.is_relative_to(base) or v_dir == base:
+        raise ValueError(f"Invalid video directory path for video_id: {video_id}")
     v_dir.mkdir(parents=True, exist_ok=True)
     return v_dir
 
 
-def get_media_url(video_id: int, filename: str) -> str:
+def get_media_url(video_id: int | str, filename: str) -> str:
     """Returns the canonical public API URL for a media asset."""
-    return f"/api/promking/media/onlyfans/{video_id}/{filename}"
+    valid_id = sanitize_video_id(video_id)
+    safe_filename = os.path.basename(filename)
+    return f"/api/promking/media/onlyfans/{valid_id}/{safe_filename}"
 
 
-def get_media_file_path(video_id: int, filename: str) -> Path | None:
+def get_media_file_path(video_id: int | str, filename: str) -> Path | None:
     """
     Returns the absolute path to a media file if safe and contained within the video dir.
     Guards against path traversal attacks.
@@ -71,12 +90,16 @@ def get_media_file_path(video_id: int, filename: str) -> Path | None:
         "sprite.webp",
         "sprite.vtt",
     }
-    if filename not in allowed_filenames:
+    safe_filename = os.path.basename(filename)
+    if safe_filename not in allowed_filenames or safe_filename != filename:
         return None
 
-    target = (get_video_media_dir(video_id) / filename).resolve()
-    base = get_media_base_dir().resolve()
-    if not str(target).startswith(str(base)):
+    try:
+        base = get_media_base_dir().resolve()
+        v_dir = get_video_media_dir(video_id)
+        target = (v_dir / safe_filename).resolve()
+        if not target.is_relative_to(base) or not target.is_relative_to(v_dir):
+            return None
+        return target
+    except ValueError:
         return None
-
-    return target

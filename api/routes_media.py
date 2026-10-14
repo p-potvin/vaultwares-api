@@ -330,12 +330,13 @@ def api_open_downloaded(payload: OpenPayload):
             subprocess.Popen(["explorer.exe", target_dir_real])
             return {"status": "success", "message": "Opened downloaded folder"}
 
-        file_path = os.path.normpath(
-            target_file if os.path.isabs(target_file) else os.path.join(target_dir_real, target_file)
-        )
-        file_path_real = os.path.realpath(file_path)
+        if os.path.isabs(target_file):
+            candidate_path = os.path.normpath(target_file)
+        else:
+            candidate_path = os.path.normpath(os.path.join(target_dir_real, target_file))
+        file_path_real = os.path.realpath(candidate_path)
 
-        if os.path.commonpath([target_dir_real, file_path_real]) != target_dir_real:
+        if not file_path_real.startswith(target_dir_real + os.sep) and file_path_real != target_dir_real:
             return {"status": "error", "message": "Invalid target path"}
 
         if os.path.exists(file_path_real):

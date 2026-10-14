@@ -33,7 +33,12 @@ DEFAULT_UPLOADS_LOG = "/srv/vw-media/uploads/upload.log"
 DEFAULT_DEPLOY_STATUS_ROOT = "/var/lib/vw-deploy/status"
 DEFAULT_DEPLOY_LOCK_ROOT = "/var/lib/vw-deploy"
 SECRET_KEY_PARTS = ("secret", "token", "password", "credential", "apikey", "api_key", "private_key")
-PROBE_LOCATIONS = {"greencloud-vps", "vps-ovhcloud", "clopeux-desktop"}
+PROBE_LOCATION_MAP = {
+    "greencloud-vps": "greencloud-vps.json",
+    "vps-ovhcloud": "vps-ovhcloud.json",
+    "clopeux-desktop": "clopeux-desktop.json",
+}
+PROBE_LOCATIONS = set(PROBE_LOCATION_MAP.keys())
 INPUT_TRACKER_MAX_HOURS = 24 * 365 * 20
 
 _UPLOAD_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
@@ -81,7 +86,8 @@ def _valid_rollup_signature(body: bytes, timestamp: str, signature: str) -> bool
 
 @router.post("/probe-rollups/{location_id}", include_in_schema=False)
 async def ingest_probe_rollup(location_id: str, request: Request) -> Dict[str, Any]:
-    if location_id not in PROBE_LOCATIONS:
+    filename = PROBE_LOCATION_MAP.get(location_id)
+    if not filename:
         raise HTTPException(status_code=404, detail="unknown probe location")
     body = await request.body()
     if len(body) > 15 * 1024 * 1024:
@@ -98,9 +104,14 @@ async def ingest_probe_rollup(location_id: str, request: Request) -> Dict[str, A
         raise HTTPException(status_code=400, detail="invalid rollup json") from exc
     if payload.get("probe_location_id") != location_id or not isinstance(payload.get("services"), list):
         raise HTTPException(status_code=400, detail="rollup location mismatch")
-    target = _health_root() / "data" / "rollups" / "locations" / f"{location_id}.json"
+    base_dir = (_health_root() / "data" / "rollups" / "locations").resolve()
+    target = (base_dir / filename).resolve()
+    if not target.is_relative_to(base_dir) or target == base_dir:
+        raise HTTPException(status_code=400, detail="invalid rollup location path")
     target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_suffix(".json.tmp")
+    temporary = (base_dir / f"{filename}.tmp").resolve()
+    if not temporary.is_relative_to(base_dir):
+        raise HTTPException(status_code=400, detail="invalid rollup temporary path")
     temporary.write_bytes(body + (b"\n" if not body.endswith(b"\n") else b""))
     temporary.replace(target)
     return {"status": "accepted", "location": location_id}

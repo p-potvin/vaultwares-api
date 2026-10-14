@@ -19,7 +19,7 @@ from starlette.background import BackgroundTask
 
 from ..db import get_pool
 from ..fetcher import _shared_tube_path
-from .storage import get_media_file_path
+from .storage import get_media_file_path, get_media_base_dir
 from .processor import process_onlyfans_media
 from .db import get_onlyfans_media
 from . import remote
@@ -39,24 +39,33 @@ async def serve_onlyfans_media(
     Serves cached OnlyFans media files directly from local storage.
     Supports HTTP Range requests for video clips and sends 30-day immutable cache headers.
     """
-    file_path = get_media_file_path(video_id, filename)
-    if not file_path or not file_path.exists() or not file_path.is_file():
+    safe_filename = os.path.basename(filename)
+    if safe_filename != filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    file_path = get_media_file_path(video_id, safe_filename)
+    if not file_path:
         raise HTTPException(status_code=404, detail="Media file not found")
 
-    content_type, _ = mimetypes.guess_type(str(file_path))
+    base = get_media_base_dir().resolve()
+    resolved_file = file_path.resolve()
+    if not resolved_file.is_relative_to(base) or not resolved_file.is_file():
+        raise HTTPException(status_code=404, detail="Media file not found")
+
+    content_type, _ = mimetypes.guess_type(str(resolved_file))
     if not content_type:
-        if filename.endswith(".vtt"):
+        if safe_filename.endswith(".vtt"):
             content_type = "text/vtt; charset=utf-8"
-        elif filename.endswith(".mp4"):
+        elif safe_filename.endswith(".mp4"):
             content_type = "video/mp4"
-        elif filename.endswith(".jpg") or filename.endswith(".jpeg"):
+        elif safe_filename.endswith(".jpg") or safe_filename.endswith(".jpeg"):
             content_type = "image/jpeg"
-        elif filename.endswith(".webp"):
+        elif safe_filename.endswith(".webp"):
             content_type = "image/webp"
         else:
             content_type = "application/octet-stream"
 
-    file_size = file_path.stat().st_size
+    file_size = resolved_file.stat().st_size
     range_header = request.headers.get("range")
 
     headers = {
@@ -78,7 +87,7 @@ async def serve_onlyfans_media(
             chunk_length = end - start + 1
 
             def iterfile():
-                with open(file_path, "rb") as f:
+                with open(resolved_file, "rb") as f:
                     f.seek(start)
                     remaining = chunk_length
                     while remaining > 0:
@@ -92,10 +101,10 @@ async def serve_onlyfans_media(
             headers["Content-Length"] = str(chunk_length)
             return StreamingResponse(iterfile(), status_code=206, headers=headers)
         except Exception as exc:
-            logger.warning("Error processing range header for %s: %s", file_path, exc)
+            logger.warning("Error processing range header for %s: %s", resolved_file, exc)
 
     headers["Content-Length"] = str(file_size)
-    return FileResponse(file_path, media_type=content_type, headers=headers)
+    return FileResponse(resolved_file, media_type=content_type, headers=headers)
 
 
 @router.post("/media/onlyfans/{video_id}/generate")
@@ -151,7 +160,7 @@ async def serve_cached_media(
     Clips that aren't on OVH are streamed from the workstation (see `remote.py`), or redirected to
     the site's original preview when the workstation can't serve them.
     """
-    clean_hash = media_hash.split(".")[0].strip().lower()
+    clean_hash = os.path.basename(media_hash.split(".")[0].strip().lower())
     if not re.match(r"^[a-f0-9]{64}$", clean_hash):
         raise HTTPException(status_code=400, detail="Invalid media hash format")
 
@@ -160,20 +169,20 @@ async def serve_cached_media(
     file_path = (media_root / clean_hash).resolve()
     meta_path = (media_root / f"{clean_hash}.meta").resolve()
 
-    try:
-        file_path.relative_to(media_root)
-        meta_path.relative_to(media_root)
-    except ValueError:
+    if not file_path.is_relative_to(media_root) or not meta_path.is_relative_to(media_root):
         raise HTTPException(status_code=400, detail="Invalid media hash path")
 
     if not file_path.exists() or not file_path.is_file():
         # Fallback: check if the file was stored under sha256(clean_hash) due to legacy double-hashing
         import hashlib
-        alt_hash = hashlib.sha256(clean_hash.encode("utf-8")).hexdigest()
-        alt_path = shared_tube / "data" / "media" / alt_hash
+        alt_hash = os.path.basename(hashlib.sha256(clean_hash.encode("utf-8")).hexdigest())
+        alt_path = (media_root / alt_hash).resolve()
+        alt_meta = (media_root / f"{alt_hash}.meta").resolve()
+        if not alt_path.is_relative_to(media_root) or not alt_meta.is_relative_to(media_root):
+            return await _serve_remote_media(clean_hash, request)
         if alt_path.exists() and alt_path.is_file():
             file_path = alt_path
-            meta_path = shared_tube / "data" / "media" / f"{alt_hash}.meta"
+            meta_path = alt_meta
         else:
             return await _serve_remote_media(clean_hash, request)
 
