@@ -29,19 +29,29 @@ def _ensure_jobs_dir() -> None:
     try: os.makedirs(JOBS_DIR, exist_ok=True)
     except: pass
 
-def _job_path(job_id: str) -> str:
-    safe = "".join(ch for ch in job_id if ch.isalnum() or ch in ("-", "_"))
-    return os.path.join(JOBS_DIR, f"{safe}.json")
+def _job_path(job_id: str) -> Optional[str]:
+    safe = "".join(ch for ch in os.path.basename(job_id) if ch.isalnum() or ch in ("-", "_"))
+    if not safe:
+        return None
+    base_dir = os.path.abspath(JOBS_DIR)
+    fullpath = os.path.normpath(os.path.join(base_dir, f"{safe}.json"))
+    if not fullpath.startswith(base_dir + os.sep) and fullpath != base_dir:
+        return None
+    return fullpath
 
 def _read_job(job_id: str) -> Optional[dict]:
     path = _job_path(job_id)
-    if not os.path.exists(path): return None
+    if not path or not os.path.exists(path):
+        return None
     with _jobs_fs_lock:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
 def _write_job(job: dict) -> None:
-    path = _job_path(job["id"])
+    job_id = job.get("id", "")
+    path = _job_path(job_id)
+    if not path:
+        raise ValueError(f"Invalid job ID: {job_id}")
     tmp_path = path + ".tmp"
     with _jobs_fs_lock:
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -50,8 +60,17 @@ def _write_job(job: dict) -> None:
 
 def _list_jobs(limit: int = 50) -> List[dict]:
     _ensure_jobs_dir()
-    try: candidates = [os.path.join(JOBS_DIR, name) for name in os.listdir(JOBS_DIR) if name.endswith(".json")]
-    except: return []
+    base_dir = os.path.abspath(JOBS_DIR)
+    try:
+        candidates = []
+        for name in os.listdir(base_dir):
+            if name.endswith(".json"):
+                safe_name = os.path.basename(name)
+                candidate_path = os.path.normpath(os.path.join(base_dir, safe_name))
+                if candidate_path.startswith(base_dir + os.sep):
+                    candidates.append(candidate_path)
+    except:
+        return []
     candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     jobs = []
     for path in candidates[: max(0, limit)]:
@@ -59,7 +78,8 @@ def _list_jobs(limit: int = 50) -> List[dict]:
             with _jobs_fs_lock:
                 with open(path, "r", encoding="utf-8") as f:
                     jobs.append(json.load(f))
-        except: continue
+        except:
+            continue
     return jobs
 
 def _job_now() -> float:

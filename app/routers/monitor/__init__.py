@@ -81,7 +81,8 @@ def _valid_rollup_signature(body: bytes, timestamp: str, signature: str) -> bool
 
 @router.post("/probe-rollups/{location_id}", include_in_schema=False)
 async def ingest_probe_rollup(location_id: str, request: Request) -> Dict[str, Any]:
-    if location_id not in PROBE_LOCATIONS:
+    safe_location = os.path.basename(location_id)
+    if safe_location not in PROBE_LOCATIONS or safe_location != location_id:
         raise HTTPException(status_code=404, detail="unknown probe location")
     body = await request.body()
     if len(body) > 15 * 1024 * 1024:
@@ -96,14 +97,19 @@ async def ingest_probe_rollup(location_id: str, request: Request) -> Dict[str, A
         payload = json.loads(body)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="invalid rollup json") from exc
-    if payload.get("probe_location_id") != location_id or not isinstance(payload.get("services"), list):
+    if payload.get("probe_location_id") != safe_location or not isinstance(payload.get("services"), list):
         raise HTTPException(status_code=400, detail="rollup location mismatch")
-    target = _health_root() / "data" / "rollups" / "locations" / f"{location_id}.json"
+    base_dir = (_health_root() / "data" / "rollups" / "locations").resolve()
+    target = (base_dir / f"{safe_location}.json").resolve()
+    if not target.is_relative_to(base_dir) or target == base_dir:
+        raise HTTPException(status_code=400, detail="invalid rollup location path")
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".json.tmp")
+    if not temporary.is_relative_to(base_dir):
+        raise HTTPException(status_code=400, detail="invalid rollup temporary path")
     temporary.write_bytes(body + (b"\n" if not body.endswith(b"\n") else b""))
     temporary.replace(target)
-    return {"status": "accepted", "location": location_id}
+    return {"status": "accepted", "location": safe_location}
 
 
 def _json_files(root: Path, limit: int = 100) -> List[Path]:
