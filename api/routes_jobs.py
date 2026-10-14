@@ -34,14 +34,16 @@ def _job_path(job_id: str) -> Optional[str]:
     if not safe:
         return None
     base_dir = os.path.abspath(JOBS_DIR)
-    fullpath = os.path.normpath(os.path.join(base_dir, f"{safe}.json"))
+    safe_filename = os.path.basename(f"{safe}.json")
+    fullpath = os.path.normpath(os.path.join(base_dir, safe_filename))
     if not fullpath.startswith(base_dir + os.sep) and fullpath != base_dir:
         return None
     return fullpath
 
 def _read_job(job_id: str) -> Optional[dict]:
+    base_dir = os.path.abspath(JOBS_DIR)
     path = _job_path(job_id)
-    if not path or not os.path.exists(path):
+    if not path or not path.startswith(base_dir + os.sep) or not os.path.exists(path):
         return None
     with _jobs_fs_lock:
         with open(path, "r", encoding="utf-8") as f:
@@ -49,10 +51,13 @@ def _read_job(job_id: str) -> Optional[dict]:
 
 def _write_job(job: dict) -> None:
     job_id = job.get("id", "")
+    base_dir = os.path.abspath(JOBS_DIR)
     path = _job_path(job_id)
-    if not path:
+    if not path or not path.startswith(base_dir + os.sep):
         raise ValueError(f"Invalid job ID: {job_id}")
     tmp_path = path + ".tmp"
+    if not tmp_path.startswith(base_dir + os.sep):
+        raise ValueError(f"Invalid job ID: {job_id}")
     with _jobs_fs_lock:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(job, f, ensure_ascii=False, indent=2)

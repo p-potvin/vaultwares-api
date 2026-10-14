@@ -2,6 +2,7 @@
 Regression tests for path injection vulnerability protections across api routers.
 Proves correctness, persistence, and state roundtrip under real conditions.
 """
+import asyncio
 import hmac
 import hashlib
 import json
@@ -14,6 +15,7 @@ from fastapi.testclient import TestClient
 from api.routes_jobs import _job_path, _read_job, _write_job
 from api.routes_media import api_open_downloaded, OpenPayload
 from app.routers.promking.media.storage import sanitize_video_id, get_video_media_dir, get_media_file_path
+from app.routers.promking.media.generator import generate_sprite_sheet
 from app.routers.promking.media.routes import router as promking_media_router
 from app.routers.monitor import router as monitor_router
 
@@ -62,21 +64,39 @@ def test_open_downloaded_path_traversal(tmp_path, monkeypatch):
     dest_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr("api.routes_media.ZIPPER_DEST_DIR", str(dest_dir))
     
+    popen_calls = []
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: popen_calls.append(args[0]))
+    
     # Write a real downloaded file
     real_file = dest_dir / "sample.mp4"
     real_file.write_bytes(b"test-mp4-data")
     
-    # Valid filename succeeds
+    # 1. Valid filename succeeds
     res_valid = api_open_downloaded(OpenPayload(filename="sample.mp4"))
     assert res_valid["status"] == "success"
     assert "sample.mp4" in res_valid["message"]
+    assert any("sample.mp4" in str(call) for call in popen_calls)
     
-    # Path traversal attempt outside destination folder is constrained safely
+    # 2. Valid nested relative file in subfolder succeeds
+    subfolder = dest_dir / "sub"
+    subfolder.mkdir(parents=True, exist_ok=True)
+    nested_file = subfolder / "nested.mp4"
+    nested_file.write_bytes(b"nested-mp4-data")
+    res_nested = api_open_downloaded(OpenPayload(path="sub/nested.mp4"))
+    assert res_nested["status"] == "success"
+    assert "nested.mp4" in res_nested["message"]
+    assert any("nested.mp4" in str(call) for call in popen_calls)
+    
+    # 3. Path traversal attempt outside destination folder is rejected
     payload_traversal = OpenPayload(path="../../windows/system32/cmd.exe")
     res = api_open_downloaded(payload_traversal)
-    # The basename 'cmd.exe' does not exist in dest_dir, so it safely opens destination folder without escaping
-    assert res["status"] == "success"
-    assert "downloaded folder" in res["message"]
+    assert res["status"] == "error"
+    assert "Invalid target path" in res["message"]
+    
+    # 4. Folder open succeeds
+    res_folder = api_open_downloaded(OpenPayload(folder=True))
+    assert res_folder["status"] == "success"
+    assert "downloaded folder" in res_folder["message"]
 
 
 def test_promking_storage_video_id_sanitization(tmp_path, monkeypatch):
@@ -183,3 +203,26 @@ def test_monitor_probe_rollup_persistence_and_traversal(tmp_path, monkeypatch):
     res_traversal = client.post("/monitor/probe-rollups/..%2f..%2fdangerous", content=body_bytes, headers=headers)
     assert res_traversal.status_code in (404, 400)
     assert not (tmp_path / "dangerous.json").exists()
+
+
+def test_promking_generate_sprite_sheet_metadata_on_invalid_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("PROMKING_MEDIA_DIR", str(tmp_path))
+    # Negative video_id fails sanitize_video_id check, must return meta safely without UnboundLocalError
+    sprite_url, sprite_vtt_url, meta = asyncio.run(
+        generate_sprite_sheet(
+            video_id=-999,
+            video_url="http://example.com/test.mp4",
+            duration=60.0,
+            tile_count=12,
+            tiles_per_row=4,
+            tile_width=120,
+            tile_height=80,
+        )
+    )
+    assert sprite_url is None
+    assert sprite_vtt_url is None
+    assert isinstance(meta, dict)
+    assert meta["tile_width"] == 120
+    assert meta["tile_height"] == 80
+    assert meta["tile_count"] == 12
+    assert meta["tiles_per_row"] == 4

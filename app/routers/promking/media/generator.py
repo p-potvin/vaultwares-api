@@ -285,6 +285,14 @@ async def generate_sprite_sheet(
     Also produces a WebVTT file with frame time cues for timeline scrubbing.
     Returns: (sprite_url, sprite_vtt_url, metadata_dict).
     """
+    meta = {
+        "tile_width": tile_width,
+        "tile_height": tile_height,
+        "tile_count": tile_count,
+        "tiles_per_row": tiles_per_row,
+        "interval_seconds": 0.0,
+    }
+
     try:
         v_dir = get_video_media_dir(video_id)
         sprite_file = (v_dir / "sprite.jpg").resolve()
@@ -293,14 +301,6 @@ async def generate_sprite_sheet(
             return None, None, meta
     except ValueError:
         return None, None, meta
-
-    meta = {
-        "tile_width": tile_width,
-        "tile_height": tile_height,
-        "tile_count": tile_count,
-        "tiles_per_row": tiles_per_row,
-        "interval_seconds": 0.0,
-    }
 
     if duration <= 0:
         duration = 180.0
