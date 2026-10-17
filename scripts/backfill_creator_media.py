@@ -27,7 +27,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
-logger = logging.getLogger("backfill_onlyfans_media")
+logger = logging.getLogger("backfill_creator_media")
 
 
 async def backfill_onlyfans_videos(concurrency: int = 2, force: bool = False):

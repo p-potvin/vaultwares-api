@@ -1,5 +1,5 @@
 """
-Unit tests for Prom-King OnlyFans Media Processing and Storage.
+Unit tests for Prom-King Creator Media Processing and Storage.
 """
 import pytest
 from pathlib import Path
