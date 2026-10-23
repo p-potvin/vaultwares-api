@@ -936,6 +936,18 @@ async def merge_single_cluster(
         """,
         found_ids, primary_id,
     )
+    await conn.execute(
+        """
+        DELETE FROM short_links s1
+        USING short_links s2
+        WHERE s1.video_id = ANY($1::int[])
+          AND s2.video_id = ANY($1::int[])
+          AND s1.site = s2.site
+          AND s1.provider = s2.provider
+          AND s1.id > s2.id
+        """,
+        found_ids,
+    )
     await conn.execute("UPDATE short_links SET video_id = $1 WHERE video_id = ANY($2::int[])", primary_id, found_ids)
 
     # Transfer Favourites (preventing collision on user_id/anon_id)
@@ -948,10 +960,34 @@ async def merge_single_cluster(
     )
     await conn.execute(
         """
+        DELETE FROM favourites f1
+        USING favourites f2
+        WHERE f1.video_id = ANY($1::int[])
+          AND f2.video_id = ANY($1::int[])
+          AND f1.user_id IS NOT NULL
+          AND f1.user_id = f2.user_id
+          AND f1.id > f2.id
+        """,
+        found_ids,
+    )
+    await conn.execute(
+        """
         DELETE FROM favourites WHERE video_id = ANY($1::int[])
           AND anon_id IS NOT NULL AND anon_id IN (SELECT anon_id FROM favourites WHERE video_id = $2 AND anon_id IS NOT NULL)
         """,
         found_ids, primary_id,
+    )
+    await conn.execute(
+        """
+        DELETE FROM favourites f1
+        USING favourites f2
+        WHERE f1.video_id = ANY($1::int[])
+          AND f2.video_id = ANY($1::int[])
+          AND f1.anon_id IS NOT NULL
+          AND f1.anon_id = f2.anon_id
+          AND f1.id > f2.id
+        """,
+        found_ids,
     )
     await conn.execute("UPDATE favourites SET video_id = $1 WHERE video_id = ANY($2::int[])", primary_id, found_ids)
 
