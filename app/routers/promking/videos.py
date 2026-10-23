@@ -7,6 +7,7 @@ import asyncio
 import json
 import re
 import secrets
+import time
 from typing import Any
 from .db import get_pool
 
@@ -56,6 +57,8 @@ from ._models import (
     BatchChangeSourceRequest,
     BatchCountResponse,
     BatchError,
+    BatchMergeQueueRequest,
+    BatchMergeQueueResponse,
     BatchMetadataResponse,
     BatchMetadataUpdateRequest,
     BatchRemotePreviewsRequest,
@@ -63,6 +66,11 @@ from ._models import (
     BatchVideoIdsRequest,
     BatchVideoMergeRequest,
     BatchVideoMergeResponse,
+    DuplicateCandidateItem,
+    DuplicateClusterItem,
+    DuplicateQueueResponse,
+    MergeAllDuplicatesRequest,
+    MergeAllDuplicatesResponse,
     Site,
     TermRef,
     VideoDetail,
@@ -775,6 +783,579 @@ async def batch_merge_videos(payload: BatchVideoMergeRequest) -> BatchVideoMerge
         preview_url=preview_url,
         thumbnail_url=thumbnail_url,
         message=f"Merged {len(found_ids)} video(s) into #{primary_id} ({slug}).",
+    )
+
+
+def score_video_candidate(v: dict | Any) -> float:
+    """Deterministic score for choosing primary video in duplicate title cluster."""
+    score = 0.0
+    prev = (v.get("preview_url") or "").lower() if isinstance(v, dict) else (getattr(v, "preview_url", None) or "").lower()
+    if "/media/cache/" in prev or "/generator/" in prev:
+        score += 100000.0
+    elif prev.startswith("http://") or prev.startswith("https://") or prev.startswith("/"):
+        score += 10000.0
+
+    thumb = (v.get("thumbnail_url") or "").lower() if isinstance(v, dict) else (getattr(v, "thumbnail_url", None) or "").lower()
+    if thumb.startswith("http://") or thumb.startswith("https://") or thumb.startswith("/"):
+        score += 5000.0
+
+    qualities = v.get("qualities") if isinstance(v, dict) else getattr(v, "qualities", None)
+    if qualities:
+        score += 2000.0
+
+    dur = (v.get("duration_seconds") if isinstance(v, dict) else getattr(v, "duration_seconds", None)) or 0
+    if dur > 0:
+        score += 1000.0 + min(dur, 3600)
+
+    desc = v.get("description") if isinstance(v, dict) else getattr(v, "description", None)
+    if desc:
+        score += 500.0
+
+    views = (v.get("views") if isinstance(v, dict) else getattr(v, "views", None)) or 0
+    score += views
+
+    vid = (v.get("id") if isinstance(v, dict) else getattr(v, "id", None)) or 0
+    score += max(0, 1000000 - vid) / 10000.0
+    return score
+
+
+async def merge_single_cluster(
+    conn,
+    primary_row: dict | Any,
+    secondaries_rows: list[dict | Any],
+    preserve_audio_preview: bool = True,
+    prefer_secondary_thumbnail: bool = False,
+) -> tuple[int, list[int], int]:
+    primary_id = primary_row["id"]
+    found_ids = [s["id"] for s in secondaries_rows]
+    if not found_ids:
+        return primary_id, [], primary_row.get("views") or 0
+
+    total_views = (primary_row["views"] or 0) + sum(s["views"] or 0 for s in secondaries_rows)
+
+    def is_audio_preview(url: str | None) -> bool:
+        if not url:
+            return False
+        u = url.lower()
+        return "/media/cache/" in u or "/generator/" in u
+
+    preview_url = primary_row["preview_url"]
+    if preserve_audio_preview:
+        has_audio = is_audio_preview(preview_url)
+        if not has_audio:
+            for s in secondaries_rows:
+                if is_audio_preview(s["preview_url"]):
+                    preview_url = s["preview_url"]
+                    break
+            if not preview_url:
+                for s in secondaries_rows:
+                    if s["preview_url"]:
+                        preview_url = s["preview_url"]
+                        break
+    elif not preview_url:
+        for s in secondaries_rows:
+            if s["preview_url"]:
+                preview_url = s["preview_url"]
+                break
+
+    thumbnail_url = primary_row["thumbnail_url"]
+    if prefer_secondary_thumbnail or not thumbnail_url:
+        for s in secondaries_rows:
+            if s["thumbnail_url"]:
+                thumbnail_url = s["thumbnail_url"]
+                break
+
+    duration = primary_row["duration_seconds"]
+    if not duration:
+        for s in secondaries_rows:
+            if s["duration_seconds"]:
+                duration = s["duration_seconds"]
+                break
+
+    description = primary_row["description"]
+    if not description:
+        for s in secondaries_rows:
+            if s["description"]:
+                description = s["description"]
+                break
+
+    qualities = primary_row["qualities"]
+    if not qualities:
+        for s in secondaries_rows:
+            if s["qualities"]:
+                qualities = s["qualities"]
+                break
+
+    # Transfer Taxonomies
+    await conn.execute(
+        """
+        INSERT INTO video_pornstars (video_id, pornstar_id)
+        SELECT $1, pornstar_id FROM video_pornstars WHERE video_id = ANY($2::int[])
+        ON CONFLICT (video_id, pornstar_id) DO NOTHING
+        """,
+        primary_id, found_ids,
+    )
+    await conn.execute("DELETE FROM video_pornstars WHERE video_id = ANY($1::int[])", found_ids)
+
+    await conn.execute(
+        """
+        INSERT INTO video_studios (video_id, studio_id)
+        SELECT $1, studio_id FROM video_studios WHERE video_id = ANY($2::int[])
+        ON CONFLICT (video_id, studio_id) DO NOTHING
+        """,
+        primary_id, found_ids,
+    )
+    await conn.execute("DELETE FROM video_studios WHERE video_id = ANY($1::int[])", found_ids)
+
+    await conn.execute(
+        """
+        INSERT INTO video_categories (video_id, category_id)
+        SELECT $1, category_id FROM video_categories WHERE video_id = ANY($2::int[])
+        ON CONFLICT (video_id, category_id) DO NOTHING
+        """,
+        primary_id, found_ids,
+    )
+    await conn.execute("DELETE FROM video_categories WHERE video_id = ANY($1::int[])", found_ids)
+
+    # Transfer Sites
+    await conn.execute(
+        """
+        INSERT INTO video_sites (video_id, site)
+        SELECT $1, site FROM video_sites WHERE video_id = ANY($2::int[])
+        ON CONFLICT (video_id, site) DO NOTHING
+        """,
+        primary_id, found_ids,
+    )
+    await conn.execute("DELETE FROM video_sites WHERE video_id = ANY($1::int[])", found_ids)
+
+    # Transfer Short links (preventing unique constraint collision on (site, provider, video_id))
+    await conn.execute(
+        """
+        DELETE FROM short_links WHERE video_id = ANY($1::int[])
+          AND (site, provider) IN (SELECT site, provider FROM short_links WHERE video_id = $2)
+        """,
+        found_ids, primary_id,
+    )
+    await conn.execute("UPDATE short_links SET video_id = $1 WHERE video_id = ANY($2::int[])", primary_id, found_ids)
+
+    # Transfer Favourites (preventing collision on user_id/anon_id)
+    await conn.execute(
+        """
+        DELETE FROM favourites WHERE video_id = ANY($1::int[])
+          AND user_id IS NOT NULL AND user_id IN (SELECT user_id FROM favourites WHERE video_id = $2 AND user_id IS NOT NULL)
+        """,
+        found_ids, primary_id,
+    )
+    await conn.execute(
+        """
+        DELETE FROM favourites WHERE video_id = ANY($1::int[])
+          AND anon_id IS NOT NULL AND anon_id IN (SELECT anon_id FROM favourites WHERE video_id = $2 AND anon_id IS NOT NULL)
+        """,
+        found_ids, primary_id,
+    )
+    await conn.execute("UPDATE favourites SET video_id = $1 WHERE video_id = ANY($2::int[])", primary_id, found_ids)
+
+    # Update primary video
+    await conn.execute(
+        """
+        UPDATE videos
+           SET views = $2,
+               preview_url = $3,
+               thumbnail_url = $4,
+               duration_seconds = $5,
+               description = $6,
+               qualities = $7,
+               updated_at = now()
+         WHERE id = $1
+        """,
+        primary_id,
+        total_views,
+        preview_url,
+        thumbnail_url,
+        duration,
+        description,
+        qualities if isinstance(qualities, str) or qualities is None else json.dumps(qualities),
+    )
+
+    # Soft-disable secondaries
+    await conn.execute(
+        """
+        UPDATE videos
+           SET disabled_at = now(),
+               updated_at = now()
+         WHERE id = ANY($1::int[])
+        """,
+        found_ids,
+    )
+
+    return primary_id, found_ids, total_views
+
+
+@router.get("/duplicates/queue", response_model=DuplicateQueueResponse)
+async def get_duplicates_queue(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    search: str | None = Query(None),
+    min_count: int = Query(2, ge=2),
+) -> DuplicateQueueResponse:
+    """Queue of active videos grouped by normalized identical titles for review and merging."""
+    pool = await get_pool()
+    search_term = f"%{search.strip().lower()}%" if search and search.strip() else None
+
+    async with pool.acquire() as conn:
+        if search_term:
+            count_row = await conn.fetchrow(
+                """
+                SELECT count(*) as total_clusters,
+                       COALESCE(sum(cnt), 0) as total_duplicate_videos
+                  FROM (
+                    SELECT lower(trim(title)) as norm_title, count(*) as cnt
+                      FROM videos
+                     WHERE disabled_at IS NULL
+                       AND (lower(title) LIKE $1 OR lower(slug) LIKE $1)
+                     GROUP BY lower(trim(title))
+                    HAVING count(*) >= $2
+                  ) t
+                """,
+                search_term,
+                min_count,
+            )
+            cluster_rows = await conn.fetch(
+                """
+                SELECT lower(trim(title)) as norm_title,
+                       count(*) as cnt,
+                       array_agg(id ORDER BY id ASC) as ids
+                  FROM videos
+                 WHERE disabled_at IS NULL
+                   AND (lower(title) LIKE $1 OR lower(slug) LIKE $1)
+                 GROUP BY lower(trim(title))
+                HAVING count(*) >= $2
+                 ORDER BY count(*) DESC, lower(trim(title)) ASC
+                 LIMIT $3 OFFSET $4
+                """,
+                search_term,
+                min_count,
+                limit,
+                offset,
+            )
+        else:
+            count_row = await conn.fetchrow(
+                """
+                SELECT count(*) as total_clusters,
+                       COALESCE(sum(cnt), 0) as total_duplicate_videos
+                  FROM (
+                    SELECT lower(trim(title)) as norm_title, count(*) as cnt
+                      FROM videos
+                     WHERE disabled_at IS NULL
+                     GROUP BY lower(trim(title))
+                    HAVING count(*) >= $1
+                  ) t
+                """,
+                min_count,
+            )
+            cluster_rows = await conn.fetch(
+                """
+                SELECT lower(trim(title)) as norm_title,
+                       count(*) as cnt,
+                       array_agg(id ORDER BY id ASC) as ids
+                  FROM videos
+                 WHERE disabled_at IS NULL
+                 GROUP BY lower(trim(title))
+                HAVING count(*) >= $1
+                 ORDER BY count(*) DESC, lower(trim(title)) ASC
+                 LIMIT $2 OFFSET $3
+                """,
+                min_count,
+                limit,
+                offset,
+            )
+
+        total_clusters = int(count_row["total_clusters"] if count_row else 0)
+        total_duplicate_videos = int(count_row["total_duplicate_videos"] if count_row else 0)
+        redundant_count = max(0, total_duplicate_videos - total_clusters)
+
+        all_ids = [vid for c in cluster_rows for vid in c["ids"]]
+        videos_by_id = {}
+        if all_ids:
+            v_rows = await conn.fetch(
+                """
+                SELECT id, title, slug, thumbnail_url, preview_url, duration_seconds,
+                       views, qualities, description, source, source_url
+                  FROM videos
+                 WHERE id = ANY($1::int[])
+                """,
+                all_ids,
+            )
+            videos_by_id = {row["id"]: row for row in v_rows}
+
+        clusters_result: list[DuplicateClusterItem] = []
+        for c in cluster_rows:
+            v_list = [videos_by_id[vid] for vid in c["ids"] if vid in videos_by_id]
+            if len(v_list) < 2:
+                continue
+
+            scored_candidates = sorted(v_list, key=score_video_candidate, reverse=True)
+            primary_v = scored_candidates[0]
+            secondaries_v = scored_candidates[1:]
+
+            primary_item = DuplicateCandidateItem(
+                id=primary_v["id"],
+                title=primary_v["title"],
+                slug=primary_v["slug"],
+                source=primary_v["source"],
+                views=primary_v["views"] or 0,
+                duration_seconds=primary_v["duration_seconds"],
+                preview_url=primary_v["preview_url"],
+                thumbnail_url=primary_v["thumbnail_url"],
+                qualities=primary_v["qualities"],
+                score=score_video_candidate(primary_v),
+            )
+
+            secondaries_items = [
+                DuplicateCandidateItem(
+                    id=s["id"],
+                    title=s["title"],
+                    slug=s["slug"],
+                    source=s["source"],
+                    views=s["views"] or 0,
+                    duration_seconds=s["duration_seconds"],
+                    preview_url=s["preview_url"],
+                    thumbnail_url=s["thumbnail_url"],
+                    qualities=s["qualities"],
+                    score=score_video_candidate(s),
+                )
+                for s in secondaries_v
+            ]
+
+            total_views = (primary_v["views"] or 0) + sum(s["views"] or 0 for s in secondaries_v)
+            clusters_result.append(
+                DuplicateClusterItem(
+                    title=primary_v["title"],
+                    norm_title=c["norm_title"],
+                    count=len(v_list),
+                    primary=primary_item,
+                    secondaries=secondaries_items,
+                    total_views=total_views,
+                )
+            )
+
+        return DuplicateQueueResponse(
+            total_clusters=total_clusters,
+            total_duplicate_videos=total_duplicate_videos,
+            redundant_count=redundant_count,
+            clusters=clusters_result,
+        )
+
+
+@router.post("/duplicates/merge-batch", response_model=BatchMergeQueueResponse)
+async def batch_merge_duplicates_queue(payload: BatchMergeQueueRequest) -> BatchMergeQueueResponse:
+    """Merges a batch of duplicate title clusters automatically."""
+    pool = await get_pool()
+    search_term = f"%{payload.search.strip().lower()}%" if payload.search and payload.search.strip() else None
+
+    async with pool.acquire() as conn:
+        if search_term:
+            cluster_rows = await conn.fetch(
+                """
+                SELECT lower(trim(title)) as norm_title,
+                       count(*) as cnt,
+                       array_agg(id ORDER BY id ASC) as ids
+                  FROM videos
+                 WHERE disabled_at IS NULL
+                   AND (lower(title) LIKE $1 OR lower(slug) LIKE $1)
+                 GROUP BY lower(trim(title))
+                HAVING count(*) >= 2
+                 ORDER BY count(*) DESC, lower(trim(title)) ASC
+                 LIMIT $2
+                """,
+                search_term,
+                payload.batch_size,
+            )
+        else:
+            cluster_rows = await conn.fetch(
+                """
+                SELECT lower(trim(title)) as norm_title,
+                       count(*) as cnt,
+                       array_agg(id ORDER BY id ASC) as ids
+                  FROM videos
+                 WHERE disabled_at IS NULL
+                 GROUP BY lower(trim(title))
+                HAVING count(*) >= 2
+                 ORDER BY count(*) DESC, lower(trim(title)) ASC
+                 LIMIT $1
+                """,
+                payload.batch_size,
+            )
+
+        if not cluster_rows:
+            return BatchMergeQueueResponse(
+                processed_clusters=0,
+                merged_secondaries_count=0,
+                remaining_clusters=0,
+                remaining_duplicate_videos=0,
+                message="No duplicate clusters found.",
+            )
+
+        processed_clusters = 0
+        merged_secondaries_count = 0
+
+        async with conn.transaction():
+            for c in cluster_rows:
+                ids = c["ids"]
+                v_rows = await conn.fetch(
+                    """
+                    SELECT id, title, slug, thumbnail_url, preview_url, duration_seconds,
+                           views, qualities, description, source, source_url
+                      FROM videos
+                     WHERE id = ANY($1::int[]) AND disabled_at IS NULL
+                    """,
+                    ids,
+                )
+                if len(v_rows) < 2:
+                    continue
+
+                scored = sorted(v_rows, key=score_video_candidate, reverse=True)
+                primary = scored[0]
+                secondaries = scored[1:]
+
+                await merge_single_cluster(
+                    conn,
+                    primary,
+                    secondaries,
+                    preserve_audio_preview=payload.preserve_audio_preview,
+                    prefer_secondary_thumbnail=payload.prefer_secondary_thumbnail,
+                )
+                processed_clusters += 1
+                merged_secondaries_count += len(secondaries)
+
+            if payload.dry_run:
+                raise HTTPException(
+                    status_code=200,
+                    detail=f"Dry run simulated {processed_clusters} clusters ({merged_secondaries_count} secondaries). No changes committed.",
+                )
+
+        rem_row = await conn.fetchrow(
+            """
+            SELECT count(*) as rem_clusters, COALESCE(sum(cnt), 0) as rem_videos
+              FROM (
+                SELECT lower(trim(title)), count(*) as cnt
+                  FROM videos
+                 WHERE disabled_at IS NULL
+                 GROUP BY lower(trim(title))
+                HAVING count(*) >= 2
+              ) t
+            """
+        )
+        rem_clusters = int(rem_row["rem_clusters"] if rem_row else 0)
+        rem_videos = int(rem_row["rem_videos"] if rem_row else 0)
+
+        return BatchMergeQueueResponse(
+            processed_clusters=processed_clusters,
+            merged_secondaries_count=merged_secondaries_count,
+            remaining_clusters=rem_clusters,
+            remaining_duplicate_videos=rem_videos,
+            message=f"Successfully merged {processed_clusters} duplicate clusters ({merged_secondaries_count} duplicate videos disabled).",
+        )
+
+
+@router.post("/duplicates/merge-all", response_model=MergeAllDuplicatesResponse)
+async def merge_all_duplicates(payload: MergeAllDuplicatesRequest) -> MergeAllDuplicatesResponse:
+    """Iteratively merges all duplicate clusters across the entire database until resolved."""
+    pool = await get_pool()
+    start_time = time.time()
+    total_processed = 0
+    total_secondaries = 0
+
+    batch_size = payload.batch_size
+    max_clusters = payload.max_clusters
+
+    while total_processed < max_clusters:
+        async with pool.acquire() as conn:
+            cluster_rows = await conn.fetch(
+                """
+                SELECT lower(trim(title)) as norm_title,
+                       count(*) as cnt,
+                       array_agg(id ORDER BY id ASC) as ids
+                  FROM videos
+                 WHERE disabled_at IS NULL
+                 GROUP BY lower(trim(title))
+                HAVING count(*) >= 2
+                 ORDER BY count(*) DESC, lower(trim(title)) ASC
+                 LIMIT $1
+                """,
+                batch_size,
+            )
+
+            if not cluster_rows:
+                break
+
+            batch_processed = 0
+            batch_secondaries = 0
+
+            async with conn.transaction():
+                for c in cluster_rows:
+                    ids = c["ids"]
+                    v_rows = await conn.fetch(
+                        """
+                        SELECT id, title, slug, thumbnail_url, preview_url, duration_seconds,
+                               views, qualities, description, source, source_url
+                          FROM videos
+                         WHERE id = ANY($1::int[]) AND disabled_at IS NULL
+                        """,
+                        ids,
+                    )
+                    if len(v_rows) < 2:
+                        continue
+
+                    scored = sorted(v_rows, key=score_video_candidate, reverse=True)
+                    primary = scored[0]
+                    secondaries = scored[1:]
+
+                    await merge_single_cluster(
+                        conn,
+                        primary,
+                        secondaries,
+                        preserve_audio_preview=payload.preserve_audio_preview,
+                        prefer_secondary_thumbnail=payload.prefer_secondary_thumbnail,
+                    )
+                    batch_processed += 1
+                    batch_secondaries += len(secondaries)
+
+                if payload.dry_run:
+                    duration = round(time.time() - start_time, 2)
+                    return MergeAllDuplicatesResponse(
+                        total_processed_clusters=batch_processed,
+                        total_merged_secondaries=batch_secondaries,
+                        remaining_clusters=0,
+                        duration_seconds=duration,
+                        message=f"Dry run complete: {batch_processed} clusters would be merged ({batch_secondaries} duplicate videos disabled).",
+                    )
+
+            total_processed += batch_processed
+            total_secondaries += batch_secondaries
+
+            if batch_processed == 0:
+                break
+
+    duration = round(time.time() - start_time, 2)
+    async with pool.acquire() as conn:
+        rem_clusters = await conn.fetchval(
+            """
+            SELECT count(*) FROM (
+                SELECT lower(trim(title)) FROM videos
+                WHERE disabled_at IS NULL
+                GROUP BY lower(trim(title))
+                HAVING count(*) >= 2
+            ) t
+            """
+        ) or 0
+
+    return MergeAllDuplicatesResponse(
+        total_processed_clusters=total_processed,
+        total_merged_secondaries=total_secondaries,
+        remaining_clusters=int(rem_clusters),
+        duration_seconds=duration,
+        message=f"Merge complete in {duration}s: merged {total_processed} clusters, {total_secondaries} duplicate videos safely disabled.",
     )
 
 

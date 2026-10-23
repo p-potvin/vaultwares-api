@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -94,6 +94,67 @@ class BatchVideoMergeResponse(BaseModel):
     transferred_categories: int = 0
     preview_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
+    message: str
+
+
+class DuplicateCandidateItem(BaseModel):
+    id: int
+    title: str
+    slug: str
+    source: Optional[str] = None
+    views: int = 0
+    duration_seconds: Optional[int] = None
+    preview_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    qualities: Optional[Any] = None
+    score: float = 0.0
+
+
+class DuplicateClusterItem(BaseModel):
+    title: str
+    norm_title: str
+    count: int
+    primary: DuplicateCandidateItem
+    secondaries: list[DuplicateCandidateItem]
+    total_views: int
+
+
+class DuplicateQueueResponse(BaseModel):
+    total_clusters: int
+    total_duplicate_videos: int
+    redundant_count: int
+    clusters: list[DuplicateClusterItem]
+
+
+class BatchMergeQueueRequest(BaseModel):
+    batch_size: int = Field(default=100, ge=1, le=1000)
+    preserve_audio_preview: bool = True
+    prefer_secondary_thumbnail: bool = False
+    search: Optional[str] = None
+    dry_run: bool = False
+
+
+class BatchMergeQueueResponse(BaseModel):
+    processed_clusters: int
+    merged_secondaries_count: int
+    remaining_clusters: int
+    remaining_duplicate_videos: int
+    message: str
+
+
+class MergeAllDuplicatesRequest(BaseModel):
+    batch_size: int = Field(default=250, ge=10, le=1000)
+    max_clusters: int = Field(default=15000, ge=1, le=50000)
+    preserve_audio_preview: bool = True
+    prefer_secondary_thumbnail: bool = False
+    dry_run: bool = False
+
+
+class MergeAllDuplicatesResponse(BaseModel):
+    total_processed_clusters: int
+    total_merged_secondaries: int
+    remaining_clusters: int
+    duration_seconds: float
     message: str
 
 
