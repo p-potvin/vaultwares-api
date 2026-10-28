@@ -56,8 +56,8 @@ async def get_pool() -> asyncpg.Pool:
             dsn = "postgres://" + dsn[len("postgresql://"):]
         _pool = await asyncpg.create_pool(
             dsn=dsn,
-            min_size=1,
-            max_size=10,
+            min_size=2,
+            max_size=20,
             init=_register_json_codecs,
         )
     return _pool
