@@ -375,6 +375,8 @@ def build_video_filters(
             where.append("(videos.duration_seconds IS NULL OR videos.duration_seconds = 0)")
         elif health == "missing_description":
             where.append("(videos.description IS NULL OR videos.description = '')")
+        elif health == "failed_preview":
+            where.append("videos.preview_failed = true")
         elif health == "tpdb_matched":
             where.append("EXISTS (SELECT 1 FROM tpdb_scenes ts WHERE ts.video_id = videos.id)")
         elif health == "tpdb_unmatched":

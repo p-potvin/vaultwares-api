@@ -349,6 +349,7 @@ class CatalogHealth(BaseModel):
     missing_thumbnail: int
     missing_duration: int
     missing_description: int
+    failed_preview: int = 0
 
 
 class FetchActivity(BaseModel):

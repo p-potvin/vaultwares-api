@@ -138,6 +138,7 @@ async def stats(
                   COUNT(*) FILTER (WHERE v.thumbnail_url IS NULL OR v.thumbnail_url = '')::bigint AS health_missing_thumbnail,
                   COUNT(*) FILTER (WHERE v.duration_seconds IS NULL OR v.duration_seconds = 0)::bigint AS health_missing_duration,
                   COUNT(*) FILTER (WHERE v.description IS NULL OR v.description = '')::bigint AS health_missing_description,
+                  COUNT(*) FILTER (WHERE v.preview_failed = true)::bigint AS health_failed_preview,
                   -- catalog growth
                   COUNT(*) FILTER (WHERE v.created_at >= NOW() - INTERVAL '1 day')::bigint AS growth_added_24h,
                   COUNT(*) FILTER (WHERE v.created_at >= NOW() - INTERVAL '7 days')::bigint AS growth_added_7d,
@@ -366,6 +367,7 @@ async def stats(
         missing_thumbnail=int(metrics_row["health_missing_thumbnail"] or 0),
         missing_duration=int(metrics_row["health_missing_duration"] or 0),
         missing_description=int(metrics_row["health_missing_description"] or 0),
+        failed_preview=int(metrics_row["health_failed_preview"] or 0),
     )
     fetch_activity_7d = FetchActivity(
         window_days=7,

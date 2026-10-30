@@ -118,7 +118,7 @@ async def _create_fetch_run_state(
             """,
             site,
             source,
-            json.dumps({"query": term_name or term_slug or ""}),
+            {"query": term_name or term_slug or ""},
         )
     state.db_run_id = int(row["id"])
     async with _runs_lock:
@@ -200,6 +200,25 @@ async def run_fetcher(req: FetchRunRequest, bg: BackgroundTasks) -> FetchRunHand
         pages=req.pages,
         started_at=started_at,
     )
+
+
+@router.post("/cancel/{run_id}")
+async def cancel_run(run_id: str) -> dict:
+    """Terminate the active fetcher subprocess for run_id and mark the run finished."""
+    async with _runs_lock:
+        state = _runs.get(run_id)
+    if state is None:
+        return {"ok": False, "message": "run not found"}
+    if state.finished:
+        return {"ok": True, "message": "run already finished"}
+    state.error = "Cancelled by operator"
+    if state.process and state.process.returncode is None:
+        try:
+            state.process.terminate()
+        except Exception:
+            pass
+    await _finalize_run(state)
+    return {"ok": True}
 
 
 # ─── GET /fetcher/stream/{run_id} ──────────────────────────────────────────
