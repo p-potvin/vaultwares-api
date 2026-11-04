@@ -94,6 +94,7 @@ _METADATA_COLUMNS = {
     "views": "views",
     "description": "description",
     "qualities": "qualities",
+    "preview_failed": "preview_failed",
 }
 
 

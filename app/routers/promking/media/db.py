@@ -111,6 +111,7 @@ async def sync_video_media_urls(
         updates.append(f"preview_url = ${idx}")
         params.append(preview_url)
         idx += 1
+        updates.append("preview_failed = false")
 
     if duration_seconds and duration_seconds > 0:
         updates.append(f"duration_seconds = COALESCE(duration_seconds, ${idx})")
