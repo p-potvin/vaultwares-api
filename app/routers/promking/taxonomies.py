@@ -15,6 +15,7 @@ from PIL import Image
 
 import asyncpg
 from .db import get_pool
+from .taxonomy.fuzzy_queue import compute_fuzzy_replace_queue
 from ._models import (
     BatchTaxonomyDeleteRequest,
     BatchTaxonomyDeleteResponse,
@@ -26,8 +27,11 @@ from ._models import (
     BatchTaxonomyMergeRequest,
     BatchTaxonomyMergeResponse,
     BatchTaxonomyRenameRequest,
+    BatchTaxonomyReplaceRequest,
+    BatchTaxonomyReplaceResponse,
     BatchTaxonomySlugUpdateRequest,
     BatchTaxonomyUpdateResponse,
+    FuzzyReplaceQueueResponse,
     Site,
     TaxonomyConflict,
     TaxonomyKind,
@@ -413,6 +417,56 @@ async def count_terms(
     return {"total": int(total or 0)}
 
 
+@router.get("/{kind}/fuzzy-queue", response_model=FuzzyReplaceQueueResponse)
+async def get_fuzzy_replace_queue(
+    kind: TaxonomyKind = Path(...),
+    tier: str = Query("all", description="Filter by tier: 'all', '2b', '3', '4a', '4b'"),
+    gender_compatible_only: bool = Query(True),
+    multi_video_targets_only: bool = Query(False),
+    search: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> FuzzyReplaceQueueResponse:
+    """List candidate 1-video replacement pairs across fuzzy tiers 2b, 3, 4a, and 4b."""
+    if kind != "pornstars":
+        raise HTTPException(status_code=400, detail="fuzzy-queue is only supported for pornstars")
+    if tier not in ("all", "2b", "3", "4a", "4b"):
+        raise HTTPException(status_code=422, detail="tier must be one of: all, 2b, 3, 4a, 4b")
+
+    config = get_table_config(kind)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT p.id,
+                   p.name,
+                   p.slug,
+                   p.gender::text AS gender,
+                   p.image_url,
+                   p.disabled,
+                   p.undesirable,
+                   COUNT(vp.video_id)::int AS video_count
+            FROM {config.table} p
+            LEFT JOIN {config.join_table} vp ON vp.{config.term_column} = p.id
+            WHERE p.deleted_at IS NULL
+            GROUP BY p.id
+            ORDER BY video_count DESC, p.id ASC
+            """
+        )
+
+    result = await run_in_threadpool(
+        compute_fuzzy_replace_queue,
+        [dict(r) for r in rows],
+        tier=tier,
+        gender_compatible_only=gender_compatible_only,
+        multi_video_targets_only=multi_video_targets_only,
+        search=search,
+        limit=limit,
+        offset=offset,
+    )
+    return FuzzyReplaceQueueResponse(**result)
+
+
 @router.post("/{kind}", response_model=TermRef, status_code=201)
 async def create_term(
     kind: WriteTaxonomyKind = Path(...),
@@ -607,6 +661,100 @@ async def batch_merge_terms(
     return BatchTaxonomyMergeResponse(
         merged_count=len(deleted_rows),
         video_recount=int(video_recount or 0),
+    )
+
+
+@router.post("/{kind}/batch/replace", response_model=BatchTaxonomyReplaceResponse)
+async def batch_replace_terms(
+    payload: BatchTaxonomyReplaceRequest,
+    kind: WriteTaxonomyKind = Path(...),
+) -> BatchTaxonomyReplaceResponse:
+    """
+    Replace source terms with one or more target terms and hard-delete the source rows.
+    Unlike merge, this leaves no deleted_at/merged_into_id tombstone so future scrapes
+    can recreate a term if a replacement turns out to be a false positive.
+    """
+    config = get_table_config(kind)
+    replaced_count = 0
+    video_recount = 0
+    errors: list[TaxonomyConflict] = []
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for pair in payload.pairs:
+                raw_targets = list(pair.target_ids) if pair.target_ids else (
+                    [pair.target_id] if pair.target_id is not None else []
+                )
+                targets: list[int] = []
+                for tid in raw_targets:
+                    if tid != pair.source_id and tid not in targets:
+                        targets.append(tid)
+
+                if not targets:
+                    errors.append(TaxonomyConflict(term_id=pair.source_id, reason="no valid target_id supplied"))
+                    continue
+
+                source_row = await conn.fetchrow(
+                    f"SELECT id FROM {config.table} WHERE id = $1 AND deleted_at IS NULL",
+                    pair.source_id,
+                )
+                if not source_row:
+                    errors.append(TaxonomyConflict(term_id=pair.source_id, reason="source term not found"))
+                    continue
+
+                target_rows = await conn.fetch(
+                    f"SELECT id, undesirable FROM {config.table} WHERE id = ANY($1::int[]) AND deleted_at IS NULL",
+                    targets,
+                )
+                found_targets = {int(r["id"]): bool(r.get("undesirable")) for r in target_rows}
+                missing = [tid for tid in targets if tid not in found_targets]
+                if missing:
+                    errors.append(TaxonomyConflict(term_id=pair.source_id, reason=f"target term(s) not found: {missing}"))
+                    continue
+                if any(found_targets[tid] for tid in targets):
+                    errors.append(TaxonomyConflict(term_id=pair.source_id, reason="Cannot replace into an undesirable term."))
+                    continue
+
+                pair_videos = await conn.fetchval(
+                    f"SELECT COUNT(DISTINCT video_id) FROM {config.join_table} WHERE {config.term_column} = $1",
+                    pair.source_id,
+                )
+                video_recount += int(pair_videos or 0)
+
+                await conn.execute(
+                    f"""
+                    INSERT INTO {config.join_table} (video_id, {config.term_column})
+                    SELECT vp.video_id, t_id
+                    FROM {config.join_table} vp
+                    CROSS JOIN unnest($2::int[]) AS t_id
+                    WHERE vp.{config.term_column} = $1
+                    ON CONFLICT DO NOTHING
+                    """,
+                    pair.source_id,
+                    targets,
+                )
+                await conn.execute(
+                    f"DELETE FROM {config.join_table} WHERE {config.term_column} = $1",
+                    pair.source_id,
+                )
+                await conn.execute(
+                    f"UPDATE {config.table} SET merged_into_id = $2 WHERE merged_into_id = $1",
+                    pair.source_id,
+                    targets[0],
+                )
+                await conn.execute(
+                    f"DELETE FROM {config.table} WHERE id = $1",
+                    pair.source_id,
+                )
+                replaced_count += 1
+
+    if replaced_count > 0:
+        _hot_terms_cache.clear()
+    return BatchTaxonomyReplaceResponse(
+        replaced_count=replaced_count,
+        video_recount=video_recount,
+        errors=errors,
     )
 
 

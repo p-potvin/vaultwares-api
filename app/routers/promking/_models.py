@@ -459,5 +459,43 @@ class PostbackRequest(BaseModel):
 
 class QueryRequest(BaseModel):
     sql: str
+class FuzzyReplaceCandidateTerm(BaseModel):
+    id: int
+    name: str
+    slug: str
+    gender: Optional[str] = None
+    image_url: Optional[str] = None
+    video_count: int = 0
+    disabled: bool = False
+    undesirable: bool = False
 
 
+class FuzzyReplaceItem(BaseModel):
+    source: FuzzyReplaceCandidateTerm
+    target: FuzzyReplaceCandidateTerm
+    tier: str
+    reason: str
+    similarity: float = 1.0
+    gender_compatible: bool = True
+
+
+class FuzzyReplaceQueueResponse(BaseModel):
+    total: int
+    counts_by_tier: dict[str, int] = Field(default_factory=dict)
+    items: list[FuzzyReplaceItem] = Field(default_factory=list)
+
+
+class BatchTaxonomyReplacePair(BaseModel):
+    source_id: int
+    target_id: Optional[int] = None
+    target_ids: list[int] = Field(default_factory=list)
+
+
+class BatchTaxonomyReplaceRequest(BaseModel):
+    pairs: list[BatchTaxonomyReplacePair] = Field(min_length=1)
+
+
+class BatchTaxonomyReplaceResponse(BaseModel):
+    replaced_count: int
+    video_recount: int
+    errors: list[TaxonomyConflict] = Field(default_factory=list)
