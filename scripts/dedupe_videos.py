@@ -199,9 +199,9 @@ async def run_deduplication(execute: bool = False):
                     dup_id,
                 )
 
-                # 6. Merge tpdb_scenes
+                # 6. Merge vault_raggae_scenes
                 await conn.execute(
-                    "UPDATE tpdb_scenes SET video_id = $1 WHERE video_id = $2",
+                    "UPDATE vault_raggae_scenes SET video_id = $1 WHERE video_id = $2",
                     base_id,
                     dup_id,
                 )

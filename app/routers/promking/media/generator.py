@@ -11,6 +11,7 @@ import logging
 import math
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 from .storage import get_video_media_dir, get_media_url
@@ -183,9 +184,13 @@ async def generate_animated_preview(
             "-t", f"{capture_duration:.2f}",
             "-i", video_url,
         ])
-        filter_parts.append(f"[{i}:v]scale=320:-2,setsar=1,fps=30[v{i}]")
+        filter_parts.append(
+            f"[{i}:v]scale=320:-2,setsar=1,fps=30,trim=duration={capture_duration:.2f},setpts=PTS-STARTPTS[v{i}]"
+        )
         if audio_available:
-            filter_parts.append(f"[{i}:a]volume={volume},aformat=sample_rates=44100:channel_layouts=stereo[a{i}]")
+            filter_parts.append(
+                f"[{i}:a]atrim=duration={capture_duration:.2f},asetpts=PTS-STARTPTS,volume={volume},aformat=sample_rates=44100:channel_layouts=stereo[a{i}]"
+            )
             concat_str += f"[v{i}][a{i}]"
         else:
             concat_str += f"[v{i}]"
@@ -271,6 +276,214 @@ async def generate_animated_preview(
     return None
 
 
+_SPRITE_SEEK_CONCURRENCY = 6
+
+
+async def _extract_sprite_tile(
+    ffmpeg_bin: str,
+    video_url: str,
+    seek_seconds: float,
+    out_path: Path,
+    tile_width: int,
+    tile_height: int,
+    sem: asyncio.Semaphore,
+) -> bool:
+    """Extracts one padded sprite tile frame via an HTTP range seek."""
+    vf_tile = (
+        f"scale={tile_width}:{tile_height}:force_original_aspect_ratio=decrease,"
+        f"pad={tile_width}:{tile_height}:(ow-iw)/2:(oh-ih)/2:black"
+    )
+    cmd = [ffmpeg_bin, "-y", "-v", "error", "-threads", "1"]
+    if video_url.startswith(("http://", "https://")):
+        cmd.extend(["-headers", FFMPEG_HEADERS])
+    cmd.extend([
+        "-ss", f"{seek_seconds:.2f}",
+        "-noaccurate_seek",
+        "-i", video_url,
+        "-an",
+        "-frames:v", "1",
+        "-vf", vf_tile,
+        str(out_path),
+    ])
+
+    async with sem:
+        for attempt in range(2):
+            proc = None
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await _communicate(proc, 25.0)
+                if proc.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
+                    return True
+            except asyncio.TimeoutError:
+                logger.debug("Sprite tile seek timed out at %.2fs", seek_seconds)
+            except Exception as exc:
+                logger.debug("Sprite tile seek failed at %.2fs: %s", seek_seconds, exc)
+            out_path.unlink(missing_ok=True)
+            if attempt == 0:
+                await asyncio.sleep(0.25)
+    return False
+
+
+async def _stitch_sprite_tiles(
+    ffmpeg_bin: str,
+    frame_paths: list[Path],
+    sprite_file: Path,
+    tiles_per_row: int,
+    rows: int,
+) -> bool:
+    """Stitches extracted tile frames into a single JPEG sprite sheet atomically."""
+    n = len(frame_paths)
+    if n == 0:
+        return False
+    inputs: list[str] = []
+    for fp in frame_paths:
+        inputs.extend(["-i", str(fp)])
+    concat_refs = "".join(f"[{i}:v]" for i in range(n))
+    tmp_sprite = sprite_file.with_name(f"{sprite_file.stem}.tmp{sprite_file.suffix}")
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-v", "error",
+        *inputs,
+        "-filter_complex", f"{concat_refs}concat=n={n}:v=1:a=0,tile={tiles_per_row}x{rows}",
+        "-frames:v", "1",
+        "-update", "1",
+        "-q:v", "3",
+        str(tmp_sprite),
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await _communicate(proc, 30.0)
+        if proc.returncode == 0 and tmp_sprite.exists() and tmp_sprite.stat().st_size > 1000:
+            tmp_sprite.replace(sprite_file)
+            return True
+        logger.warning(
+            "ffmpeg sprite stitch failed for %s (code %s): %s",
+            sprite_file.parent.name,
+            proc.returncode,
+            stderr.decode(errors="replace")[-300:],
+        )
+    except Exception as exc:
+        logger.warning("Exception stitching sprite for %s: %s", sprite_file.parent.name, exc)
+    tmp_sprite.unlink(missing_ok=True)
+    return False
+
+
+async def _generate_sprite_via_seeks(
+    ffmpeg_bin: str,
+    video_id: int,
+    video_url: str,
+    duration: float,
+    interval: float,
+    tile_count: int,
+    tiles_per_row: int,
+    rows: int,
+    tile_width: int,
+    tile_height: int,
+    sprite_file: Path,
+) -> bool:
+    """Generates a sprite sheet via pooled per-timestamp HTTP range seeks."""
+    max_seek = max(0.0, duration - 1.0)
+    seeks = [min(max_seek, i * interval) for i in range(tile_count)]
+    sem = asyncio.Semaphore(_SPRITE_SEEK_CONCURRENCY)
+
+    with tempfile.TemporaryDirectory(prefix=f"pk_sprite_{video_id}_") as tmp_dir:
+        tmp_root = Path(tmp_dir)
+        frame_paths = [tmp_root / f"tile_{i:03d}.bmp" for i in range(tile_count)]
+        results = await asyncio.gather(
+            *(
+                _extract_sprite_tile(
+                    ffmpeg_bin, video_url, ts, frame_paths[i], tile_width, tile_height, sem
+                )
+                for i, ts in enumerate(seeks)
+            )
+        )
+        if not all(results):
+            logger.warning(
+                "Seek-based sprite extraction got %s/%s tiles for video %s; falling back to single-pass",
+                sum(results),
+                tile_count,
+                video_id,
+            )
+            return False
+        if await _stitch_sprite_tiles(ffmpeg_bin, frame_paths, sprite_file, tiles_per_row, rows):
+            logger.info(
+                "Generated sprite.jpg via seeks for video %s (%s bytes)",
+                video_id,
+                sprite_file.stat().st_size,
+            )
+            return True
+    return False
+
+
+async def _generate_sprite_single_pass(
+    ffmpeg_bin: str,
+    video_id: int,
+    video_url: str,
+    duration: float,
+    interval: float,
+    tiles_per_row: int,
+    rows: int,
+    tile_width: int,
+    tile_height: int,
+    sprite_file: Path,
+) -> bool:
+    """Single sequential pass fallback for short clips, local files, or seek failures."""
+    vf_filter = (
+        f"fps=1/{interval:.4f},"
+        f"scale={tile_width}:{tile_height}:force_original_aspect_ratio=decrease,"
+        f"pad={tile_width}:{tile_height}:(ow-iw)/2:(oh-ih)/2:black,"
+        f"tile={tiles_per_row}x{rows}"
+    )
+    tmp_sprite = sprite_file.with_name(f"{sprite_file.stem}.tmp{sprite_file.suffix}")
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-threads", "2",
+        "-headers", FFMPEG_HEADERS,
+        "-ss", "00:00:00",
+        "-skip_frame", "nokey",
+        "-i", video_url,
+        "-vf", vf_filter,
+        "-frames:v", "1",
+        "-update", "1",
+        "-q:v", "3",
+        str(tmp_sprite),
+    ]
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await _communicate(proc, max(120.0, duration * 0.15))
+        if proc.returncode == 0 and tmp_sprite.exists() and tmp_sprite.stat().st_size > 1000:
+            tmp_sprite.replace(sprite_file)
+            logger.info("Generated sprite.jpg for video %s (%s bytes)", video_id, sprite_file.stat().st_size)
+            return True
+        logger.warning(
+            "ffmpeg sprite generation failed for video %s (code %s): %s",
+            video_id,
+            proc.returncode,
+            stderr.decode(errors="replace")[-300:],
+        )
+    except asyncio.TimeoutError:
+        logger.warning("ffmpeg sprite generation timed out for video %s", video_id)
+    except Exception as exc:
+        logger.error("Exception generating sprite for video %s: %s", video_id, exc)
+    tmp_sprite.unlink(missing_ok=True)
+    return False
+
+
 async def generate_sprite_sheet(
     video_id: int,
     video_url: str,
@@ -282,6 +495,8 @@ async def generate_sprite_sheet(
 ) -> tuple[str | None, str | None, dict]:
     """
     Extracts equidistant frames across the video and tiles them into a single sprite sheet image.
+    Uses pooled per-timestamp HTTP range seeks on remote streams when duration >= tile_count,
+    with single-pass sequential extraction as fallback.
     Also produces a WebVTT file with frame time cues for timeline scrubbing.
     Returns: (sprite_url, sprite_vtt_url, metadata_dict).
     """
@@ -310,65 +525,38 @@ async def generate_sprite_sheet(
     rows = math.ceil(tile_count / tiles_per_row)
 
     ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
-    vf_filter = (
-        f"fps=1/{interval:.4f},"
-        f"scale={tile_width}:{tile_height}:force_original_aspect_ratio=decrease,"
-        f"pad={tile_width}:{tile_height}:(ow-iw)/2:(oh-ih)/2:black,"
-        f"tile={tiles_per_row}x{rows}"
-    )
-
     sprite_created = False
     if sprite_file.exists() and sprite_file.stat().st_size > 1000:
         sprite_created = True
     else:
-        cmd = [
-            ffmpeg_bin,
-            "-y",
-            "-threads", "2",
-            "-headers", FFMPEG_HEADERS,
-            "-ss", "00:00:00",
-            "-skip_frame", "nokey",
-            "-i", video_url,
-            "-vf", vf_filter,
-            "-frames:v", "1",
-            "-update", "1",
-            "-q:v", "3",
-            str(sprite_file),
-        ]
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+        is_remote = video_url.startswith(("http://", "https://"))
+        if is_remote and tile_count > 1 and duration >= float(tile_count):
+            sprite_created = await _generate_sprite_via_seeks(
+                ffmpeg_bin,
+                video_id,
+                video_url,
+                duration,
+                interval,
+                tile_count,
+                tiles_per_row,
+                rows,
+                tile_width,
+                tile_height,
+                sprite_file,
             )
-            _, stderr = await _communicate(proc, max(120.0, duration * 0.15))
-            if proc.returncode == 0 and sprite_file.exists() and sprite_file.stat().st_size > 1000:
-                sprite_created = True
-                logger.info("Generated sprite.jpg for video %s (%s bytes)", video_id, sprite_file.stat().st_size)
-            else:
-                logger.warning(
-                    "ffmpeg sprite generation failed for video %s (code %s): %s",
-                    video_id,
-                    proc.returncode,
-                    stderr.decode(errors="replace")[-300:],
-                )
-        except asyncio.TimeoutError:
-            if proc:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-            logger.warning("ffmpeg sprite generation timed out for video %s", video_id)
-        except Exception as exc:
-            if proc:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-            logger.error("Exception generating sprite for video %s: %s", video_id, exc)
+        if not sprite_created:
+            sprite_created = await _generate_sprite_single_pass(
+                ffmpeg_bin,
+                video_id,
+                video_url,
+                duration,
+                interval,
+                tiles_per_row,
+                rows,
+                tile_width,
+                tile_height,
+                sprite_file,
+            )
 
     sprite_url = get_media_url(video_id, "sprite.jpg") if sprite_created else None
 

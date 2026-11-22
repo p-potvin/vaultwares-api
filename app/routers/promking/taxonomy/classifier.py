@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from enum import Enum
 import logging
+import re
 from typing import Dict, Optional, Set, Tuple
 
 from .dictionaries import (
@@ -14,6 +15,108 @@ from .dictionaries import (
 )
 
 logger = logging.getLogger(__name__)
+
+_PORNSTAR_STOPWORDS: Set[str] = {
+    "a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by",
+    "can", "did", "do", "does", "done", "for", "from", "get", "gets", "getting",
+    "got", "had", "has", "have", "having", "he", "her", "hers", "him", "his",
+    "how", "i", "if", "in", "into", "is", "it", "its", "just", "like", "me",
+    "more", "most", "my", "no", "not", "now", "of", "off", "on", "only", "or",
+    "our", "out", "over", "own", "she", "so", "some", "such", "than", "that",
+    "the", "their", "them", "then", "there", "these", "they", "this", "those",
+    "through", "to", "too", "under", "up", "very", "was", "we", "were", "what",
+    "when", "where", "which", "while", "who", "whom", "why", "will", "with",
+    "you", "your", "yours",
+    # Common non-performer tube/OF words that slip into title/tag heuristics
+    "onlyfans", "fansly", "pornhub", "xvideos", "xhamster", "spankbang", "redtube",
+    "tiktok", "twitter", "instagram", "snapchat", "reddit", "youtube", "patreon",
+    "video", "videos", "clip", "clips", "scene", "scenes", "part", "full", "free",
+    "leaked", "leak", "leaks", "new", "best", "real", "official", "premium",
+    "private", "exclusive", "custom", "request", "content", "update", "post",
+    "model", "models", "performer", "actor", "actress", "pornstar", "pornstars",
+    "studio", "studios", "channel", "network", "unknown", "none", "null", "admin",
+    "boy", "girl", "girls", "babe", "babes", "woman", "women", "man", "men",
+    "guy", "guys", "couple", "solo", "lesbian", "gay", "bi", "trans",
+    "amateur", "homemade", "verified", "raw", "uncensored", "hd", "4k", "60fps",
+    "pov", "joi", "asmr", "pmv", "comp", "compilation", "tease", "preview",
+    "trailer", "promo", "intro", "outro", "bonus", "extra", "special",
+    "fuck", "fucking", "fucked", "suck", "sucking", "sucks", "ride", "riding",
+    "rides", "cum", "cumming", "creampie", "blowjob", "handjob", "footjob",
+    "titfuck", "titty", "tits", "ass", "pussy", "dick", "cock", "boobs", "boob",
+    "hard", "wet", "deep", "anal", "oral", "hot", "sexy", "cute", "white",
+    "black", "asian", "latina", "ebony", "blonde", "brunette", "redhead",
+    "naked", "nude", "nudes", "dirty", "naughty", "horny", "sloppy", "huge",
+    "big", "small", "tiny", "thick", "slim", "petite", "curvy", "tall",
+    "tit", "dildo", "masturb", "masturbate", "masturbating", "masturbation",
+    "live", "tryon", "try", "machine", "deutsch", "german", "french",
+    "spanish", "russian", "italian", "cam", "cams", "beauty", "twitch",
+    "patreon", "snap", "telegram", "discord", "vids", "vid", "sextape",
+    "sex", "porn", "xxx", "nsfw", "ppv", "customs", "cloud", "original",
+    "quality", "saved", "subscribe", "sub", "link", "links", "bio", "dm",
+    "tribute", "cumshot", "orgasm", "squirt", "squirting", "doggystyle",
+    "cowgirl", "missionary", "deepthroat", "gagging", "threesome", "orgy",
+    "gangbang", "cuckold", "fetish", "bdsm", "lingerie", "costume",
+    "cosplay", "twerk", "twerking", "flash", "flashing", "teasing", "strip",
+    "stripping", "striptease", "bg", "gg", "bgg", "ffm", "mmf", "irl",
+    "vlog", "stream", "livestream", "recording", "replay", "archive",
+    "mega", "folder", "pack", "collection", "shower", "pool", "office",
+    "car", "balcony", "work", "after", "vodka", "begs", "sleepy", "see",
+    "through", "wonder", "bare", "onlyfansthreesome",
+}
+
+_NAME_LETTERS_RE = re.compile(r"[A-Za-z]")
+_NOISE_PREFIX_RE = re.compile(r"^(?:https?://|www\.|#|@|\d+$)", re.IGNORECASE)
+_LEADING_FILLER_WORDS: Set[str] = {
+    "a", "an", "and", "after", "at", "big", "by", "for", "from", "full",
+    "her", "his", "hot", "in", "into", "my", "naked", "nude", "of", "on",
+    "or", "our", "over", "see", "sexy", "she", "solo", "anal", "that",
+    "the", "their", "these", "this", "those", "to", "try", "under", "with",
+    "your",
+}
+
+
+_EXTRA_SINGLE_WORD_STOPWORDS: Set[str] = {
+    "baby", "bad", "bazooka", "blue", "bunny", "doll", "fox", "jo", "lo",
+    "lucky", "pink", "rain", "red", "rivers", "rockelle", "rose", "sab", "star", "sweet",
+}
+
+def is_valid_pornstar_name(raw: str) -> bool:
+    """Reject pronouns, filler stopwords, URLs, and multi-word sentence fragments."""
+    clean = " ".join((raw or "").strip().split())
+    if len(clean) < 3 or len(clean) > 48:
+        return False
+    if _NOISE_PREFIX_RE.match(clean):
+        return False
+    if len(_NAME_LETTERS_RE.findall(clean)) < 2:
+        return False
+    words = clean.split()
+    if len(words) > 4:
+        return False
+    lowered_words = [re.sub(r"[^a-z0-9']", "", w.lower()) for w in words]
+    if not any(lowered_words) or all((not w or w in _PORNSTAR_STOPWORDS) for w in lowered_words):
+        return False
+    if clean.lower() in _PORNSTAR_STOPWORDS or (len(words) == 1 and lowered_words[0] in _EXTRA_SINGLE_WORD_STOPWORDS):
+        return False
+    if len(words) == 1:
+        sub_tokens = [re.sub(r"[^a-z0-9']", "", t.lower()) for t in re.split(r"[-_]+", clean) if t]
+        if len(sub_tokens) > 1 and all((not t or t in _PORNSTAR_STOPWORDS) for t in sub_tokens):
+            return False
+        if lowered_words[0] in _PORNSTAR_STOPWORDS:
+            return False
+    else:
+        # Reject title fragments starting with a single bare letter ("l b", "l video", "r dildo", "o f", "a h")
+        # or starting with filler words ("the office", "in shower", "my pussy", "after work").
+        if len(lowered_words[0]) <= 1 or lowered_words[0] in _LEADING_FILLER_WORDS:
+            return False
+        # Reject bare lowercase single-letter trailing word ("solo p", "anal p")
+        if any(len(lw) == 1 and w == w.lower() for w, lw in zip(words[1:], lowered_words[1:])):
+            return False
+        # Reject all-lowercase multi-word descriptions containing any stopword/tag word
+        if clean == clean.lower():
+            all_parts = [re.sub(r"[^a-z0-9']", "", t) for t in re.split(r"[\s\-_]+", clean) if t]
+            if any(p in _PORNSTAR_STOPWORDS for p in all_parts):
+                return False
+    return True
 
 
 class TermKind(str, Enum):
@@ -37,22 +140,23 @@ class TaxonomyClassifier:
         db_studios: Optional[Set[str]] = None,
         db_categories: Optional[Set[str]] = None,
     ):
+        valid_pornstars = {p for p in (db_pornstars or set()) if is_valid_pornstar_name(p)}
         # Case-insensitive normalized sets from DB
-        self.db_pornstars: Set[str] = {p.lower() for p in (db_pornstars or set())}
+        self.db_pornstars: Set[str] = {p.lower() for p in valid_pornstars}
         self.db_studios: Set[str] = {s.lower() for s in (db_studios or set())}
         self.db_categories: Set[str] = {c.lower() for c in (db_categories or set())}
 
         # Keep map of lower -> exact original DB casing
-        self.pornstar_display: Dict[str, str] = {p.lower(): p for p in (db_pornstars or set())}
+        self.pornstar_display: Dict[str, str] = {p.lower(): p for p in valid_pornstars}
         self.studio_display: Dict[str, str] = {s.lower(): s for s in (db_studios or set())}
         self.category_display: Dict[str, str] = {c.lower(): c for c in (db_categories or set())}
 
     @classmethod
     async def load_from_db(cls, conn) -> TaxonomyClassifier:
         """Load known taxonomies from the live Postgres connection."""
-        p_rows = await conn.fetch("SELECT name FROM pornstars WHERE deleted_at IS NULL")
-        s_rows = await conn.fetch("SELECT name FROM studios WHERE deleted_at IS NULL")
-        c_rows = await conn.fetch("SELECT name FROM categories WHERE deleted_at IS NULL")
+        p_rows = await conn.fetch("SELECT name FROM pornstars WHERE deleted_at IS NULL AND undesirable = false")
+        s_rows = await conn.fetch("SELECT name FROM studios WHERE deleted_at IS NULL AND undesirable = false")
+        c_rows = await conn.fetch("SELECT name FROM categories WHERE deleted_at IS NULL AND undesirable = false")
 
         return cls(
             db_pornstars={r["name"] for r in p_rows},
@@ -110,7 +214,9 @@ class TaxonomyClassifier:
         # 2. KNOWN PORNSTAR CHECK:
         # If the term matches a known performer in our DB, it IS a performer,
         # even if the tube card marked it as a studio (e.g. Angela White, Manuel Ferrara).
-        if norm in self.db_pornstars:
+        # Never promote a single-word generic category/tag token (e.g. from /tags/ word lists)
+        # into a performer unless it is multi-word or came from an explicit performer/studio field.
+        if norm in self.db_pornstars and (hint != "category" or " " in norm):
             return TermKind.PORNSTAR, self.pornstar_display[norm]
 
         # 3. KNOWN STUDIO CHECK:
@@ -121,6 +227,8 @@ class TaxonomyClassifier:
 
         # 4. HINT EVALUATION FOR UNKNOWN TERMS:
         if hint == "pornstar":
+            if not is_valid_pornstar_name(clean_name):
+                return TermKind.UNKNOWN, clean_name
             return TermKind.PORNSTAR, clean_name
         if hint == "studio":
             return TermKind.STUDIO, clean_name
@@ -202,6 +310,20 @@ class TaxonomyClassifier:
                 add_studio(val)
             elif kind == TermKind.PORNSTAR:
                 add_pornstar(val)
+
+        # Drop single-word performer tokens that are already covered by a full
+        # multi-word performer name on the same video (e.g. ["Ella", "Ella Alexandra", "Alexandra"]).
+        multi_word_parts: Set[str] = set()
+        for star in out_pornstars:
+            parts = [p.lower() for p in star.split() if len(p) >= 2]
+            if len(parts) >= 2:
+                multi_word_parts.update(parts)
+        if multi_word_parts:
+            out_pornstars = [
+                star
+                for star in out_pornstars
+                if " " in star or star.strip().lower() not in multi_word_parts
+            ]
 
         # Fallback: if categories are empty, mine directly from title!
         if not out_categories and title:

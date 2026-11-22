@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Tuple
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Path
 
@@ -11,6 +12,55 @@ from .db import get_pool
 from ._models import Site, SettingsPayload
 
 router = APIRouter(prefix="/settings", tags=["promking:settings"])
+
+DEFAULT_PORNSTAR_GENDER = "female,null"
+_PORNSTAR_GENDER_TTL_SECONDS = 30.0
+_default_gender_cache: Dict[str, Tuple[float, str]] = {}
+_VALID_GENDER_TOKENS = {"female", "male", "unknown", "null", "has", "all"}
+
+
+def normalize_pornstar_gender_setting(raw: Any) -> str:
+    """Validate and normalize a pornstar gender setting value."""
+    if isinstance(raw, dict):
+        raw = raw.get("value")
+    if not isinstance(raw, str):
+        return DEFAULT_PORNSTAR_GENDER
+    tokens = [t.strip().lower() for t in raw.split(",") if t.strip()]
+    if not tokens or any(t not in _VALID_GENDER_TOKENS for t in tokens):
+        return DEFAULT_PORNSTAR_GENDER
+    if "all" in tokens:
+        return "all"
+    return ",".join(tokens)
+
+
+async def resolve_pornstar_gender(site: Optional[str]) -> str:
+    """Resolve the configured default pornstar gender filter for `site` (30s cache)."""
+    cache_key = str(site or "__default__")
+    cached = _default_gender_cache.get(cache_key)
+    now = time.monotonic()
+    if cached and now - cached[0] < _PORNSTAR_GENDER_TTL_SECONDS:
+        return cached[1]
+
+    value = DEFAULT_PORNSTAR_GENDER
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            if site:
+                raw = await conn.fetchval(
+                    "SELECT value FROM settings WHERE site = $1 AND key = 'default_pornstar_gender'",
+                    site,
+                )
+            else:
+                raw = await conn.fetchval(
+                    "SELECT value FROM settings WHERE key = 'default_pornstar_gender' ORDER BY updated_at DESC LIMIT 1",
+                )
+            if raw is not None:
+                value = normalize_pornstar_gender_setting(raw)
+    except Exception:
+        value = DEFAULT_PORNSTAR_GENDER
+
+    _default_gender_cache[cache_key] = (now, value)
+    return value
 
 
 # ── affiliate_settings validator ──────────────────────────────────────────
@@ -146,6 +196,15 @@ async def put_settings(payload: SettingsPayload, site: Site = Path(...)) -> dict
         errs, warns = validate_affiliate_settings(payload.values["affiliate_settings"])
         validation_errors.extend(errs)
         validation_warnings.extend(warns)
+    if "default_pornstar_gender" in payload.values:
+        raw_gender = payload.values["default_pornstar_gender"]
+        if isinstance(raw_gender, str):
+            tokens = [t.strip().lower() for t in raw_gender.split(",") if t.strip()]
+            if not tokens or any(t not in _VALID_GENDER_TOKENS for t in tokens):
+                validation_errors.append({
+                    "rule": "default_pornstar_gender",
+                    "message": "Invalid pornstar gender tokens.",
+                })
     if validation_errors:
         raise HTTPException(
             status_code=422,
@@ -174,6 +233,10 @@ async def put_settings(payload: SettingsPayload, site: Site = Path(...)) -> dict
             # is already a native dict/list.
             updated[key] = row["value"]
             updated_at[key] = row["updated_at"].isoformat()
+
+    if "default_pornstar_gender" in payload.values:
+        _default_gender_cache.pop(str(site), None)
+        _default_gender_cache.pop("__default__", None)
 
     return {
         "ok": True,

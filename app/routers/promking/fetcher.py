@@ -25,7 +25,7 @@ import time
 import unicodedata
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, Optional
 from pydantic import BaseModel
@@ -33,7 +33,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from .db import get_pool
+from .db import get_admin_pool as get_pool
 from ._models import FetchRunHandle, FetchRunRequest, Site
 from .tpdb import fetch_tpdb_tags
 from .taxonomy.classifier import TaxonomyClassifier
@@ -516,6 +516,7 @@ async def _fetch_local_term_matches(conn, table: str, names: list[str]) -> dict[
             ON primary_term.id = match.merged_into_id
          WHERE lower(match.name) = ANY($1::text[])
            AND (match.deleted_at IS NULL OR match.merged_into_id IS NOT NULL)
+           AND COALESCE(primary_term.undesirable, match.undesirable, false) = false
         """,
         keys,
     )
@@ -1008,6 +1009,34 @@ async def _finalize_run(state: RunState) -> None:
     await _broadcast(state, json.dumps({"event": "closed"}))
 
 
+def _parse_uploaded_at(raw: object) -> Optional[datetime]:
+    if not raw:
+        return None
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    if not isinstance(raw, str):
+        return None
+    txt = raw.strip()
+    if not txt:
+        return None
+    if txt.endswith("Z"):
+        txt = txt[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(txt)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        pass
+    # Accept DD.MM.YYYY as formatted on 1porn / fullvideos headlines
+    m = re.match(r"^(\d{2})\.(\d{2})\.(\d{4})$", txt)
+    if m:
+        try:
+            day, mon, year = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            return datetime(year, mon, day, tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
 # ─── persistence ──────────────────────────────────────────────────────────
 
 async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
@@ -1072,6 +1101,15 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
 
             is_video_disabled = bool(v.get("_disabled"))
             is_onlyfans = bool(v.get("isOnlyfans") or v.get("is_onlyfans"))
+            uploaded_at = _parse_uploaded_at(v.get("uploadedAt") or v.get("uploaded_at"))
+            try:
+                upstream_likes = max(0, int(v["likes"])) if v.get("likes") is not None else 0
+            except (TypeError, ValueError):
+                upstream_likes = 0
+            try:
+                upstream_dislikes = max(0, int(v["dislikes"])) if v.get("dislikes") is not None else 0
+            except (TypeError, ValueError):
+                upstream_dislikes = 0
 
             try:
                 row = await conn.fetchrow(
@@ -1079,10 +1117,18 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
                     INSERT INTO videos (
                         source, source_url, embed_url, embed_type,
                         title, slug, thumbnail_url, preview_url, duration_seconds,
-                        views, description, qualities, disabled_at, is_onlyfans
+                        views, description, qualities, disabled_at, is_onlyfans,
+                        uploaded_at, upstream_likes, upstream_dislikes
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                    ON CONFLICT (source_url) DO UPDATE SET updated_at = now(), is_onlyfans = EXCLUDED.is_onlyfans
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                    ON CONFLICT (source_url) DO UPDATE
+                       SET updated_at = now(),
+                           is_onlyfans = EXCLUDED.is_onlyfans,
+                           uploaded_at = COALESCE(videos.uploaded_at, EXCLUDED.uploaded_at),
+                           upstream_likes = GREATEST(videos.upstream_likes, EXCLUDED.upstream_likes),
+                           upstream_dislikes = GREATEST(videos.upstream_dislikes, EXCLUDED.upstream_dislikes),
+                           views = GREATEST(videos.views, EXCLUDED.views),
+                           duration_seconds = COALESCE(videos.duration_seconds, EXCLUDED.duration_seconds)
                     RETURNING id, (xmax = 0) AS inserted
                     """,
                     v.get("source"),
@@ -1097,8 +1143,11 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
                     views,
                     description,
                     qualities,
-                    "now" if is_video_disabled else None,
+                    datetime.now(timezone.utc) if is_video_disabled else None,
                     is_onlyfans,
+                    uploaded_at,
+                    upstream_likes,
+                    upstream_dislikes,
                 )
             except Exception as e:
                 if "videos_slug_uniq" in str(e) or "slug" in str(e).lower():
@@ -1160,12 +1209,12 @@ async def _persist_videos(site: str, videos: list[dict]) -> tuple[int, int]:
                     if tpdb_id:
                         await conn.execute(
                             """
-                            INSERT INTO tpdb_scenes (tpdb_id, title, video_id, data)
+                            INSERT INTO vault_raggae_scenes (tpdb_id, title, video_id, data)
                             VALUES ($1, $2, $3, $4)
                             ON CONFLICT (tpdb_id) DO UPDATE
                               SET data = EXCLUDED.data,
                                   title = EXCLUDED.title,
-                                  video_id = COALESCE(tpdb_scenes.video_id, EXCLUDED.video_id)
+                                  video_id = COALESCE(vault_raggae_scenes.video_id, EXCLUDED.video_id)
                             """,
                             tpdb_id,
                             v.get("title", ""),

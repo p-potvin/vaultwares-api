@@ -10,6 +10,7 @@ import secrets
 import time
 from typing import Any
 from .db import get_pool
+from .settings_routes import resolve_pornstar_gender
 
 
 async def is_admin_request(request: Request) -> bool:
@@ -95,6 +96,7 @@ _METADATA_COLUMNS = {
     "description": "description",
     "qualities": "qualities",
     "preview_failed": "preview_failed",
+    "uploaded_at": "uploaded_at",
 }
 
 
@@ -167,6 +169,7 @@ def build_video_filters(
     health: str | None = None,
     onlyfans: str | bool | None = "false",
     admin: bool = False,
+    pornstar_gender: str | None = None,
 ) -> tuple[str, str, list]:
     """Build taxonomy/related filters for list_videos.
 
@@ -251,51 +254,39 @@ def build_video_filters(
 
             where.append("(" + " OR ".join(search_clauses) + ")")
         else:
-            search_clauses = []
-            if is_num:
-                search_clauses.append(f"videos.id = {add_param(int(num_id))}")
-            q_ts = add_param(clean_q)
-            q_like = add_param(f"%{clean_q}%")
-            search_clauses.extend([
-                f"to_tsvector('english', videos.title) @@ plainto_tsquery('english', {q_ts})",
-                f"videos.title ILIKE {q_like}",
-                "videos.id IN (SELECT q_vp.video_id FROM video_pornstars q_vp"
-                "                    JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id"
-                f"                  WHERE q_p.name ILIKE {q_like} AND q_p.deleted_at IS NULL)",
-                "videos.id IN (SELECT q_vs.video_id FROM video_studios q_vs"
-                "                    JOIN studios q_s ON q_s.id = q_vs.studio_id"
-                f"                  WHERE q_s.name ILIKE {q_like} AND q_s.deleted_at IS NULL)",
-                "videos.id IN (SELECT q_vc.video_id FROM video_categories q_vc"
-                "                    JOIN categories q_c ON q_c.id = q_vc.category_id"
-                f"                  WHERE q_c.name ILIKE {q_like} AND q_c.deleted_at IS NULL)",
-            ])
-
-            # Multi-word fuzzy / cross-entity search for public client: filter out stop words
             words = [re.sub(r'[^a-zA-Z0-9]', '', w) for w in clean_q.split()]
             words = [w for w in words if w.lower() not in STOP_WORDS and len(w) >= 3]
+            q_like = add_param(f"%{clean_q}%")
+
+            title_clauses = [f"v_q.title ILIKE {q_like}"]
+            if is_num:
+                title_clauses.append(f"v_q.id = {add_param(int(num_id))}")
+
             if len(words) >= 2:
                 or_terms = " | ".join(words)
                 p_or_ts = add_param(or_terms)
-                search_clauses.append(f"to_tsvector('english', videos.title) @@ to_tsquery('english', {p_or_ts})")
+                title_clauses.append(f"to_tsvector('english', v_q.title) @@ to_tsquery('english', {p_or_ts})")
                 word_patterns = [f"%{w}%" for w in words]
                 p_patterns = add_param(word_patterns)
-                search_clauses.append(
-                    "videos.id IN (SELECT q_vp.video_id FROM video_pornstars q_vp"
-                    "                    JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id"
-                    f"                  WHERE q_p.name ILIKE ANY({p_patterns}::text[]) AND q_p.deleted_at IS NULL)"
-                )
-                search_clauses.append(
-                    "videos.id IN (SELECT q_vs.video_id FROM video_studios q_vs"
-                    "                    JOIN studios q_s ON q_s.id = q_vs.studio_id"
-                    f"                  WHERE q_s.name ILIKE ANY({p_patterns}::text[]) AND q_s.deleted_at IS NULL)"
-                )
-                search_clauses.append(
-                    "videos.id IN (SELECT q_vc.video_id FROM video_categories q_vc"
-                    "                    JOIN categories q_c ON q_c.id = q_vc.category_id"
-                    f"                  WHERE q_c.name ILIKE ANY({p_patterns}::text[]) AND q_c.deleted_at IS NULL)"
-                )
+                tax_match = f"ILIKE ANY({p_patterns}::text[])"
+            else:
+                q_ts = add_param(clean_q)
+                title_clauses.append(f"to_tsvector('english', v_q.title) @@ plainto_tsquery('english', {q_ts})")
+                tax_match = f"ILIKE {q_like}"
 
-            where.append("(" + " OR ".join(search_clauses) + ")")
+            q_p_gender_fragment, q_p_gender_params = build_gender_clause(
+                pornstar_gender, "q_p.gender", len(params) + 1
+            )
+            params.extend(q_p_gender_params)
+            q_p_gender_clause = f" AND {q_p_gender_fragment}" if q_p_gender_fragment else ""
+
+            union_sql = (
+                f"SELECT v_q.id AS video_id FROM videos v_q WHERE v_q.disabled_at IS NULL AND ({' OR '.join(title_clauses)}) "
+                f"UNION SELECT q_vp.video_id FROM video_pornstars q_vp JOIN pornstars q_p ON q_p.id = q_vp.pornstar_id WHERE q_p.name {tax_match} AND q_p.deleted_at IS NULL AND q_p.disabled = false AND q_p.undesirable = false{q_p_gender_clause} "
+                f"UNION SELECT q_vs.video_id FROM video_studios q_vs JOIN studios q_s ON q_s.id = q_vs.studio_id WHERE q_s.name {tax_match} AND q_s.deleted_at IS NULL AND q_s.disabled = false AND q_s.undesirable = false "
+                f"UNION SELECT q_vc.video_id FROM video_categories q_vc JOIN categories q_c ON q_c.id = q_vc.category_id WHERE q_c.name {tax_match} AND q_c.deleted_at IS NULL AND q_c.disabled = false AND q_c.undesirable = false"
+            )
+            where.append(f"videos.id IN ({union_sql})")
     if pornstar:
         joins.extend(
             [
@@ -364,9 +355,9 @@ def build_video_filters(
             )
         else:
             where.append("videos.disabled_at IS NULL")
-            where.append("NOT EXISTS (SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = videos.id AND p.disabled = true)")
-            where.append("NOT EXISTS (SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = videos.id AND s.disabled = true)")
-            where.append("NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = true)")
+            where.append("videos.id NOT IN (SELECT vp.video_id FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE p.disabled = true)")
+            where.append("videos.id NOT IN (SELECT vs.video_id FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE s.disabled = true)")
+            where.append("videos.id NOT IN (SELECT vc.video_id FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE c.disabled = true)")
     if source:
         where.append(f"videos.source = {add_param(source)}")
     if health:
@@ -379,9 +370,9 @@ def build_video_filters(
         elif health == "failed_preview":
             where.append("videos.preview_failed = true")
         elif health == "tpdb_matched":
-            where.append("EXISTS (SELECT 1 FROM tpdb_scenes ts WHERE ts.video_id = videos.id)")
+            where.append("EXISTS (SELECT 1 FROM vault_raggae_scenes ts WHERE ts.video_id = videos.id)")
         elif health == "tpdb_unmatched":
-            where.append("NOT EXISTS (SELECT 1 FROM tpdb_scenes ts WHERE ts.video_id = videos.id)")
+            where.append("NOT EXISTS (SELECT 1 FROM vault_raggae_scenes ts WHERE ts.video_id = videos.id)")
         elif health == "untagged_categories":
             where.append("NOT EXISTS (SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = videos.id AND c.disabled = false)")
         elif health == "untagged_pornstars":
@@ -1474,12 +1465,11 @@ async def list_videos(
     related_to: str | None = Query(None, description="Related-video seed slug."),
     exclude_slug: str | None = Query(None, description="Slug to omit from results."),
     pornstar_gender: str | None = Query(
-        "female",
+        None,
         description=(
-            "Filter the embedded pornstars_json by gender. Accepts 'female', 'male', "
-            "'unknown', a comma-separated list, or 'all' (no filter — default "
-            "for backward compat). Videos themselves are not hidden; only the "
-            "embedded pornstar pills are filtered."
+            "Filter pornstars by gender (defaults to site setting 'female,null'). "
+            "Accepts 'female', 'female,null', 'male', 'unknown', 'all', etc. "
+            "Also excludes non-matching pornstars from public q search."
         ),
     ),
     disabled: str | None = Query("false", description="Filter by disabled status. 'false'/'enabled' = enabled, 'true'/'disabled' = disabled, 'all'/'none' = all."),
@@ -1498,6 +1488,12 @@ async def list_videos(
             if wants_disabled:
                 disabled = "false"
 
+    effective_pornstar_gender = (
+        pornstar_gender
+        if pornstar_gender is not None
+        else ("all" if wants_admin else await resolve_pornstar_gender(site))
+    )
+
     pool = await get_pool()
     where_sql, joins, params = build_video_filters(
         site=site,
@@ -1512,10 +1508,11 @@ async def list_videos(
         health=health,
         onlyfans=onlyfans,
         admin=admin,
+        pornstar_gender=effective_pornstar_gender,
     )
     # Optional gender filter on the embedded pornstars_json subquery.
     gender_fragment, gender_params = build_gender_clause(
-        pornstar_gender, "a.gender", len(params) + 1
+        effective_pornstar_gender, "a.gender", len(params) + 1
     )
     params.extend(gender_params)
     pornstar_gender_clause = f" AND {gender_fragment}" if gender_fragment else ""
@@ -1551,7 +1548,9 @@ async def list_videos(
     sql_base = f"""
         SELECT videos.id, videos.source, videos.title, videos.slug,
                videos.thumbnail_url, videos.preview_url, videos.duration_seconds,
-               videos.views, videos.created_at, videos.disabled_at, videos.qualities,
+               videos.views, COALESCE(videos.upstream_likes, 0)::int AS likes,
+               COALESCE(videos.upstream_dislikes, 0)::int AS dislikes,
+               videos.uploaded_at, videos.created_at, videos.disabled_at, videos.qualities,
                videos.is_onlyfans,
                (
                  videos.disabled_at IS NOT NULL OR
@@ -1666,6 +1665,7 @@ async def count_videos(
     source: str | None = Query(None, description="Filter by video source."),
     health: str | None = Query(None, description="Filter by catalog health issue."),
     onlyfans: str | None = Query("false", description="Filter by OnlyFans status: 'false' (default, excludes OnlyFans), 'true' (OnlyFans only), 'all' (both)."),
+    pornstar_gender: str | None = Query(None, description="Gender filter applied to public search pornstar matching."),
     admin: bool = Query(False, description="Admin search mode: strictly matches video title and ID."),
 ) -> dict:
     wants_admin = bool(admin)
@@ -1676,6 +1676,12 @@ async def count_videos(
                 admin = False
             if wants_disabled:
                 disabled = "false"
+
+    effective_pornstar_gender = (
+        pornstar_gender
+        if pornstar_gender is not None
+        else ("all" if wants_admin else await resolve_pornstar_gender(site))
+    )
 
     pool = await get_pool()
     where_sql, joins, params = build_video_filters(
@@ -1689,9 +1695,11 @@ async def count_videos(
         health=health,
         onlyfans=onlyfans,
         admin=admin,
+        pornstar_gender=effective_pornstar_gender,
     )
+    count_expr = "COUNT(DISTINCT videos.id)" if joins else "COUNT(*)"
     sql = f"""
-        SELECT COUNT(DISTINCT videos.id) AS total
+        SELECT {count_expr} AS total
         FROM videos
         {joins}
         WHERE {where_sql}
@@ -1735,7 +1743,9 @@ async def get_video(
         row = await conn.fetchrow(
             f"""
             SELECT id, title, slug, thumbnail_url, preview_url,
-                   duration_seconds, views, created_at, updated_at,
+                   duration_seconds, views, uploaded_at, created_at, updated_at,
+                   (COALESCE(upstream_likes, 0) + (SELECT COUNT(*) FROM video_reactions vr WHERE vr.video_id = videos.id AND vr.reaction_type = 'like'))::int AS likes,
+                   (COALESCE(upstream_dislikes, 0) + (SELECT COUNT(*) FROM video_reactions vr WHERE vr.video_id = videos.id AND vr.reaction_type = 'dislike'))::int AS dislikes,
                    source, source_url, embed_url, embed_type, qualities,
                    is_onlyfans, description, disabled_at,
                    (

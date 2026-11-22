@@ -57,3 +57,33 @@ def test_taxonomy_classifier_isolation():
     assert "Anal" not in stars
     assert "Anal" in cats
     assert "MILF" in cats
+
+
+def test_classifier_does_not_promote_single_word_category_tags_or_split_fragments():
+    clf = TaxonomyClassifier(
+        db_studios=set(),
+        db_pornstars={"Beauty", "Rose", "Ella", "Alexandra", "Ella Alexandra", "Rachel", "Rivers", "rockelle"},
+    )
+    # Single-word category tags (/tags/beauty, /tags/rose, /tags/ella, /tags/alexandra)
+    # must stay categories rather than turning into performers.
+    cats, stars, _ = clf.classify_video_tags(
+        title="Ella Alexandra starting in the kitchen",
+        categories=["OnlyFans", "beauty", "rose", "ella", "alexandra"],
+        pornstars=["Ella Alexandra", "Ella"],
+        studios=[],
+    )
+    assert stars == ["Ella Alexandra"]
+    assert "Beauty" not in stars and "beauty" not in stars
+    assert "Rose" not in stars and "rose" not in stars
+    assert "Ella" not in stars
+    assert "Alexandra" not in stars
+    assert "Beauty" in [c.title() for c in cats] or "beauty" in [c.lower() for c in cats]
+
+    # Single-word noise/fragment pornstar hints are rejected
+    cats2, stars2, _ = clf.classify_video_tags(
+        title="Some Scene",
+        categories=["rivers"],
+        pornstars=["rockelle", "rivers", "doll", "bazooka", "the", "she"],
+        studios=[],
+    )
+    assert stars2 == []

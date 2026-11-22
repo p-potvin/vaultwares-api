@@ -51,11 +51,11 @@ async def get_video_reaction_stats(video_id: int):
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT 
-                COUNT(*) FILTER (WHERE reaction_type = 'like') AS likes,
-                COUNT(*) FILTER (WHERE reaction_type = 'dislike') AS dislikes
-            FROM video_reactions
-            WHERE video_id = $1
+            SELECT
+                (SELECT COALESCE(upstream_likes, 0) FROM videos WHERE id = $1)
+                    + (SELECT COUNT(*) FROM video_reactions WHERE video_id = $1 AND reaction_type = 'like') AS likes,
+                (SELECT COALESCE(upstream_dislikes, 0) FROM videos WHERE id = $1)
+                    + (SELECT COUNT(*) FROM video_reactions WHERE video_id = $1 AND reaction_type = 'dislike') AS dislikes
             """,
             video_id,
         )
@@ -126,7 +126,11 @@ async def record_video_reaction(video_id: int, payload: VideoReactionRequest):
                 reaction_type,
             )
 
-        # Get updated stats
+        # Get updated stats (combined upstream + local viewer reactions)
+        v_row = await conn.fetchrow(
+            "SELECT COALESCE(upstream_likes, 0) AS ul, COALESCE(upstream_dislikes, 0) AS ud FROM videos WHERE id = $1",
+            video_id,
+        )
         likes = await conn.fetchval(
             "SELECT COUNT(*) FROM video_reactions WHERE video_id = $1 AND reaction_type = 'like'",
             video_id,
@@ -138,8 +142,8 @@ async def record_video_reaction(video_id: int, payload: VideoReactionRequest):
 
     return {
         "ok": True,
-        "likes": int(likes or 0),
-        "dislikes": int(dislikes or 0),
+        "likes": int(likes or 0) + int(v_row["ul"] or 0 if v_row else 0),
+        "dislikes": int(dislikes or 0) + int(v_row["ud"] or 0 if v_row else 0),
     }
 
 

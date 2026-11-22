@@ -125,29 +125,27 @@ async def stats(
     async def fetch_metrics_combined():
         async with pool.acquire() as conn:
             return await conn.fetchrow(
-                f"""
+                """
                 SELECT
                   -- views
                   COALESCE(SUM(v.views), 0)::bigint AS views_total,
                   COALESCE(AVG(v.views), 0)::float  AS views_avg_per_video,
                   COALESCE(MAX(v.views), 0)::bigint AS views_max_single,
                   COUNT(*) FILTER (WHERE v.views > 0)::bigint AS videos_with_views,
-                  -- catalog health
+                  -- catalog health (global unified catalog; defects scoped to active videos)
                   COUNT(*)::bigint AS health_total,
+                  COUNT(*) FILTER (WHERE v.disabled_at IS NULL)::bigint AS health_active,
                   COUNT(*) FILTER (WHERE v.disabled_at IS NOT NULL)::bigint AS health_disabled,
-                  COUNT(*) FILTER (WHERE v.thumbnail_url IS NULL OR v.thumbnail_url = '')::bigint AS health_missing_thumbnail,
-                  COUNT(*) FILTER (WHERE v.duration_seconds IS NULL OR v.duration_seconds = 0)::bigint AS health_missing_duration,
-                  COUNT(*) FILTER (WHERE v.description IS NULL OR v.description = '')::bigint AS health_missing_description,
-                  COUNT(*) FILTER (WHERE v.preview_failed = true)::bigint AS health_failed_preview,
+                  COUNT(*) FILTER (WHERE v.disabled_at IS NULL AND (v.thumbnail_url IS NULL OR v.thumbnail_url = ''))::bigint AS health_missing_thumbnail,
+                  COUNT(*) FILTER (WHERE v.disabled_at IS NULL AND (v.duration_seconds IS NULL OR v.duration_seconds <= 0))::bigint AS health_missing_duration,
+                  COUNT(*) FILTER (WHERE v.disabled_at IS NULL AND (v.description IS NULL OR v.description = ''))::bigint AS health_missing_description,
+                  COUNT(*) FILTER (WHERE v.disabled_at IS NULL AND v.preview_failed = true)::bigint AS health_failed_preview,
                   -- catalog growth
                   COUNT(*) FILTER (WHERE v.created_at >= NOW() - INTERVAL '1 day')::bigint AS growth_added_24h,
                   COUNT(*) FILTER (WHERE v.created_at >= NOW() - INTERVAL '7 days')::bigint AS growth_added_7d,
                   COUNT(*) FILTER (WHERE v.created_at >= NOW() - INTERVAL '30 days')::bigint AS growth_added_30d
                 FROM videos v
-                {join_videos}
-                WHERE {where_videos}
-                """,
-                *videos_params,
+                """
             )
 
     async def fetch_activity_7d():
@@ -209,64 +207,49 @@ async def stats(
 
     async def fetch_tpdb():
         async with pool.acquire() as conn:
-            if site:
-                return await conn.fetchrow(
-                    """
-                    SELECT COUNT(DISTINCT ts.video_id)::bigint AS enriched_count
-                      FROM tpdb_scenes ts
-                      JOIN video_sites vs ON vs.video_id = ts.video_id
-                     WHERE vs.site = $1
-                    """,
-                    site,
-                )
-            else:
-                return await conn.fetchrow(
-                    """
-                    SELECT COUNT(DISTINCT ts.video_id)::bigint AS enriched_count
-                      FROM tpdb_scenes ts
-                     WHERE ts.video_id IS NOT NULL
-                    """
-                )
+            return await conn.fetchrow(
+                """
+                SELECT COUNT(DISTINCT ts.video_id)::bigint AS enriched_count
+                  FROM vault_raggae_scenes ts
+                  JOIN videos v ON v.id = ts.video_id
+                 WHERE v.disabled_at IS NULL
+                """
+            )
 
     async def fetch_discovery():
         async with pool.acquire() as conn:
-            if site:
-                return await conn.fetchrow(
-                    """
-                    WITH site_vids AS (
-                      SELECT video_id AS id FROM video_sites WHERE site = $1
-                    )
-                    SELECT
-                      (SELECT COUNT(*) FROM site_vids sv WHERE NOT EXISTS (
-                        SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = sv.id AND c.disabled = false
-                      ))::bigint AS no_categories,
-                      (SELECT COUNT(*) FROM site_vids sv WHERE NOT EXISTS (
-                        SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = sv.id AND p.disabled = false
-                      ))::bigint AS no_pornstars,
-                      (SELECT COUNT(*) FROM site_vids sv WHERE NOT EXISTS (
-                        SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = sv.id AND s.disabled = false
-                      ))::bigint AS no_studios
-                    """,
-                    site,
+            return await conn.fetchrow(
+                """
+                WITH active_vids AS (
+                  SELECT id FROM videos WHERE disabled_at IS NULL
                 )
-            else:
-                return await conn.fetchrow(
-                    """
-                    WITH site_vids AS (
-                      SELECT id FROM videos
-                    )
-                    SELECT
-                      (SELECT COUNT(*) FROM site_vids sv WHERE NOT EXISTS (
-                        SELECT 1 FROM video_categories vc JOIN categories c ON c.id = vc.category_id WHERE vc.video_id = sv.id AND c.disabled = false
-                      ))::bigint AS no_categories,
-                      (SELECT COUNT(*) FROM site_vids sv WHERE NOT EXISTS (
-                        SELECT 1 FROM video_pornstars vp JOIN pornstars p ON p.id = vp.pornstar_id WHERE vp.video_id = sv.id AND p.disabled = false
-                      ))::bigint AS no_pornstars,
-                      (SELECT COUNT(*) FROM site_vids sv WHERE NOT EXISTS (
-                        SELECT 1 FROM video_studios vs JOIN studios s ON s.id = vs.studio_id WHERE vs.video_id = sv.id AND s.disabled = false
-                      ))::bigint AS no_studios
-                    """
-                )
+                SELECT
+                  (SELECT COUNT(*) FROM active_vids av WHERE NOT EXISTS (
+                    SELECT 1 FROM video_categories vc
+                    JOIN categories c ON c.id = vc.category_id
+                    WHERE vc.video_id = av.id
+                      AND c.deleted_at IS NULL
+                      AND c.disabled = false
+                      AND c.undesirable = false
+                  ))::bigint AS no_categories,
+                  (SELECT COUNT(*) FROM active_vids av WHERE NOT EXISTS (
+                    SELECT 1 FROM video_pornstars vp
+                    JOIN pornstars p ON p.id = vp.pornstar_id
+                    WHERE vp.video_id = av.id
+                      AND p.deleted_at IS NULL
+                      AND p.disabled = false
+                      AND p.undesirable = false
+                  ))::bigint AS no_pornstars,
+                  (SELECT COUNT(*) FROM active_vids av WHERE NOT EXISTS (
+                    SELECT 1 FROM video_studios vs
+                    JOIN studios s ON s.id = vs.studio_id
+                    WHERE vs.video_id = av.id
+                      AND s.deleted_at IS NULL
+                      AND s.disabled = false
+                      AND s.undesirable = false
+                  ))::bigint AS no_studios
+                """
+            )
 
     async def fetch_error_rate():
         async with pool.acquire() as conn:
@@ -378,10 +361,14 @@ async def stats(
         errors=int(activity_row["errors"] or 0),
     )
 
-    total_catalog = int(metrics_row["health_total"] or 0)
+    active_catalog = int(
+        (metrics_row["health_active"] if "health_active" in metrics_row else None)
+        or metrics_row["health_total"]
+        or 0
+    )
     enriched_count = int(tpdb_row["enriched_count"] or 0)
     enrichment_pct = (
-        float(enriched_count * 100.0 / total_catalog) if total_catalog > 0 else 0.0
+        float(enriched_count * 100.0 / active_catalog) if active_catalog > 0 else 0.0
     )
 
     return StatsResponse(
@@ -444,6 +431,11 @@ async def _top_taxonomy(conn, term_table: str, join_table: str, term_fk: str, si
     Site-scoped via the video_sites join so per-site pages show only that
     brand's contribution."""
     join_videos, where_videos, params = _scope_videos(site)
+    extra_where = (
+        " AND (t.gender IS NULL OR t.gender::text IN ('female', 'unknown'))"
+        if term_table == "pornstars"
+        else ""
+    )
     sql = f"""
         SELECT t.id, t.name, t.slug,
                COUNT(v.id)::bigint AS video_count,
@@ -452,7 +444,13 @@ async def _top_taxonomy(conn, term_table: str, join_table: str, term_fk: str, si
           JOIN {join_table} j ON j.{term_fk} = t.id
           JOIN videos v ON v.id = j.video_id
           {join_videos}
-         WHERE {where_videos} AND t.disabled = false
+         WHERE {where_videos}
+           AND v.disabled_at IS NULL
+           AND t.disabled = false
+           AND t.deleted_at IS NULL
+           AND t.merged_into_id IS NULL
+           AND t.undesirable = false
+           {extra_where}
          GROUP BY t.id, t.name, t.slug
          ORDER BY view_sum DESC, video_count DESC
          LIMIT {TOP_N_LIMIT}

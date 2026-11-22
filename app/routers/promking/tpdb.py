@@ -118,7 +118,7 @@ async def fetch_tpdb_tags(
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT tpdb_id, data FROM tpdb_scenes WHERE title = $1 OR title = $2 LIMIT 1",
+                "SELECT tpdb_id, data FROM vault_raggae_scenes WHERE title = $1 OR title = $2 LIMIT 1",
                 title, search_query
             )
             if row:
@@ -216,14 +216,14 @@ async def fetch_tpdb_tags(
         if network and network.get("name") and network["name"] != site["name"]:
             studios.append(network["name"])
 
-    # Persist the matched scene object to tpdb_scenes
+    # Persist the matched scene object to vault_raggae_scenes
     try:
         pool = await get_pool()
         tpdb_id = str(scene.get("id") or "")
         async with pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO tpdb_scenes (title, tpdb_id, data)
+                INSERT INTO vault_raggae_scenes (title, tpdb_id, data)
                 VALUES ($1, $2, $3)
                 ON CONFLICT (tpdb_id) DO UPDATE SET data = EXCLUDED.data, title = EXCLUDED.title
                 """,
@@ -306,7 +306,7 @@ async def fetch_tpdb_tags(title: str, performer_hints: list[str] | None = None) 
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT tpdb_id, data FROM tpdb_scenes WHERE title = $1 OR title = $2 LIMIT 1",
+                "SELECT tpdb_id, data FROM vault_raggae_scenes WHERE title = $1 OR title = $2 LIMIT 1",
                 title, search_query
             )
             if row:
@@ -367,14 +367,14 @@ async def fetch_tpdb_tags(title: str, performer_hints: list[str] | None = None) 
         if network and network.get("name") and network["name"] != site["name"]:
             studios.append(network["name"])
 
-    # Persist the raw scene object to tpdb_scenes
+    # Persist the raw scene object to vault_raggae_scenes
     try:
         pool = await get_pool()
         tpdb_id = str(scene.get("id") or "")
         async with pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO tpdb_scenes (title, tpdb_id, data)
+                INSERT INTO vault_raggae_scenes (title, tpdb_id, data)
                 VALUES ($1, $2, $3)
                 ON CONFLICT (tpdb_id) DO UPDATE SET data = EXCLUDED.data, title = EXCLUDED.title
                 """,

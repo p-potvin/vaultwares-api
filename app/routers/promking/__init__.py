@@ -41,6 +41,7 @@ from .rebuild import router as rebuild_router
 from .viewers import router as viewers_router
 from .tpdb import router as tpdb_router
 from .analytics import router as analytics_router
+from .contact import router as contact_router
 from .search import router as search_router
 from .media import router as media_router
 from .short_links import router as short_links_router
@@ -58,6 +59,7 @@ router.include_router(rebuild_router)
 router.include_router(viewers_router)
 router.include_router(tpdb_router)
 router.include_router(analytics_router)
+router.include_router(contact_router)
 router.include_router(search_router)
 router.include_router(media_router)
 router.include_router(short_links_router)

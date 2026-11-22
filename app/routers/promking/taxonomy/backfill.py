@@ -223,8 +223,10 @@ async def run_stage_3_title_entities(
     t0 = time.time()
     # Load known performers with names of at least 4 chars (to avoid single-word common noise)
     p_rows = await conn.fetch(
-        "SELECT id, name FROM pornstars WHERE length(name) >= 4 AND deleted_at IS NULL AND disabled = false"
+        "SELECT id, name FROM pornstars WHERE length(name) >= 4 AND deleted_at IS NULL AND disabled = false AND COALESCE(undesirable, false) = false AND merged_into_id IS NULL"
     )
+    from .classifier import is_valid_pornstar_name
+    p_rows = [r for r in p_rows if is_valid_pornstar_name(r["name"] or "")]
     # Compile regex pattern for top 5,000 performers to keep memory & speed optimal
     top_pornstars = sorted(p_rows, key=lambda r: len(r["name"]), reverse=True)[:5000]
     

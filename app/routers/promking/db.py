@@ -26,6 +26,7 @@ from typing import Optional
 import asyncpg
 
 _pool: Optional[asyncpg.Pool] = None
+_admin_pool: Optional[asyncpg.Pool] = None
 
 
 async def _register_json_codecs(conn: asyncpg.Connection) -> None:
@@ -42,20 +43,24 @@ async def _register_json_codecs(conn: asyncpg.Connection) -> None:
         )
 
 
+def _get_normalized_dsn() -> str:
+    dsn = os.environ.get("PROMKING_DATABASE_URL")
+    if not dsn:
+        raise RuntimeError(
+            "PROMKING_DATABASE_URL is not set. See "
+            "Prom-King/shared-tube/docs/postgres.md for the local default."
+        )
+    # asyncpg uses postgres:// not postgresql:// — normalise.
+    if dsn.startswith("postgresql://"):
+        dsn = "postgres://" + dsn[len("postgresql://"):]
+    return dsn
+
+
 async def get_pool() -> asyncpg.Pool:
     global _pool
     if _pool is None:
-        dsn = os.environ.get("PROMKING_DATABASE_URL")
-        if not dsn:
-            raise RuntimeError(
-                "PROMKING_DATABASE_URL is not set. See "
-                "Prom-King/shared-tube/docs/postgres.md for the local default."
-            )
-        # asyncpg uses postgres:// not postgresql:// — normalise.
-        if dsn.startswith("postgresql://"):
-            dsn = "postgres://" + dsn[len("postgresql://"):]
         _pool = await asyncpg.create_pool(
-            dsn=dsn,
+            dsn=_get_normalized_dsn(),
             min_size=2,
             max_size=20,
             init=_register_json_codecs,
@@ -63,8 +68,27 @@ async def get_pool() -> asyncpg.Pool:
     return _pool
 
 
+async def get_admin_pool() -> asyncpg.Pool:
+    """
+    Dedicated connection pool for fetcher and admin operations so public
+    read spikes on the main pool can never starve `/api/promking/fetcher/*`.
+    """
+    global _admin_pool
+    if _admin_pool is None:
+        _admin_pool = await asyncpg.create_pool(
+            dsn=_get_normalized_dsn(),
+            min_size=1,
+            max_size=6,
+            init=_register_json_codecs,
+        )
+    return _admin_pool
+
+
 async def close_pool() -> None:
-    global _pool
+    global _pool, _admin_pool
     if _pool is not None:
         await _pool.close()
         _pool = None
+    if _admin_pool is not None:
+        await _admin_pool.close()
+        _admin_pool = None

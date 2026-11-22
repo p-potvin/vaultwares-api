@@ -1,7 +1,8 @@
 from __future__ import annotations
+import json
 import re
 from datetime import datetime
-from typing import Optional, List
+from typing import Any, Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from jose import jwt, JWTError
@@ -144,6 +145,19 @@ async def login(payload: PromKingLoginRequest):
     token = _create_access_token(user["id"], user["email"], is_admin, ttl_override=ttl)
     return PromKingLoginResponse(access_token=token, expires_in=ttl)
 
+def _coerce_preferences(raw: Any) -> dict:
+    """Coerce legacy double-encoded JSON string preferences into a dict."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
 @router.get("/me", response_model=PromKingMeResponse)
 async def me(current_user: dict = Depends(get_current_promking_user)):
     is_admin = current_user.get("role") == "admin"
@@ -158,7 +172,7 @@ async def me(current_user: dict = Depends(get_current_promking_user)):
         email=current_user["email"],
         role=current_user["role"],
         created_at=current_user.get("created_at"),
-        preferences=current_user.get("preferences") or {},
+        preferences=_coerce_preferences(current_user.get("preferences")),
         token=refreshed_token,
     )
 
@@ -167,7 +181,6 @@ async def update_preferences(
     payload: PromKingPreferencesUpdateRequest,
     current_user: dict = Depends(get_current_promking_user)
 ):
-    import json
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -177,7 +190,7 @@ async def update_preferences(
             WHERE id = $2 
             RETURNING id, email, role, created_at, disabled_at, preferences
             """,
-            json.dumps(payload.preferences),
+            payload.preferences,
             current_user["id"],
         )
         if not row:
@@ -188,7 +201,7 @@ async def update_preferences(
         email=row["email"],
         role=row["role"],
         created_at=row.get("created_at"),
-        preferences=row.get("preferences") or {},
+        preferences=_coerce_preferences(row.get("preferences")),
     )
 
 @router.get("/favorites", response_model=PromKingFavoritesResponse)

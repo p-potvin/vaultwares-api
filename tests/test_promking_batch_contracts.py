@@ -80,6 +80,63 @@ async def test_batch_merge_keeps_merged_term_names_as_aliases():
     assert response.merged_count == 2
     update_sql = mock_conn.fetch.call_args.args[0]
     assert "merged_into_id = $2" in update_sql
+    execute_sqls = [str(call.args[0]) for call in mock_conn.execute.call_args_list]
+    assert any("INSERT INTO video_pornstars" in s for s in execute_sqls)
+    assert any("DELETE FROM video_pornstars" in s and "pornstar_id = ANY" in s for s in execute_sqls)
+
+
+@pytest.mark.anyio
+async def test_batch_rename_terms_releases_tombstones_and_returns_canonical_slug():
+    from app.routers.promking._models import BatchTaxonomyRenameRequest, TaxonomyRename
+    from app.routers.promking.taxonomies import batch_rename_terms
+
+    payload = BatchTaxonomyRenameRequest(
+        renames=[TaxonomyRename(term_id=52127, new_name="Angel Youngs", new_slug="Angel Youngs")]
+    )
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = [{"id": 2756}]  # tombstone holding angel-youngs
+    mock_conn.fetchrow.side_effect = [
+        None,  # active conflict check
+        {"id": 52127, "name": "Angel Youngs", "slug": "angel-youngs"},  # RETURNING
+    ]
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+    with patch("app.routers.promking.taxonomies.get_pool", return_value=mock_pool):
+        res = await batch_rename_terms(payload, "pornstars")
+
+    assert res.count == 1
+    assert res.conflicts == []
+    assert len(res.updated) == 1
+    assert res.updated[0].term_id == 52127
+    assert res.updated[0].slug == "angel-youngs"
+    assert any("-del-" in str(call.args[0]) for call in mock_conn.execute.call_args_list)
+
+
+@pytest.mark.anyio
+async def test_batch_update_slugs_returns_canonical_slug():
+    from app.routers.promking._models import BatchTaxonomySlugUpdateRequest, TaxonomySlugUpdate
+    from app.routers.promking.taxonomies import batch_update_slugs
+
+    payload = BatchTaxonomySlugUpdateRequest(
+        updates=[TaxonomySlugUpdate(term_id=52127, new_slug="Angel Youngs!")]
+    )
+    mock_conn = AsyncMock()
+    mock_conn.fetch.return_value = []
+    mock_conn.fetchrow.side_effect = [
+        None,
+        {"id": 52127, "name": "Angel Young", "slug": "angel-youngs"},
+    ]
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__.return_value = mock_conn
+
+    with patch("app.routers.promking.taxonomies.get_pool", return_value=mock_pool):
+        res = await batch_update_slugs(payload, "pornstars")
+
+    assert res.count == 1
+    assert res.errors == []
+    assert len(res.updated) == 1
+    assert res.updated[0].slug == "angel-youngs"
 
 
 @pytest.mark.anyio

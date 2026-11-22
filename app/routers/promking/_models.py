@@ -21,6 +21,7 @@ class TermRef(BaseModel):
     gender: Optional[str] = None
     disabled: bool = False
     undesirable: bool = False
+    video_count: Optional[int] = None
 
 
 class BatchVideoIdsRequest(BaseModel):
@@ -161,6 +162,7 @@ class MergeAllDuplicatesResponse(BaseModel):
 class TaxonomyRename(BaseModel):
     term_id: int
     new_name: str = Field(min_length=1, max_length=160)
+    new_slug: Optional[str] = Field(default=None, min_length=1, max_length=160)
 
 
 class BatchTaxonomyRenameRequest(BaseModel):
@@ -181,10 +183,17 @@ class TaxonomyConflict(BaseModel):
     reason: str
 
 
+class UpdatedTaxonomyTerm(BaseModel):
+    term_id: int
+    name: str
+    slug: str
+
+
 class BatchTaxonomyUpdateResponse(BaseModel):
     count: int
     conflicts: list[TaxonomyConflict] = Field(default_factory=list)
     errors: list[TaxonomyConflict] = Field(default_factory=list)
+    updated: list[UpdatedTaxonomyTerm] = Field(default_factory=list)
 
 
 class BatchTaxonomyMergeRequest(BaseModel):
@@ -255,6 +264,9 @@ class VideoListItem(BaseModel):
     preview_url: Optional[str] = None
     duration_seconds: Optional[int] = None
     views: int = 0
+    likes: int = 0
+    dislikes: int = 0
+    uploaded_at: Optional[datetime] = None
     created_at: datetime
     disabled_at: Optional[datetime] = None
     is_disabled: bool = False
@@ -459,6 +471,8 @@ class PostbackRequest(BaseModel):
 
 class QueryRequest(BaseModel):
     sql: str
+
+
 class FuzzyReplaceCandidateTerm(BaseModel):
     id: int
     name: str
@@ -499,3 +513,6 @@ class BatchTaxonomyReplaceResponse(BaseModel):
     replaced_count: int
     video_recount: int
     errors: list[TaxonomyConflict] = Field(default_factory=list)
+
+
+

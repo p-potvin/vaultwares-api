@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
 import re
 import time
 
@@ -15,6 +16,7 @@ from PIL import Image
 
 import asyncpg
 from .db import get_pool
+from .settings_routes import resolve_pornstar_gender
 from .taxonomy.fuzzy_queue import compute_fuzzy_replace_queue
 from ._models import (
     BatchTaxonomyDeleteRequest,
@@ -36,6 +38,7 @@ from ._models import (
     TaxonomyConflict,
     TaxonomyKind,
     TermRef,
+    UpdatedTaxonomyTerm,
     WriteTaxonomyKind,
 )
 
@@ -50,9 +53,27 @@ router = APIRouter(prefix="/taxonomies", tags=["promking:taxonomies"])
 HOT_DECAY_SECONDS = 21 * 86400   # a video's weight decays ~1/e once it is 21 days old
 HOT_ROTATE_SECONDS = 6 * 3600    # the jitter reshuffles membership every 6 hours
 HOT_JITTER = 0.5                 # ±25% multiplicative wobble (0.75‥1.25) on the score
-HOT_CACHE_TTL_SECONDS = 120.0    # 2-minute in-memory cache for hot taxonomy queries
+HOT_CACHE_TTL_SECONDS = 600.0    # 10-minute fresh TTL (with stale-while-revalidate)
+HOT_TOP_POOL_LIMIT = 100         # shared pool size when offset=0 and limit<=100
 
 _hot_terms_cache: dict[str, tuple[float, list[dict]]] = {}
+_hot_terms_locks: dict[str, asyncio.Lock] = {}
+_hot_terms_refreshing: set[str] = set()
+
+
+def _format_term_refs(items: list[dict], request: Request) -> list[TermRef]:
+    user_agent = request.headers.get("user-agent", "").lower()
+    is_mobile = "mobile" in user_agent or "android" in user_agent or "iphone" in user_agent
+    resize_param = request.query_params.get("resize") == "true" or request.headers.get("x-resize-mobile") == "true"
+    results = []
+    for item in items:
+        it = dict(item)
+        if it.get("image_url") and (is_mobile or resize_param):
+            original_url = it["image_url"]
+            escaped_url = urllib.parse.quote_plus(original_url)
+            it["image_url"] = f"/api/promking/taxonomies/image/resize?url={escaped_url}&w=150&h=150"
+        results.append(TermRef(**it))
+    return results
 
 
 @dataclass(frozen=True)
@@ -92,14 +113,13 @@ async def list_terms(
     offset: int = Query(0, ge=0),
     q: str | None = Query(None, description="Fuzzy name search (ILIKE)."),
     gender: str | None = Query(
-        "female",
+        None,
         description=(
-            "Filter pornstars by gender. Accepts a single value (e.g. 'female') "
-            "or a comma-separated list (e.g. 'female,male'). Special tokens: "
-            "'null' (NULL only), 'has' (any non-null), 'all' (no filter, default)."
+            "Filter pornstars by gender (defaults to site setting 'female,null'). "
+            "Accepts 'female', 'female,null', 'male', 'null', 'has', 'all', etc."
         ),
     ),
-    sort: str = Query("default", description="Sort order: 'default', 'name_asc', 'name_desc', 'videos_asc', 'videos_desc', 'id_asc', 'id_desc', 'hot' (alias 'trending')"),
+    sort: str = Query("default", description="Sort order: 'default', 'name_asc', 'name_desc', 'videos_asc', 'videos_desc', 'id_asc', 'id_desc', 'newest', 'hot' (alias 'trending')"),
     include_disabled: bool = Query(False, description="If true, includes disabled terms"),
     disabled: str | None = Query(None, description="Filter by disabled status: 'all', 'true'/'disabled', 'false'/'enabled'"),
     letter: str | None = Query(None, description="Filter by first letter (A-Z or 0-9)"),
@@ -110,6 +130,10 @@ async def list_terms(
         table_config.join_table,
         table_config.term_column,
     )
+    effective_gender = gender
+    if effective_gender is None and table_config.has_gender:
+        effective_gender = await resolve_pornstar_gender(site)
+
     select_cols = f"{table}.id, {table}.name, {table}.slug, {table}.disabled, {table}.undesirable"
     group_cols = f"{table}.id, {table}.name, {table}.slug, {table}.disabled, {table}.undesirable"
     if table_config.has_gender:
@@ -148,8 +172,8 @@ async def list_terms(
     elif not include_disabled:
         extra_where.append(f"({table}.disabled = false AND {table}.undesirable = false)")
 
-    if gender and table_config.has_gender and gender.lower() != "all":
-        token = gender.lower()
+    if effective_gender and table_config.has_gender and effective_gender.lower() != "all":
+        token = effective_gender.lower()
         if token == "null":
             extra_where.append(f"({table}.gender IS NULL OR {table}.gender::text = 'unknown')")
         elif token == "has":
@@ -174,65 +198,61 @@ async def list_terms(
     elif sort == "name_desc":
         sort_order = f"{table}.name DESC"
     elif sort == "videos_desc":
-        sort_order = f"COUNT({join_table}.video_id) DESC, {table}.name ASC"
+        sort_order = f"COUNT(DISTINCT videos.id) DESC, {table}.name ASC"
     elif sort == "videos_asc":
-        sort_order = f"COUNT({join_table}.video_id) ASC, {table}.name ASC"
+        sort_order = f"COUNT(DISTINCT videos.id) ASC, {table}.name ASC"
+    elif sort == "newest":
+        sort_order = f"MAX(videos.created_at) DESC NULLS LAST, {table}.id DESC, {table}.name ASC"
     elif sort == "id_asc":
         sort_order = f"{table}.id ASC"
     elif sort == "id_desc":
         sort_order = f"{table}.id DESC"
-    elif sort in ("hot", "trending"):
-        # Recency-weighted popularity: SUM over the term's live videos of
-        # (views+1) * exp(-age / decay). Multiplied by a stable per-(term, bucket)
-        # jitter so near-tied terms rotate every HOT_ROTATE_SECONDS instead of
-        # freezing. The md5→bit(32)→bigint idiom yields a deterministic
-        # 0‥4294967295 hash we normalise to [0,1].
+    elif sort == "hot":
         bucket = int(time.time() // HOT_ROTATE_SECONDS)
         # Bind as str: the seed is used as `$N::text` inside md5(), so Postgres
         # infers the param type as text and asyncpg rejects a bare int (500).
         bucket_ph = add_param(str(bucket))
         jitter_lo = 1.0 - HOT_JITTER / 2.0
         sort_order = (
-            "COALESCE(SUM("
-            "(videos.views + 1) * exp("
-            f"-GREATEST(EXTRACT(EPOCH FROM (now() - videos.created_at)), 0) / {HOT_DECAY_SECONDS}.0"
-            ")), 0) * ("
+            "("
+            "COALESCE(COUNT(DISTINCT videos.id) FILTER (WHERE videos.created_at >= NOW() - INTERVAL '14 days'), 0)::double precision * 1000.0"
+            " + COUNT(DISTINCT videos.id)::double precision * 10.0"
+            f" + LEAST(COALESCE(SUM((videos.views + 1) * exp(-GREATEST(EXTRACT(EPOCH FROM (now() - videos.created_at)), 0) / {HOT_DECAY_SECONDS}.0)), 0), 500000.0) / 1000.0"
+            ") * ("
             f"{jitter_lo} + {HOT_JITTER} * ("
             f"('x' || substr(md5({table}.id::text || '-' || {bucket_ph}::text), 1, 8))::bit(32)::bigint::double precision"
             " / 4294967295.0)"
             f") DESC, {table}.name ASC"
         )
+    elif sort == "trending":
+        # User #10: deterministic Trending = most videos recently (14d), then most videos overall.
+        sort_order = (
+            "COALESCE(COUNT(DISTINCT videos.id) FILTER (WHERE videos.created_at >= NOW() - INTERVAL '14 days'), 0) DESC, "
+            "COUNT(DISTINCT videos.id) DESC, "
+            "COALESCE(SUM(videos.views), 0) DESC, "
+            f"{table}.name ASC"
+        )
     else:
         sort_order = f"{table}.name ASC"
 
     cache_key = None
-    if sort in ("hot", "trending") and not q:
-        bucket_now = int(time.time() // HOT_ROTATE_SECONDS)
-        cache_key = f"{kind}:{limit}:{offset}:{gender}:{include_disabled}:{disabled}:{letter}:{bucket_now}"
-        cached = _hot_terms_cache.get(cache_key)
-        if cached:
-            cached_ts, cached_items = cached
-            if time.time() - cached_ts < HOT_CACHE_TTL_SECONDS:
-                user_agent = request.headers.get("user-agent", "").lower()
-                is_mobile = "mobile" in user_agent or "android" in user_agent or "iphone" in user_agent
-                resize_param = request.query_params.get("resize") == "true" or request.headers.get("x-resize-mobile") == "true"
-                results = []
-                for item in cached_items:
-                    it = dict(item)
-                    if it.get("image_url") and (is_mobile or resize_param):
-                        original_url = it["image_url"]
-                        escaped_url = urllib.parse.quote_plus(original_url)
-                        it["image_url"] = f"/api/promking/taxonomies/image/resize?url={escaped_url}&w=150&h=150"
-                    results.append(TermRef(**it))
-                return results
+    use_shared_top_pool = False
+    is_cacheable_sort = sort in ("hot", "trending", "newest", "videos_desc")
+    is_public_filter = not q and not include_disabled and disabled in (None, "false", "0", "enabled")
+    if is_cacheable_sort and is_public_filter:
+        bucket_now = int(time.time() // HOT_ROTATE_SECONDS) if sort == "hot" else 0
+        if offset == 0 and limit <= HOT_TOP_POOL_LIMIT:
+            use_shared_top_pool = True
+            cache_key = f"{sort}:{kind}:top{HOT_TOP_POOL_LIMIT}:0:{effective_gender}:{include_disabled}:{disabled}:{letter}:{bucket_now}"
+        else:
+            cache_key = f"{sort}:{kind}:{limit}:{offset}:{effective_gender}:{include_disabled}:{disabled}:{letter}:{bucket_now}"
+        cache_ttl = HOT_CACHE_TTL_SECONDS if sort == "hot" else 120.0
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        if sort in ("hot", "trending"):
-            # Join through to the videos so the score can read views + created_at.
-            # disabled videos are dropped in the JOIN so they don't inflate a term.
-            sql = f"""
-                SELECT {select_cols}
+        async def _compute_hot_items() -> list[dict]:
+            query_limit = HOT_TOP_POOL_LIMIT if use_shared_top_pool else limit
+            query_offset = 0 if use_shared_top_pool else offset
+            sql_hot = f"""
+                SELECT {select_cols}, COUNT(DISTINCT videos.id)::int AS video_count
                 FROM {table}
                 LEFT JOIN {join_table} ON {join_table}.{term_column} = {table}.id
                 LEFT JOIN videos ON videos.id = {join_table}.video_id AND videos.disabled_at IS NULL
@@ -242,11 +262,52 @@ async def list_terms(
                 ORDER BY {sort_order}
                 LIMIT $1 OFFSET $2
             """
-        elif sort in ("videos_desc", "videos_asc"):
+            base_params_hot = [query_limit, query_offset]
+            for index, _ in enumerate(extra_params, start=len(base_params_hot) + 1):
+                sql_hot = sql_hot.replace(f"__p{index - len(base_params_hot)}__", f"${index}", 1)
+            pool_hot = await get_pool()
+            async with pool_hot.acquire() as conn_hot:
+                rows_hot = await conn_hot.fetch(sql_hot, *base_params_hot, *extra_params)
+            items = [dict(r) for r in rows_hot]
+            _hot_terms_cache[cache_key] = (time.time(), items)
+            return items
+
+        cached = _hot_terms_cache.get(cache_key)
+        if cached:
+            cached_ts, cached_items = cached
+            if time.time() - cached_ts >= cache_ttl and cache_key not in _hot_terms_refreshing:
+                _hot_terms_refreshing.add(cache_key)
+
+                async def _bg_refresh(key: str) -> None:
+                    try:
+                        await _compute_hot_items()
+                    except Exception:
+                        pass
+                    finally:
+                        _hot_terms_refreshing.discard(key)
+
+                asyncio.create_task(_bg_refresh(cache_key))
+            sliced = cached_items[:limit] if use_shared_top_pool else cached_items
+            return _format_term_refs(sliced, request)
+
+        lock = _hot_terms_locks.setdefault(cache_key, asyncio.Lock())
+        async with lock:
+            cached = _hot_terms_cache.get(cache_key)
+            if cached:
+                _, cached_items = cached
+            else:
+                cached_items = await _compute_hot_items()
+            sliced = cached_items[:limit] if use_shared_top_pool else cached_items
+            return _format_term_refs(sliced, request)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        if sort in ("hot", "trending", "newest", "videos_desc", "videos_asc"):
             sql = f"""
-                SELECT {select_cols}
+                SELECT {select_cols}, COUNT(DISTINCT videos.id)::int AS video_count
                 FROM {table}
                 LEFT JOIN {join_table} ON {join_table}.{term_column} = {table}.id
+                LEFT JOIN videos ON videos.id = {join_table}.video_id AND videos.disabled_at IS NULL
                 WHERE {table}.deleted_at IS NULL
                 {''.join(f' AND {clause}' for clause in extra_where)}
                 GROUP BY {group_cols}
@@ -255,12 +316,22 @@ async def list_terms(
             """
         else:
             sql = f"""
-                SELECT {select_cols}
-                FROM {table}
-                WHERE {table}.deleted_at IS NULL
-                {''.join(f' AND {clause}' for clause in extra_where)}
-                ORDER BY {sort_order}
-                LIMIT $1 OFFSET $2
+                WITH page AS (
+                    SELECT {select_cols}
+                    FROM {table}
+                    WHERE {table}.deleted_at IS NULL
+                    {''.join(f' AND {clause}' for clause in extra_where)}
+                    ORDER BY {sort_order}
+                    LIMIT $1 OFFSET $2
+                )
+                SELECT page.*,
+                       COALESCE((
+                           SELECT COUNT(DISTINCT j.video_id)
+                           FROM {join_table} j
+                           JOIN videos v ON v.id = j.video_id AND v.disabled_at IS NULL
+                           WHERE j.{term_column} = page.id
+                       ), 0)::int AS video_count
+                FROM page
             """
         base_params = [limit, offset]
 
@@ -270,22 +341,7 @@ async def list_terms(
 
         rows = await conn.fetch(sql, *base_params, *extra_params)
 
-    if cache_key:
-        _hot_terms_cache[cache_key] = (time.time(), [dict(r) for r in rows])
-
-    results = []
-    user_agent = request.headers.get("user-agent", "").lower()
-    is_mobile = "mobile" in user_agent or "android" in user_agent or "iphone" in user_agent
-    resize_param = request.query_params.get("resize") == "true" or request.headers.get("x-resize-mobile") == "true"
-
-    for r in rows:
-        item = dict(r)
-        if item.get("image_url") and (is_mobile or resize_param):
-            original_url = item["image_url"]
-            escaped_url = urllib.parse.quote_plus(original_url)
-            item["image_url"] = f"/api/promking/taxonomies/image/resize?url={escaped_url}&w=150&h=150"
-        results.append(TermRef(**item))
-    return results
+    return _format_term_refs([dict(r) for r in rows], request)
 
 
 @router.get("/{kind}/by-slug/{slug}", response_model=TermRef)
@@ -308,6 +364,15 @@ async def get_term_by_slug(
             f"FROM {config.table} WHERE slug = $1 AND deleted_at IS NULL{' AND disabled = false AND undesirable = false' if not include_disabled else ''}",
             slug,
         )
+        video_count = 0
+        if row is not None:
+            video_count = int(
+                await conn.fetchval(
+                    f"SELECT COUNT(DISTINCT j.video_id) FROM {config.join_table} j JOIN videos v ON v.id = j.video_id AND v.disabled_at IS NULL WHERE j.{config.term_column} = $1",
+                    row["id"],
+                )
+                or 0
+            )
     if row is None:
         raise HTTPException(status_code=404, detail=f"No {kind[:-1]} with slug '{slug}'")
 
@@ -328,6 +393,7 @@ async def get_term_by_slug(
         image_url=image_url,
         disabled=bool(row["disabled"]),
         undesirable=bool(row["undesirable"]),
+        video_count=video_count,
     )
 
 
@@ -356,6 +422,9 @@ async def count_terms(
     table_config = get_table_config(kind)
     # Only `table` is needed now that the site join is gone.
     table = table_config.table
+    effective_gender = gender
+    if effective_gender is None and table_config.has_gender:
+        effective_gender = await resolve_pornstar_gender(site)
 
     extra_where: list[str] = []
     extra_params: list = []
@@ -382,8 +451,8 @@ async def count_terms(
             pass
     elif not include_disabled:
         extra_where.append(f"({table}.disabled = false AND {table}.undesirable = false)")
-    if gender and table_config.has_gender and gender.lower() != "all":
-        token = gender.lower()
+    if effective_gender and table_config.has_gender and effective_gender.lower() != "all":
+        token = effective_gender.lower()
         if token == "null":
             extra_where.append(f"({table}.gender IS NULL OR {table}.gender::text = 'unknown')")
         elif token == "has":
@@ -545,34 +614,49 @@ async def batch_rename_terms(
     config = get_table_config(kind)
     count = 0
     conflicts: list[TaxonomyConflict] = []
+    updated: list[UpdatedTaxonomyTerm] = []
     pool = await get_pool()
     async with pool.acquire() as conn:
         for item in payload.renames:
-            next_slug = slugify(item.new_name)
+            next_slug = slugify(item.new_slug) if item.new_slug else slugify(item.new_name)
+            # Release any soft-deleted tombstone occupying the target name or slug.
+            deleted_rows = await conn.fetch(
+                f"SELECT id FROM {config.table} WHERE (lower(name) = lower($1) OR slug = $2) AND id <> $3 AND deleted_at IS NOT NULL",
+                item.new_name,
+                next_slug,
+                item.term_id,
+            )
+            for dr in deleted_rows:
+                await conn.execute(
+                    f"UPDATE {config.table} SET slug = LEFT(slug, 140) || '-del-' || id, name = LEFT(name, 140) || ' [del ' || id || ']' WHERE id = $1 AND deleted_at IS NOT NULL",
+                    dr["id"],
+                )
             existing = await conn.fetchrow(
-                f"SELECT id, deleted_at FROM {config.table} WHERE (lower(name) = lower($1) OR slug = $2) AND id <> $3",
+                f"SELECT id FROM {config.table} WHERE (lower(name) = lower($1) OR slug = $2) AND id <> $3 AND deleted_at IS NULL",
                 item.new_name,
                 next_slug,
                 item.term_id,
             )
             if existing:
-                reason = "name or slug already exists (archived)" if existing["deleted_at"] else "name or slug already exists"
-                conflicts.append(TaxonomyConflict(term_id=item.term_id, reason=reason))
+                conflicts.append(TaxonomyConflict(term_id=item.term_id, reason="name or slug already exists"))
                 continue
             try:
                 row = await conn.fetchrow(
-                    f"UPDATE {config.table} SET name = $1, slug = $2 WHERE id = $3 AND deleted_at IS NULL RETURNING id",
+                    f"UPDATE {config.table} SET name = $1, slug = $2 WHERE id = $3 AND deleted_at IS NULL RETURNING id, name, slug",
                     item.new_name,
                     next_slug,
                     item.term_id,
                 )
                 if row:
                     count += 1
+                    updated.append(UpdatedTaxonomyTerm(term_id=row["id"], name=row["name"], slug=row["slug"]))
                 else:
                     conflicts.append(TaxonomyConflict(term_id=item.term_id, reason="term not found"))
             except asyncpg.UniqueViolationError:
                 conflicts.append(TaxonomyConflict(term_id=item.term_id, reason="name or slug violates unique constraint"))
-    return BatchTaxonomyUpdateResponse(count=count, conflicts=conflicts)
+    if count > 0:
+        _hot_terms_cache.clear()
+    return BatchTaxonomyUpdateResponse(count=count, conflicts=conflicts, updated=updated)
 
 
 @router.post("/{kind}/batch/slug-update", response_model=BatchTaxonomyUpdateResponse)
@@ -583,32 +667,46 @@ async def batch_update_slugs(
     config = get_table_config(kind)
     count = 0
     errors: list[TaxonomyConflict] = []
+    updated: list[UpdatedTaxonomyTerm] = []
     pool = await get_pool()
     async with pool.acquire() as conn:
         for item in payload.updates:
             next_slug = slugify(item.new_slug)
+            # Free any archived row still holding this slug so an active rename/slug change succeeds.
+            deleted_rows = await conn.fetch(
+                f"SELECT id FROM {config.table} WHERE slug = $1 AND id <> $2 AND deleted_at IS NOT NULL",
+                next_slug,
+                item.term_id,
+            )
+            for dr in deleted_rows:
+                await conn.execute(
+                    f"UPDATE {config.table} SET slug = LEFT(slug, 140) || '-del-' || id WHERE id = $1 AND deleted_at IS NOT NULL",
+                    dr["id"],
+                )
             existing = await conn.fetchrow(
-                f"SELECT id, deleted_at FROM {config.table} WHERE slug = $1 AND id <> $2",
+                f"SELECT id FROM {config.table} WHERE slug = $1 AND id <> $2 AND deleted_at IS NULL",
                 next_slug,
                 item.term_id,
             )
             if existing:
-                reason = "slug already exists (archived)" if existing["deleted_at"] else "slug already exists"
-                errors.append(TaxonomyConflict(term_id=item.term_id, reason=reason))
+                errors.append(TaxonomyConflict(term_id=item.term_id, reason="slug already exists"))
                 continue
             try:
                 row = await conn.fetchrow(
-                    f"UPDATE {config.table} SET slug = $1 WHERE id = $2 AND deleted_at IS NULL RETURNING id",
+                    f"UPDATE {config.table} SET slug = $1 WHERE id = $2 AND deleted_at IS NULL RETURNING id, name, slug",
                     next_slug,
                     item.term_id,
                 )
                 if row:
                     count += 1
+                    updated.append(UpdatedTaxonomyTerm(term_id=row["id"], name=row["name"], slug=row["slug"]))
                 else:
                     errors.append(TaxonomyConflict(term_id=item.term_id, reason="term not found"))
             except asyncpg.UniqueViolationError:
                 errors.append(TaxonomyConflict(term_id=item.term_id, reason="slug violates unique constraint"))
-    return BatchTaxonomyUpdateResponse(count=count, errors=errors)
+    if count > 0:
+        _hot_terms_cache.clear()
+    return BatchTaxonomyUpdateResponse(count=count, errors=errors, updated=updated)
 
 
 @router.post("/{kind}/batch/merge", response_model=BatchTaxonomyMergeResponse)
@@ -643,6 +741,10 @@ async def batch_merge_terms(
             ON CONFLICT DO NOTHING
             """,
             payload.primary_id,
+            merge_from,
+        )
+        await conn.execute(
+            f"DELETE FROM {config.join_table} WHERE {config.term_column} = ANY($1::int[])",
             merge_from,
         )
         deleted_rows = await conn.fetch(
@@ -852,6 +954,8 @@ async def batch_update_pornstar_gender(
                 count += 1
             else:
                 errors.append(TaxonomyConflict(term_id=item.pornstar_id, reason="pornstar not found"))
+    if count > 0:
+        _hot_terms_cache.clear()
     return BatchTaxonomyGenderUpdateResponse(count=count, errors=errors)
 
 
@@ -884,7 +988,7 @@ async def resize_image(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to fetch image: {str(e)}")
 
-    try:
+    def _process_image() -> tuple[bytes, str]:
         img = Image.open(io.BytesIO(img_data))
         # Keep transparency / RGBA if needed, or convert to RGB
         if img.mode in ("RGBA", "LA", "P"):
@@ -895,10 +999,14 @@ async def resize_image(
             img.thumbnail((target_w, target_h), Image.Resampling.LANCZOS)
             output_format = "JPEG"
             media_type = "image/jpeg"
-            
+
         out_buf = io.BytesIO()
         img.save(out_buf, format=output_format, quality=85)
-        return Response(content=out_buf.getvalue(), media_type=media_type, headers={
+        return out_buf.getvalue(), media_type
+
+    try:
+        out_bytes, media_type = await run_in_threadpool(_process_image)
+        return Response(content=out_bytes, media_type=media_type, headers={
             "Cache-Control": "public, max-age=604800, immutable"
         })
     except Exception as e:
