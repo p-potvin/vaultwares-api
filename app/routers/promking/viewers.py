@@ -15,7 +15,8 @@ this are in shared-tube (admin Users tab + per-app /account page).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+import json
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
@@ -35,7 +36,13 @@ class FavouriteVideo(BaseModel):
     slug: str
     title: str
     thumbnail_url: Optional[str] = None
+    preview_url: Optional[str] = None
     duration_seconds: Optional[int] = None
+    views: int = 0
+    created_at: Optional[datetime] = None
+    qualities: Optional[list[dict[str, Any]]] = None
+    studios: list[dict[str, Any]] = Field(default_factory=list)
+    pornstars: list[dict[str, Any]] = Field(default_factory=list)
     added_at: datetime
 
 
@@ -98,7 +105,20 @@ async def list_my_favourites(
         rows = await conn.fetch(
             """
             SELECT v.id, vs.site::text AS site, v.slug, v.title, v.thumbnail_url,
-                   v.duration_seconds, f.created_at AS added_at
+                   v.preview_url, v.duration_seconds, COALESCE(v.views, 0)::int AS views,
+                   v.created_at, v.qualities, f.created_at AS added_at,
+                   (
+                     SELECT coalesce(jsonb_agg(jsonb_build_object('id', a.id, 'name', a.name, 'slug', a.slug)), '[]'::jsonb)
+                     FROM video_pornstars va
+                     JOIN pornstars a ON a.id = va.pornstar_id
+                     WHERE va.video_id = v.id AND a.deleted_at IS NULL AND a.disabled = false
+                   ) AS pornstars_json,
+                   (
+                     SELECT coalesce(jsonb_agg(jsonb_build_object('id', s.id, 'name', s.name, 'slug', s.slug)), '[]'::jsonb)
+                     FROM video_studios vs2
+                     JOIN studios s ON s.id = vs2.studio_id
+                     WHERE vs2.video_id = v.id AND s.deleted_at IS NULL AND s.disabled = false
+                   ) AS studios_json
               FROM favourites f
               JOIN videos v       ON v.id = f.video_id
               JOIN video_sites vs ON vs.video_id = v.id
@@ -122,7 +142,21 @@ async def list_my_favourites(
             user["id"],
             site,
         )
-    return FavouriteListResponse(videos=[FavouriteVideo(**dict(r)) for r in rows], total=int(total or 0))
+    items: list[FavouriteVideo] = []
+    for r in rows:
+        d = dict(r)
+        for col, target in (("qualities", "qualities"), ("pornstars_json", "pornstars"), ("studios_json", "studios")):
+            raw = d.pop(col, None) if col != target else d.get(col)
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    raw = None if target == "qualities" else []
+            elif not isinstance(raw, list):
+                raw = None if target == "qualities" else []
+            d[target] = raw
+        items.append(FavouriteVideo(**d))
+    return FavouriteListResponse(videos=items, total=int(total or 0))
 
 
 @router.post("/me/favourites/merge", response_model=MergeFavouritesResponse)
