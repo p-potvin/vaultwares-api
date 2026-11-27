@@ -44,3 +44,18 @@ def test_no_query_asks_nothing():
     client, seen = _client({})
     assert asyncio.run(tpdb._catalog_request(client, "scenes", {"q": "  "})) == {"data": []}
     assert seen == []
+
+
+def test_spelling_variants_reach_the_catalog_name():
+    asked = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        q = request.url.params["q"]
+        asked.append(q)
+        items = [{"source": "stashdb", "name": "Alice Black", "image": "img", "scenes": 3}] if q == "Alice Black" else []
+        return httpx.Response(200, json={"items": items})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    out = asyncio.run(tpdb._catalog_request(client, "performers", {"q": "AliceBlack", "limit": 1}))
+    assert asked == ["AliceBlack", "Alice Black"] and out["data"][0]["name"] == "Alice Black"
+    assert tpdb._variants("Indecentes-Voisines") == ["Indecentes-Voisines", "Indecentes Voisines"]

@@ -9,12 +9,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# lookups go to the scene catalog, not TPDB (PR #101); run from the repository root
+from app.routers.promking.tpdb import _catalog_request  # noqa: E402
+from app.routers.promking.taxonomy.dictionaries import clean_title_for_search  # noqa: E402
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("backfill")
-
-TPDB_API_KEY = "LzLhKwMbmOnTIV6S576t5PUpELMot0yyRriatrgo517768e5"
-_tpdb_lock = asyncio.Lock()
-_current_delay = 0.1
 
 def slugify(text: str) -> str:
     text = text.lower()
@@ -31,23 +31,6 @@ async def _register_json_codecs(conn: asyncpg.Connection) -> None:
             schema="pg_catalog",
         )
 
-async def _make_tpdb_request(client: httpx.AsyncClient, url: str, params: dict, headers: dict) -> dict:
-    global _current_delay
-    async with _tpdb_lock:
-        await asyncio.sleep(_current_delay)
-        
-        resp = await client.get(url, params=params, headers=headers, timeout=10.0)
-        if resp.status_code == 429:
-            logger.warning("TPDB rate limit hit, waiting 3s...")
-            await asyncio.sleep(3.0)
-            resp = await client.get(url, params=params, headers=headers, timeout=10.0)
-            _current_delay = 0.1
-        else:
-            _current_delay = 0.1
-            
-        resp.raise_for_status()
-        return resp.json()
-
 async def process_batch(pool, table, rows, kind):
     async with httpx.AsyncClient() as client:
         for row in rows:
@@ -57,21 +40,16 @@ async def process_batch(pool, table, rows, kind):
             logger.info(f"Processing {kind}: {name} (id={id_})")
             
             endpoint = "performers" if kind == "performer" else "sites"
-            url = f"https://api.theporndb.net/{endpoint}"
             params = {"q": name, "limit": 1}
-            headers = {
-                "Authorization": f"Bearer {TPDB_API_KEY}",
-                "Accept": "application/json"
-            }
-            
+
             try:
-                data = await _make_tpdb_request(client, url, params, headers)
+                data = await _catalog_request(client, endpoint, params)
             except Exception as e:
                 logger.error(f"Failed to fetch {name}: {e}")
                 continue
-                
+
             if not data or not data.get("data"):
-                logger.info(f"  -> No data found on TPDB")
+                logger.info(f"  -> No match in the catalog")
                 continue
                 
             items = data["data"]
@@ -87,7 +65,7 @@ async def process_batch(pool, table, rows, kind):
                 gender = None
                 
             if not image_url:
-                logger.info(f"  -> No image found in TPDB data")
+                logger.info(f"  -> No image in the catalog")
                 continue
                 
             async with pool.acquire() as conn:
@@ -123,23 +101,18 @@ async def backfill_video_terms(pool):
         return
 
     async with httpx.AsyncClient() as client:
-        headers = {
-            "Authorization": f"Bearer {TPDB_API_KEY}",
-            "Accept": "application/json"
-        }
         for row in rows:
             video_id = row["id"]
             title = row["title"]
-            logger.info(f"Checking TPDB for video id={video_id}: {title}")
-            url = "https://api.theporndb.net/scenes"
+            logger.info(f"Checking the catalog for video id={video_id}: {title}")
             try:
-                data = await _make_tpdb_request(client, url, {"parse": title}, headers)
+                data = await _catalog_request(client, "scenes", {"q": clean_title_for_search(title) or title, "limit": 1})
             except Exception as e:
-                logger.warning(f"  -> TPDB scene search error: {e}")
+                logger.warning(f"  -> catalog scene search error: {e}")
                 continue
 
             if not data or not data.get("data"):
-                logger.info("  -> No scene found on TPDB")
+                logger.info("  -> No scene found in the catalog")
                 continue
 
             scene = data["data"][0] if isinstance(data["data"], list) and data["data"] else data["data"]

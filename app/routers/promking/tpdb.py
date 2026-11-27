@@ -78,19 +78,42 @@ async def _catalog_request(client: httpx.AsyncClient, kind: str, params: dict) -
         q = _DOMAIN.sub("", q)            # "SexMex.xxx" is listed as "Sex Mex"
     if not q:
         return {"data": []}
-    ask = limit if kind == "scenes" else max(limit, PEOPLE_POOL)
-    resp = await client.get(f"{CATALOG_BASE}{_CATALOG_ROUTES[kind]}", params={"q": q, "limit": ask},
-                            headers={"X-VW-Project": CATALOG_PROJECT}, timeout=15.0)
-    resp.raise_for_status()
-    items = resp.json().get("items") or []
     if kind == "scenes":
+        items = await _catalog_get(client, kind, q, limit)
         return {"data": [_as_scene(i) for i in items[:limit]]}
     # the catalog's q is a substring search ("Tiny" also finds "Tiny Texie"): only the same name counts, so a
-    # namesake's picture is never taken; the one with an image and the most scenes first
+    # namesake's picture is never taken; the one with an image and the most scenes first. The substring search
+    # needs the catalog's spelling, so the name's variants are asked in turn ("AliceBlack" -> "Alice Black").
     want = _norm(q)
-    items = [i for i in items if _norm(_DOMAIN.sub("", i.get("name") or "") if kind == "sites" else i.get("name")) == want]
-    items.sort(key=lambda i: (not i.get("image"), -(i.get("scenes") or 0)))
-    return {"data": [_as_person(i, kind) for i in items[:limit]]}
+    for variant in _variants(q):
+        items = await _catalog_get(client, kind, variant, max(limit, PEOPLE_POOL))
+        items = [i for i in items
+                 if _norm(_DOMAIN.sub("", i.get("name") or "") if kind == "sites" else i.get("name")) == want]
+        if items:
+            items.sort(key=lambda i: (not i.get("image"), -(i.get("scenes") or 0)))
+            return {"data": [_as_person(i, kind) for i in items[:limit]]}
+    return {"data": []}
+
+
+async def _catalog_get(client: httpx.AsyncClient, kind: str, q: str, limit: int) -> list[dict]:
+    resp = await client.get(f"{CATALOG_BASE}{_CATALOG_ROUTES[kind]}", params={"q": q, "limit": limit},
+                            headers={"X-VW-Project": CATALOG_PROJECT}, timeout=15.0)
+    resp.raise_for_status()
+    return resp.json().get("items") or []
+
+
+def _variants(name: str) -> list[str]:
+    """The name as given, then with separators as spaces ("Indecentes-Voisines"), then camel case split
+    ("AliceBlack", "HouseholdFantasy"), then both; each asked once."""
+    spaced = re.sub(r"[._\-]+", " ", name).strip()
+    camel = re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=[0-9])", " ", name).strip()
+    both = re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=[0-9])", " ", spaced).strip()
+    out: list[str] = []
+    for v in (name.strip(), spaced, camel, both):
+        v = re.sub(r"\s+", " ", v)
+        if v and v not in out:
+            out.append(v)
+    return out
 
 import re
 from .taxonomy.dictionaries import KNOWN_STUDIOS, clean_title_for_search

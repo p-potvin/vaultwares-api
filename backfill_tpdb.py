@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.routers.promking.db import get_pool
-from app.routers.promking.tpdb import _make_tpdb_request, TPDB_API_KEY
+from app.routers.promking.tpdb import _catalog_request    # the scene catalog, not TPDB (PR #101)
 from app.routers.promking.taxonomies import slugify
 
 logging.basicConfig(level=logging.INFO)
@@ -23,21 +23,16 @@ async def process_batch(pool, table, rows, kind):
             logger.info(f"Processing {kind}: {name} (id={id_})")
             
             endpoint = "performers" if kind == "performer" else "sites"
-            url = f"https://api.theporndb.net/{endpoint}"
             params = {"q": name, "limit": 1}
-            headers = {
-                "Authorization": f"Bearer {TPDB_API_KEY}",
-                "Accept": "application/json"
-            }
-            
+
             try:
-                data = await _make_tpdb_request(client, url, params, headers)
+                data = await _catalog_request(client, endpoint, params)
             except Exception as e:
                 logger.error(f"Failed to fetch {name}: {e}")
                 continue
-                
+
             if not data or not data.get("data"):
-                logger.info(f"  -> No data found on TPDB")
+                logger.info(f"  -> No match in the catalog")
                 continue
                 
             items = data["data"]
@@ -53,7 +48,7 @@ async def process_batch(pool, table, rows, kind):
                 gender = None
                 
             if not image_url:
-                logger.info(f"  -> No image found in TPDB data")
+                logger.info(f"  -> No image in the catalog")
                 continue
                 
             async with pool.acquire() as conn:
