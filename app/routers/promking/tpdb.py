@@ -1,6 +1,8 @@
 import httpx
 import asyncio
 import json
+import os
+import re
 import logging
 from fastapi import APIRouter, BackgroundTasks, Query, HTTPException
 from pydantic import BaseModel
@@ -12,28 +14,83 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tpdb", tags=["promking:tpdb"])
 
-TPDB_API_KEY = "LzLhKwMbmOnTIV6S576t5PUpELMot0yyRriatrgo517768e5"
 TPDB_BATCH_BACKFILL_LIMIT = 25
 
-_tpdb_lock = asyncio.Lock()
-_current_delay = 0.1
+# Scene, performer and studio lookups go to our own scene catalog (vault-raggae's gateway on the workstation, over the
+# tailnet), which holds both outside catalogs' scenes, performers and studios with their images (operator, Fri 27 Nov
+# 2026: "if vaultwares-api is still querying TPDB/Stash it needs to be pointed at our local catalog"). No outside
+# request is made. When the workstation does not answer, the lookup fails like a failed request did (nothing is
+# marked missing, so the next call tries again).
+CATALOG_BASE = os.environ.get("PROMKING_CATALOG_URL", "http://100.71.101.21:8750").rstrip("/")
+CATALOG_PROJECT = "vaultwares-api"
+_CATALOG_ROUTES = {"scenes": "/v1/scenes", "performers": "/v1/performers", "sites": "/v1/studios"}
+PEOPLE_POOL = 20          # names asked for to pick the best match from (same name, then image, then most scenes)
+_DOMAIN = re.compile(r"\.(com|net|xxx|org|tv|nl|fr|de|es|it|co\.uk|uk|cz|ru|jp|eu|info|porn|sex|club|me|io)$", re.I)
 
-async def _make_tpdb_request(client: httpx.AsyncClient, url: str, params: dict, headers: dict) -> dict:
-    global _current_delay
-    async with _tpdb_lock:
-        await asyncio.sleep(_current_delay)
-        
-        resp = await client.get(url, params=params, headers=headers, timeout=10.0)
-        if resp.status_code == 429:
-            logger.warning("TPDB rate limit hit, waiting 3s...")
-            await asyncio.sleep(3.0)
-            resp = await client.get(url, params=params, headers=headers, timeout=10.0)
-            _current_delay = 0.1
-        else:
-            _current_delay = 0.1
-            
-        resp.raise_for_status()
-        return resp.json()
+
+def _norm(text: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def _gender(value: str | None) -> str:
+    g = (value or "").lower()
+    if "trans" in g:
+        return "trans"
+    if "female" in g:
+        return "female"
+    if "male" in g:
+        return "male"
+    return "unknown" if not g else "other"
+
+
+def _as_scene(item: dict) -> dict:
+    """A catalog scene in the shape the matching code reads (TPDB's: site, performers, tags as dicts)."""
+    return {
+        "id": f"{item.get('source')}:{item.get('id')}",
+        "title": item.get("title"),
+        "date": item.get("date"),
+        "url": item.get("url"),
+        "image": item.get("image"),
+        "site": {"name": item.get("studio_name")} if item.get("studio_name") else None,
+        "performers": [{"name": p.get("name"), "gender": p.get("gender")} for p in item.get("performers") or []
+                       if p.get("name")],
+        "tags": [{"name": t if isinstance(t, str) else (t or {}).get("name")} for t in item.get("tags") or []],
+        "source": item.get("source"),
+    }
+
+
+def _as_person(item: dict, kind: str) -> dict:
+    if kind == "performers":
+        return {"name": item.get("name"), "gender": _gender(item.get("gender")), "image": item.get("image"),
+                "aliases": item.get("aliases") or [], "source": item.get("source")}
+    return {"name": item.get("name"), "logo": item.get("image"), "image": item.get("image"),
+            "source": item.get("source")}
+
+
+async def _catalog_request(client: httpx.AsyncClient, kind: str, params: dict) -> dict:
+    """``kind`` (scenes | performers | sites) looked up in the catalog; returns ``{"data": [...]}`` as TPDB did.
+
+    People are asked ``PEOPLE_POOL`` at a time and ordered exact name first, then by scene count, so ``limit: 1``
+    takes the right person rather than the first namesake."""
+    q = (params.get("q") or "").strip()
+    limit = int(params.get("limit") or 10)
+    if kind == "sites":
+        q = _DOMAIN.sub("", q)            # "SexMex.xxx" is listed as "Sex Mex"
+    if not q:
+        return {"data": []}
+    ask = limit if kind == "scenes" else max(limit, PEOPLE_POOL)
+    resp = await client.get(f"{CATALOG_BASE}{_CATALOG_ROUTES[kind]}", params={"q": q, "limit": ask},
+                            headers={"X-VW-Project": CATALOG_PROJECT}, timeout=15.0)
+    resp.raise_for_status()
+    items = resp.json().get("items") or []
+    if kind == "scenes":
+        return {"data": [_as_scene(i) for i in items[:limit]]}
+    # the catalog's q is a substring search ("Tiny" also finds "Tiny Texie"): only the same name counts, so a
+    # namesake's picture is never taken; the one with an image and the most scenes first
+    want = _norm(q)
+    items = [i for i in items if _norm(_DOMAIN.sub("", i.get("name") or "") if kind == "sites" else i.get("name")) == want]
+    items.sort(key=lambda i: (not i.get("image"), -(i.get("scenes") or 0)))
+    return {"data": [_as_person(i, kind) for i in items[:limit]]}
 
 import re
 from .taxonomy.dictionaries import KNOWN_STUDIOS, clean_title_for_search
@@ -144,11 +201,7 @@ async def fetch_tpdb_tags(
         logger.warning(f"Failed to check local TPDB cache for '{title}': {e}")
 
     candidates = generate_candidate_scene_queries(title, studio_hint, performer_hints)
-    url = "https://api.theporndb.net/scenes"
-    headers = {
-        "Authorization": f"Bearer {TPDB_API_KEY}",
-        "Accept": "application/json"
-    }
+    url = "scenes"
 
     best_match = None
     best_score = -1
@@ -156,7 +209,7 @@ async def fetch_tpdb_tags(
     try:
         async with httpx.AsyncClient() as client:
             for q in candidates:
-                data = await _make_tpdb_request(client, url, {"q": q, "limit": 10}, headers)
+                data = await _catalog_request(client, url, {"q": q, "limit": 10})
                 items = (data or {}).get("data", [])
                 if not items:
                     continue
@@ -249,16 +302,12 @@ async def verify_performer(name: str) -> dict | None:
     if not clean_name:
         return None
 
-    url = "https://api.theporndb.net/performers"
+    url = "performers"
     params = {"q": clean_name, "limit": 1}
-    headers = {
-        "Authorization": f"Bearer {TPDB_API_KEY}",
-        "Accept": "application/json",
-    }
 
     try:
         async with httpx.AsyncClient() as client:
-            data = await _make_tpdb_request(client, url, params, headers)
+            data = await _catalog_request(client, url, params)
         items = data.get("data", [])
         if not items:
             return None
@@ -331,22 +380,18 @@ async def fetch_tpdb_tags(title: str, performer_hints: list[str] | None = None) 
     except Exception as e:
         logger.warning(f"Failed to check local TPDB cache for '{title}': {e}")
 
-    url = "https://api.theporndb.net/scenes"
-    headers = {
-        "Authorization": f"Bearer {TPDB_API_KEY}",
-        "Accept": "application/json"
-    }
+    url = "scenes"
 
     data = None
     # Primary strategy: query with cleaned title
     try:
         async with httpx.AsyncClient() as client:
-            data = await _make_tpdb_request(client, url, {"q": search_query}, headers)
+            data = await _catalog_request(client, url, {"q": search_query})
             # Secondary fallback: if empty and we have performer hints, search performer names
             if (not data or not data.get("data")) and performer_hints:
                 perf_q = " ".join(performer_hints[:2])
                 if perf_q and perf_q != search_query:
-                    data = await _make_tpdb_request(client, url, {"q": perf_q}, headers)
+                    data = await _catalog_request(client, url, {"q": perf_q})
     except Exception as e:
         logger.warning(f"TPDB query failed for '{title}': {e}")
         return None
@@ -407,16 +452,12 @@ class BatchRequest(BaseModel):
 async def _backfill_single(type_: str, name: str, slug: str, row_id: int) -> None:
     """Background task: fetch from TPDB and update the local DB for one missing image."""
     endpoint = "performers" if type_ == "performer" else "sites"
-    url = f"https://api.theporndb.net/{endpoint}"
+    url = endpoint
     params = {"q": name, "limit": 1}
-    headers = {
-        "Authorization": f"Bearer {TPDB_API_KEY}",
-        "Accept": "application/json"
-    }
     table = "pornstars" if type_ == "performer" else "studios"
     try:
         async with httpx.AsyncClient() as client:
-            data = await _make_tpdb_request(client, url, params, headers)
+            data = await _catalog_request(client, url, params)
         if not data or not data.get("data"):
             pool = await get_pool()
             async with pool.acquire() as conn:
@@ -484,16 +525,12 @@ async def resolve_tpdb_image(
 
     # 2. Not in local DB or missing image. Hit TPDB.
     endpoint = "performers" if type == "performer" else "sites"
-    url = f"https://api.theporndb.net/{endpoint}"
+    url = endpoint
     params = {"q": q, "limit": 1}
-    headers = {
-        "Authorization": f"Bearer {TPDB_API_KEY}",
-        "Accept": "application/json"
-    }
 
     try:
         async with httpx.AsyncClient() as client:
-            data = await _make_tpdb_request(client, url, params, headers)
+            data = await _catalog_request(client, url, params)
     except Exception as e:
         logger.warning(f"TPDB resolve failed for {type} '{q}': {e}")
         return {"imageUrl": None}
