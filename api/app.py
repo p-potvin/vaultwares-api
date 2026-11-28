@@ -126,7 +126,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="VaultWares API",
     description="Central API for VaultWares auth, DB-backed telemetry, monitor reads, logging, workflows, and media services.",
-    version="0.2.18",
+    version="0.2.19",
     lifespan=lifespan,
     docs_url=None,  # served below via a self-hosted Swagger UI (default /docs pulls assets from a CDN, which our CSP blocks)
 )
