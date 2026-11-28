@@ -104,12 +104,22 @@ async def _catalog_get(client: httpx.AsyncClient, kind: str, q: str, limit: int)
 
 def _variants(name: str) -> list[str]:
     """The name as given, then with separators as spaces ("Indecentes-Voisines"), then camel case split
-    ("AliceBlack", "HouseholdFantasy"), then both; each asked once."""
+    ("AliceBlack", "HouseholdFantasy"), then both, then a possessive on words ending in s ("Jays POV" ->
+    "Jay's POV": every such word, then each alone); each asked once."""
     spaced = re.sub(r"[._\-]+", " ", name).strip()
     camel = re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=[0-9])", " ", name).strip()
     both = re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Za-z])(?=[0-9])", " ", spaced).strip()
+    words = both.split()
+    # words of 3+ letters ending in a single s (not "ss"), without an apostrophe already
+    s_words = [i for i, w in enumerate(words) if len(w) > 2 and w[-1] in "sS" and w[-2] not in "sS'" and "'" not in w]
+    possessive = []
+    if s_words:
+        possessive.append(" ".join(w[:-1] + "'" + w[-1] if i in s_words else w for i, w in enumerate(words)))
+        if len(s_words) > 1:
+            possessive += [" ".join(w[:-1] + "'" + w[-1] if i == k else w for i, w in enumerate(words))
+                           for k in s_words[:3]]
     out: list[str] = []
-    for v in (name.strip(), spaced, camel, both):
+    for v in (name.strip(), spaced, camel, both, *possessive):
         v = re.sub(r"\s+", " ", v)
         if v and v not in out:
             out.append(v)

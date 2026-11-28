@@ -58,4 +58,11 @@ def test_spelling_variants_reach_the_catalog_name():
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     out = asyncio.run(tpdb._catalog_request(client, "performers", {"q": "AliceBlack", "limit": 1}))
     assert asked == ["AliceBlack", "Alice Black"] and out["data"][0]["name"] == "Alice Black"
-    assert tpdb._variants("Indecentes-Voisines") == ["Indecentes-Voisines", "Indecentes Voisines"]
+    assert tpdb._variants("Indecentes-Voisines")[:2] == ["Indecentes-Voisines", "Indecentes Voisines"]
+
+
+def test_possessive_variant_for_words_ending_in_s():
+    assert tpdb._variants("JaysPOV")[-1] == "Jay's POV"
+    v = tpdb._variants("Moms Teach Sex")
+    assert v[1] == "Mom's Teach Sex" and "Mom's Teach Sex" in v
+    assert tpdb._variants("Bliss") == ["Bliss"]                       # "ss" is no possessive
